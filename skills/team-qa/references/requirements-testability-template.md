@@ -13,8 +13,10 @@ validity: current
 risk_level: <low|medium|high|critical>
 approval_reference: null
 owner_role: QA
-reviewer_role: Product Owner
+reviewer_role: Product Owner   # requirement owner consumes this; no separate approval needed
+review_round: 1
 requirements: docs/requirements/<feature-slug>.md
+upstream: <written by check_upstream_gate.py --record>
 source_commit: <commit-or-unknown>
 ---
 
@@ -22,10 +24,17 @@ source_commit: <commit-or-unknown>
 
 ## 1. Scope reviewed
 ## 2. Testability summary
+## 2a. Situation coverage check
+Five situations (normal, invalid input, no permission, empty, network loss) per screen/endpoint present in the requirement? List gaps as blocking.
 ## 3. Blocking gaps
 | ID | REQ / AC | Testability issue | Why it blocks objective verification | Route back to |
 |---|---|---|---|---|
+## 3a. Closed gaps (previous rounds)
+| ID | Closed in round | How |
+|---|---|---|
 ## 4. Non-blocking clarifications
 ## 5. Non-functional criteria needing measurable targets
 ## 6. Conclusion for requirements review
+Conclusion: pass | pass-with-conditions | block
+<!-- block when any blocking gap is open; conditions listed explicitly. -->
 ```

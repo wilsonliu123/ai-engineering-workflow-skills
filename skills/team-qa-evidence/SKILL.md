@@ -37,7 +37,7 @@ Write normalized evidence under:
 
 Use one JSON file per evidence record, for example `EVD-001.json`.
 
-Also maintain a lightweight index when practical:
+Normalized record files are authoritative (one record per file; runs/suites in subdirectories such as `normalized/run2-<sha>/go/`; void/supersede live in the records). Commit the normalized JSON. An index is optional convenience only:
 
 `.ai-workflow/evidence/<feature-slug>/evidence-index.json`
 
@@ -53,7 +53,7 @@ Every record must contain:
   "test_case_id": "TC-001",
   "source_type": "automated|manual|hybrid",
   "source_tool": "playwright|pytest|junit|newman|k6|manual|other",
-  "result": "pass|fail|blocked|not-executed",
+  "result": "pass|fail|blocked|partial|not-executed",
   "target": {
     "commit": "abc123-or-unknown",
     "build": "build-123-or-unknown",
@@ -69,6 +69,7 @@ Every record must contain:
     "test_plan": {"path": "docs/qa/<slug>/test-cases.md", "sha256": "<script-computed>"}
   },
   "validity": "current|void",
+  "attachments": [],
   "void_reason": null
 }
 ```
@@ -111,6 +112,7 @@ Ask the human for exactly one outcome:
 - Fail
 - Blocked
 - Not executed
+- Partial (some steps/paths observed, not all)
 
 If `Fail`, ask for defect/evidence reference when available. If `Blocked`, ask for the blocker. If `Pass`, do not demand unnecessary prose.
 

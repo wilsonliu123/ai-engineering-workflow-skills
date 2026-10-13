@@ -10,7 +10,7 @@ def baseline(req,plan,design):
  if not (req and plan and design): return None
  return {k:{"path":Path(v).as_posix(),"sha256":content_hash(v)} for k,v in (("requirements",req),("test_plan",plan),("design",design))}
 
-ALLOWED={"pass","fail","blocked","not-executed"}
+ALLOWED={"pass","fail","blocked","partial","not-executed"}
 
 def tc_id(s):
     m=re.search(r"\bTC-\d{3,}\b", s or "")
@@ -18,7 +18,7 @@ def tc_id(s):
 
 def norm_status(s):
     x=(s or "").strip().lower().replace("_","-")
-    mp={"passed":"pass","success":"pass","ok":"pass","failed":"fail","error":"fail","skipped":"blocked","skip":"blocked","not-run":"not-executed","notexecuted":"not-executed"}
+    mp={"passed":"pass","success":"pass","ok":"pass","failed":"fail","error":"fail","skipped":"not-executed","skip":"not-executed","not-run":"not-executed","notexecuted":"not-executed"}
     x=mp.get(x,x)
     return x if x in ALLOWED else None
 
@@ -47,7 +47,7 @@ def parse_junit(path,args):
         if not tc:
             args.dropped.append(f'{case.get("classname") or ""} {case.get("name") or ""}'.strip()); continue
         if case.find("failure") is not None or case.find("error") is not None: st="fail"
-        elif case.find("skipped") is not None: st="blocked"
+        elif case.find("skipped") is not None: st="not-executed"  # skip = not run; record a blocker manually if one exists
         else: st="pass"
         out.append(record(f"EVD-{i:03d}",tc,st,args.tool or "junit",str(path),args))
         i+=1

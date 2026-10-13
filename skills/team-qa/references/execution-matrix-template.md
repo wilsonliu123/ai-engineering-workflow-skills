@@ -22,8 +22,10 @@ source_commit: <commit-or-unknown>
 
 # QA Execution Matrix — <Feature>
 
-| Test Case | Class / Subtype | Human decision | Tool / method selected by human | Owner role | Deferred reason/reference |
-|---|---|---|---|---|---|
+decision_source: <standing authorization reference, or per-case>
+
+| Test Case | Class / Subtype | Human decision | Tool / method | Executing owner role (QA / UI/UX) | Evidence link (manual) | Deferred reason/reference |
+|---|---|---|---|---|---|---|
 
 ## Assignment completeness
 - Assigned:

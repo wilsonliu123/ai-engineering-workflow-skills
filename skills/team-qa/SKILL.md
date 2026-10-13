@@ -95,13 +95,13 @@ Goal: record the human QA team's decision for every planned test case:
 - `hybrid`
 - `deferred`
 
-AI must not recommend or select the execution type. Present one test case at a time with its objective, expected result, test class/subtype, and constraints, then ask the human QA/QA Lead to choose.
+AI must not select the execution type. It may show the test case's `Proposed layer` (planning hint, not a decision). The human QA may decide case by case or give a standing authorization ("QA decides by layer"); record who decided in `decided_by` and the authorization in `decision_source` (validator enforced). Without a standing authorization, present one test case at a time with its objective, expected result, test class/subtype, and constraints, then ask the human QA/QA Lead to choose.
 
 For automated/hybrid cases, ask the human to record the intended tool/method if known. For deferred cases, require a human-provided reason/reference.
 
 Persist interrupted progress under `docs/workflow/reviews/<feature-slug>-qa-execution-assignment.md` and resume from the next undecided case.
 
-Produce/update `execution-matrix.md` using `references/execution-matrix-template.md`.
+Produce/update `execution-matrix.md` using `references/execution-matrix-template.md`. Every manual case gets an executing owner role (QA or UI/UX); manual UI cases link `docs/ux/<feature-slug>/ui-acceptance.md` (template `references/ui-acceptance-template.md`) as their evidence attachment.
 
 ## Mode 4 — execution-handoff
 
@@ -118,6 +118,10 @@ Produce `execution-run.md` containing:
 
 This is an execution contract, not execution evidence.
 
+Upstream gate for Mode 4: `check_upstream_gate.py --downstream docs/qa/<slug>/execution-run.md` over requirements, design `sad.md`, test-spec, test-cases, dev-delivery and code-review (`--record` on first creation). If dev-delivery or code-review are not yet approved, a human may set `proceed_at_risk` on them for a pre-check run; the run is then labeled pre-check and its evidence cannot support the final assessment until the gate passes cleanly.
+
+Standard steps for every run: archive raw reports and screenshots to `evidence/<tested-commit>/` before any further CI run; import with `--requirements --test-plan --design`; commit the normalized JSON under `.ai-workflow/evidence/<slug>/normalized/` and the archive (raw outputs otherwise stay uncommitted). For negative cases such as "CI must fail" (TC-069 style): archive the green run first, break deliberately in a throw-away worktree, record the exit code and log as manual evidence with `--attachment`, then discard the worktree.
+
 ## Actual QA execution — outside team-qa
 
 The real QA tester or toolchain executes assigned cases using existing team practice, including AI agents + Playwright/other automation tools, API/integration tools, performance/load/stress tools, or manual human testing.
@@ -133,13 +137,13 @@ Raw reports/observations go to `team-qa-evidence`:
 
 Run after execution has occurred and normalized evidence is available.
 
-1. Resolve candidate build/commit/environment and approved/current upstream baselines.
+1. Resolve candidate build/commit/environment and approved/current upstream baselines: gate `qa-report.md` (`--record`, later `--downstream`) over requirements, design `sad.md`, test-spec, test-cases, execution-matrix, dev-delivery, code-review and `docs/ux/<slug>` when used; none may be AT-RISK.
 2. Read `test-cases.md`, `execution-matrix.md`, normalized evidence, and relevant review/dev-handoff documents.
 3. Map each in-scope TC to evidence.
 4. Allowed states: `pass`, `fail`, `blocked`, `not-executed`, `not-applicable`, and `waived` only with explicit human authorization/reference.
 5. Missing evidence is `not-executed` / `evidence-missing`, never pass. Void evidence and evidence whose baseline no longer matches current requirements/test cases do not count; run `scripts/validate_qa.py docs/qa/<feature-slug> --evidence-dir <normalized-dir>` and resolve every error before writing the conclusion.
 6. For performance cases compare observed metrics only against approved thresholds recorded in Requirements/Test Cases.
-7. Produce/update `qa-report.md` using `references/qa-report-template.md`.
+7. Produce/update `qa-report.md` using `references/qa-report-template.md`; generate §3 and `result_counts` with `validate_qa.py ... --evidence-dir <dir> --emit-table` (do not hand-count), list void evidence in §8.3, known limitations in §8.1.
 8. Enter the human document review protocol. Human QA acceptance/release decisions remain human-owned.
 
 ## Test taxonomy
@@ -182,5 +186,6 @@ Emit best-effort events such as `qa_requirements_reviewed`, `qa_plan_completed`,
 - `references/execution-matrix-template.md`
 - `references/execution-run-template.md`
 - `references/qa-report-template.md`
+- `references/ui-acceptance-template.md`
 - `scripts/validate_qa.py`
 - `scripts/check_upstream_gate.py`

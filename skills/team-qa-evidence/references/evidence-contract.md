@@ -5,7 +5,10 @@
 - `pass`: expected result was actually observed for the stated test and target.
 - `fail`: observed result contradicted the expected result.
 - `blocked`: execution could not complete because of an identified blocker.
-- `not-executed`: no valid execution evidence exists.
+- `not-executed`: no valid execution evidence exists (JUnit `skipped` maps here).
+- `partial`: only part of the steps/paths was observed; never counts as pass.
+
+Optional: `attachments` (paths/URLs, e.g. `docs/ux/<slug>/ui-acceptance.md@<commit>` or a recording), `recorded_at` (manual). `executed_at` is `unknown` unless given; never the import time.
 
 Do not translate missing evidence into pass.
 

@@ -30,11 +30,13 @@ source_commit: <commit-or-unknown>
 ### 3.3 Performance taxonomy when applicable
 Distinguish performance baseline, load, stress, spike, soak/endurance, and scalability/capacity. Do not invent thresholds.
 ## 4. Environment and test data
+<!-- Reference dev-prep index §5a for tool prerequisites; state data isolation approach, realistic fixtures, and how server logs reach CI output (see qa-method.md). -->
 ## 5. Acceptance coverage plan
 | AC | Planned test cases | Test type | Priority | Notes |
 |---|---|---|---|---|
 ## 6. Entry criteria
 ## 7. Completion criteria
+<!-- Include the flaky rule from qa-method.md. -->
 ## 8. Exclusions and constraints
 ## 9. Open questions
 ## 10. Human review notes
