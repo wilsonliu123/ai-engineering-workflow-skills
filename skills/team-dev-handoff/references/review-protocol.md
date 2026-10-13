@@ -1,0 +1,2 @@
+# Human Review Protocol
+Scan first, then ask exactly one critical/material question at a time. Persist `docs/workflow/reviews/<artifact-id>.review.md`. After all material items are resolved, ask for final approve/request-changes/reject. Never self-approve. If interrupted, leave `review_status: in-progress`; `team-doc-review` resumes. If the artifact changed since the session baseline, revalidate affected decisions before final approval.

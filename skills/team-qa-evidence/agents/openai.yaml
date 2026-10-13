@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team QA Evidence"
+  short_description: "Normalize automated and manual QA results into traceable evidence"

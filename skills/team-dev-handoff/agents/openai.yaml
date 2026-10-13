@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team Dev Handoff"
+  short_description: "Document the actual implementation before review and QA"

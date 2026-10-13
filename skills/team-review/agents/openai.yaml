@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team Review"
+  short_description: "Review code against standards, requirements, and design"

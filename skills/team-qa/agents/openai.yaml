@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team QA"
+  short_description: "Plan traceable QA tests and document evidence-based execution results."

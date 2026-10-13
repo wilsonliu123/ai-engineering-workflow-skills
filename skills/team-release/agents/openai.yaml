@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team Release"
+  short_description: "Create evidence-linked release and delivery handoff documents."
