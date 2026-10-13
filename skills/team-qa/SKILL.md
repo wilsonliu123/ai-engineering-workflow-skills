@@ -137,7 +137,7 @@ Run after execution has occurred and normalized evidence is available.
 2. Read `test-cases.md`, `execution-matrix.md`, normalized evidence, and relevant review/dev-handoff documents.
 3. Map each in-scope TC to evidence.
 4. Allowed states: `pass`, `fail`, `blocked`, `not-executed`, `not-applicable`, and `waived` only with explicit human authorization/reference.
-5. Missing evidence is `not-executed` / `evidence-missing`, never pass.
+5. Missing evidence is `not-executed` / `evidence-missing`, never pass. Void evidence and evidence whose baseline no longer matches current requirements/test cases do not count; run `scripts/validate_qa.py docs/qa/<feature-slug> --evidence-dir <normalized-dir>` and resolve every error before writing the conclusion.
 6. For performance cases compare observed metrics only against approved thresholds recorded in Requirements/Test Cases.
 7. Produce/update `qa-report.md` using `references/qa-report-template.md`.
 8. Enter the human document review protocol. Human QA acceptance/release decisions remain human-owned.
@@ -163,7 +163,7 @@ Not every feature requires every non-functional category.
 
 ## Validation
 
-When execution is available run `scripts/validate_qa.py docs/qa/<feature-slug>`.
+When execution is available run `scripts/validate_qa.py docs/qa/<feature-slug> [--evidence-dir <normalized-dir>]` from the repository root (argument is the QA directory). `--evidence-dir` is required for final-assessment.
 
 Before authoritative planning or final assessment, run `scripts/check_upstream_gate.py --downstream docs/qa/<feature-slug>/test-spec.md docs/requirements/<feature-slug>.md docs/design/<feature-slug>/sad.md` (use `--record` when the test spec is first created). `BLOCK` or `STALE` (non-zero exit) stops authoritative QA work.
 

@@ -63,7 +63,13 @@ Every record must contain:
   "source_reference": "path, URL, run ID, ticket, or note reference",
   "defect_reference": null,
   "metrics": {},
-  "notes": "short factual note only"
+  "notes": "short factual note only",
+  "baseline": {
+    "requirements": {"path": "docs/requirements/<slug>.md", "sha256": "<script-computed>"},
+    "test_plan": {"path": "docs/qa/<slug>/test-cases.md", "sha256": "<script-computed>"}
+  },
+  "validity": "current|void",
+  "void_reason": null
 }
 ```
 
@@ -75,7 +81,7 @@ Use when QA provides an automated-test, API-test, load-test, stress-test, CI, or
 
 1. Identify the report format and source tool.
 2. Validate that the report can be tied to a target version/environment and one or more test cases.
-3. Use a deterministic parser when available.
+3. Use a deterministic parser when available, always with `--requirements` and `--test-plan` so the evidence is bound to its baseline. To retire evidence after a requirement/test change, use `scripts/void_evidence.py`; never delete it.
 4. Normalize only observed results.
 5. Preserve a reference to the raw source.
 6. If the parser cannot map a result to a test case, leave it unmapped and report the gap rather than fabricating a mapping.
@@ -141,3 +147,4 @@ When the repository observability protocol is present, emit best-effort events s
 - `references/evidence-contract.md` — normalized evidence schema and result rules.
 - `scripts/normalize_evidence.py` — deterministic normalizer for supported result formats.
 - `scripts/write_manual_evidence.py` — deterministic writer for a human QA outcome collected by interview.
+- `scripts/void_evidence.py` — marks evidence `validity: void` with `void_reason` (kept, excluded from assessment).

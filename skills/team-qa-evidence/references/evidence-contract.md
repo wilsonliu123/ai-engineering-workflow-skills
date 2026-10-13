@@ -24,6 +24,15 @@ Do not translate missing evidence into pass.
 - `defect_reference`
 - `metrics`
 - `notes`
+- `baseline.requirements.{path,sha256}` and `baseline.test_plan.{path,sha256}` — content the run was judged against; written by the scripts from `--requirements` / `--test-plan`, never by hand
+- `validity`: `current` | `void`
+- `void_reason` (required when `void`); optional `superseded_by`
+
+## Baseline and void rules
+
+- Always pass `--requirements docs/requirements/<slug>.md --test-plan docs/qa/<slug>/test-cases.md` when importing or recording evidence.
+- When requirements or test cases change after a run, affected evidence is stale. Mark it with `scripts/void_evidence.py --reason "<why>" [--superseded-by EVD-xxx] <files>`; never delete or edit results.
+- `team-qa` `validate_qa.py --evidence-dir` rejects current evidence whose baseline no longer matches, evidence without a baseline, void evidence without a reason, and evidence whose `target.commit` differs from `tested_commit`. Void evidence is kept but excluded.
 
 ## Performance metrics
 
