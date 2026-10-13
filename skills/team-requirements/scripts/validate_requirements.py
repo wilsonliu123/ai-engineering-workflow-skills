@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import re,sys
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from check_upstream_gate import approval_problems  # shared: approved_sha256, approved_by_role, author != approver
 def fm(text,key):
  m=re.search(rf"(?m)^{re.escape(key)}:\s*(.+?)\s*$",text); return m.group(1).strip() if m else None
 def gov(text, errors):
@@ -17,7 +19,7 @@ def main():
  if len(sys.argv)!=2:print('Usage: validate_requirements.py <docs/requirements/<slug>.md>  (run from repo root)');return 2
  p=Path(sys.argv[1]); e=[]
  if not p.is_file(): print("ERROR: file not found"); return 1
- t=p.read_text(); gov(t,e)
+ t=p.read_text(); gov(t,e); e+=approval_problems(p,t)
  if fm(t,"artifact_type") not in {"requirements",None}: e.append("artifact_type must be requirements")
  for h in HEAD:
   if h not in t:e.append("missing heading: "+h)

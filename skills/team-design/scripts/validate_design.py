@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import re,sys
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from check_upstream_gate import approval_problems  # shared: approved_sha256, approved_by_role, author != approver
 def fm(text,key):
  m=re.search(rf"(?m)^{re.escape(key)}:\s*(.+?)\s*$",text); return m.group(1).strip() if m else None
 def gov(text, errors):
@@ -17,7 +19,7 @@ def main():
  if len(sys.argv)!=3:print('Usage: validate_design.py <docs/design/<slug>> <docs/requirements/<slug>.md>  (run from repo root)');return 2
  d=Path(sys.argv[1]); rp=Path(sys.argv[2]); s=d/'sad.md'; e=[]
  if not s.is_file() or not rp.is_file():print("ERROR: missing sad or requirements");return 1
- t=s.read_text(); r=rp.read_text(); gov(t,e)
+ t=s.read_text(); r=rp.read_text(); gov(t,e); e+=approval_problems(s,t)
  for h in HEAD:
   if h not in t:e.append("missing heading: "+h)
  req=set(re.findall(r"\bREQ-[A-Z0-9_-]+\b",r)); ac=set(re.findall(r"\bAC-[A-Z0-9_-]+\b",r))

@@ -18,8 +18,18 @@ owner_role: <role>
 reviewer_roles:
   - <role>
 source_commit: <git-sha-or-unknown>
-approval_reference: <external-record-or-null>
+approval_reference: <session path or external record, or null>
+approved_by_role: <role that approved; set only with approval>
+delegation_reference: <who delegated approval authority, or null>
+independent_reviewer_role: <required when approved_by_role == owner_role>
+approved_sha256: <written by check_upstream_gate.py --stamp-approved>
+upstream: <written by check_upstream_gate.py --record>
+proceed_at_risk: <optional: human reference allowing work before upstream approval>
 ```
+
+Initial values for every new artifact: `artifact_status: draft`, `review_status: not-started`, `validity: current`. Set `artifact_status: complete` when content is review-ready; `review_status` stays `not-started` until a human review starts (`in-progress`).
+
+Use `artifact_type` only (no `document_type`); always include `feature`.
 
 Do not use a single `status` field as both completion state and human approval state.
 
@@ -39,6 +49,23 @@ AI may recommend, summarize, ask questions, and record a human decision. AI must
 
 Only update `review_status` to `approved`, `rejected`, or `changes-requested` after an explicit human decision or an authoritative external approval record is provided. Record the approval reference when available.
 
+Structured approval (enforced by `check_upstream_gate.py` and every stage validator):
+
+- `approved_by_role` names the approving role; `delegation_reference` records delegated authority (e.g. "delegated by <owner> in <channel/date>").
+- Author ≠ approver: if `approved_by_role` equals `owner_role`, an `independent_reviewer_role` (a different role that actually reviewed, e.g. QA) is required and must be disclosed in QA report and release handoff.
+- Prior authorization (e.g. "QA decides execution types") counts as an external approval record: cite it in `approval_reference` / `decision_source`.
+
+## No human available
+
+When a decision needs a human and none is reachable, do not choose silently: record it as an Assumption plus a Blocking OQ naming the decision owner, keep `artifact_status: draft` if the OQ is Blocking, and ask for confirmation at review. Any `Blocking: Yes` open question ⇒ `artifact_status: draft`.
+
+## Proceed at risk
+
+A human may allow downstream work to start before an upstream is approved by adding `proceed_at_risk: <reference>` to the upstream (which must be `complete` + `current`). The gate then reports `AT-RISK` and passes; a downstream artifact cannot be approved while any upstream is still at risk (gate BLOCKs). Record the risk in the downstream risks section.
+
+## Commits in a shared repository
+
+Each stage commits only its own output paths (`git add <paths>`, never `git add -A`). Configure a repo-local git identity once (`git config user.name/user.email`) during dev-prep environment setup.
 ## Package-level gate
 
 When a stage produces multiple files, one primary artifact controls the package gate:
@@ -51,6 +78,9 @@ When a stage produces multiple files, one primary artifact controls the package 
 - QA planning: `docs/qa/<feature-slug>/test-spec.md`
 - QA result: `docs/qa/<feature-slug>/qa-report.md`
 - Release: `docs/release/<feature-slug>/release-handoff.md`
+- UX (wireframes, screenshots-of-record, UI acceptance): `docs/ux/<feature-slug>/` — referenced by requirements/design `ux_reference`; gated as a directory.
+
+Supporting artifacts with their own frontmatter (e.g. `requirements-testability.md`, `test-cases.md`) record their upstreams with `--record` so they go stale too. `requirements-testability.md` needs no separate human approval; its conclusion feeds the requirements review. Scope added to requirements during or after review re-triggers it (the gate reports STALE).
 
 Supporting files cannot independently authorize downstream execution.
 

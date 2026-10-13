@@ -3,20 +3,12 @@ import argparse, json, re, sys, xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timezone
 
-# --- content hash: keep identical in normalize_evidence.py, write_manual_evidence.py, validate_qa.py ---
-import hashlib,re as _re
-def _split_fm(t):
- m=_re.match(r'---\r?\n(.*?)\r?\n---\r?\n?',t,_re.S)
- return (m.group(1),t[m.end():]) if m else ('',t)
-def content_hash(p):
- b=Path(p).read_bytes()
- if str(p).endswith('.md'): b=_split_fm(b.decode('utf-8'))[1].encode('utf-8')
- return hashlib.sha256(b).hexdigest()
-def baseline(req,plan):
- """Evidence baseline: which requirements / test-cases content the run was judged against."""
- if not req or not plan: return None
- return {"requirements":{"path":req,"sha256":content_hash(req)},"test_plan":{"path":plan,"sha256":content_hash(plan)}}
-# --- end content hash ---
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from check_upstream_gate import content_hash  # one hash algorithm for gate, evidence and validate_qa
+def baseline(req,plan,design):
+ """Evidence baseline: requirements, test-cases and design package the run was judged against."""
+ if not (req and plan and design): return None
+ return {k:{"path":Path(v).as_posix(),"sha256":content_hash(v)} for k,v in (("requirements",req),("test_plan",plan),("design",design))}
 
 ALLOWED={"pass","fail","blocked","not-executed"}
 
@@ -88,10 +80,11 @@ def main():
     p.add_argument("--commit",default="unknown"); p.add_argument("--build",default="unknown"); p.add_argument("--environment",default="unknown"); p.add_argument("--executed-at")
     p.add_argument("--requirements",help="requirements primary artifact the run was judged against (baseline)")
     p.add_argument("--test-plan",help="test-cases.md the run was judged against (baseline)")
+    p.add_argument("--design",help="design primary docs/design/<slug>/sad.md (whole package is hashed)")
     a=p.parse_args(); path=Path(a.input)
-    a.baseline=baseline(a.requirements,a.test_plan); a.dropped=[]
+    a.baseline=baseline(a.requirements,a.test_plan,a.design); a.dropped=[]
     if not a.executed_at: print("WARN: no --executed-at; executed_at recorded as 'unknown' (not the import time)",file=sys.stderr)
-    if a.baseline is None: print("WARN: no --requirements/--test-plan; evidence has no baseline and validate_qa --evidence-dir will reject it",file=sys.stderr)
+    if a.baseline is None: print("WARN: no --requirements/--test-plan/--design; evidence has no baseline and validate_qa --evidence-dir will reject it",file=sys.stderr)
     try: rows=parse_junit(path,a) if a.format=="junit" else parse_json(path,a)
     except Exception as e:
         print(f"ERROR: {e}",file=sys.stderr); return 2
