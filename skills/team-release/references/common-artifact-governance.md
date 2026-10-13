@@ -31,6 +31,8 @@ Initial values for every new artifact: `artifact_status: draft`, `review_status:
 
 Use `artifact_type` only (no `document_type`); always include `feature`.
 
+Do not copy hashes into other frontmatter fields (e.g. `requirements_approved_sha256`): `approved_sha256` (own content) and `upstream:` (written by `--record`) are the only hash fields; validators BLOCK any other `*_sha256` key.
+
 Do not use a single `status` field as both completion state and human approval state.
 
 ## Approval gate

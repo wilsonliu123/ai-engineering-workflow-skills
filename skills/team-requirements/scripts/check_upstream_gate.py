@@ -89,6 +89,8 @@ def validity_problems(p,t=None):
  """Shared: a stale/unknown artifact is not reviewable or usable (KnowBase #12/#13)."""
  p=Path(p); t=t if t is not None else p.read_text(encoding='utf-8'); v=val(t,'validity')
  bad=[f'BLOCK: {p}: validity is {v}; re-run check_upstream_gate.py --record against current upstreams, re-assess, then set validity: current'] if v in ('stale','unknown') else []
+ for k in re.findall(r'(?m)^(\w+_sha256):',split_fm(t)[0]):  # KnowBase #16: upstream: is the only baseline
+  if k!='approved_sha256': bad.append(f'BLOCK: {p}: frontmatter field {k} duplicates a hash; remove it, upstream: (written by --record) is the only baseline')
  for up,sha in recorded(p).items():  # recorded baselines are re-hashed, so a stale file cannot pass while still marked current (KnowBase #14)
   if sha=='pending': bad.append(f'PENDING: {p}: upstream {up} recorded as pending; re-run --record once it exists')
   elif not Path(up).exists(): bad.append(f'BLOCK: {p}: recorded upstream {up} is missing')
