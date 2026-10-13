@@ -18,11 +18,11 @@ Read `references/common-artifact-governance.md` and `references/review-method.md
 2. Load authoritative upstream artifacts and exact baselines. If required upstream gates are invalid/stale, surface that before document approval.
 3. Load or create `docs/workflow/reviews/<artifact-id>.review.md` using `references/review-session-template.md`.
 4. Scan all issues internally, rank by risk and dependency, and store the queue in the review session.
-5. Present exactly one unresolved critical/material item to the human. Include topic, evidence, why judgment is needed, options/trade-offs, and recommendation when useful.
-6. Record the human item-level decision. Continue one item at a time. Do not dump the remaining queue unless explicitly asked.
+5. Present exactly one unresolved critical/material item to the human (default `review_mode: one-at-a-time`). In `review_mode: batch` (approver is a delegate, or `risk_level: low`) present the full ranked list once and record all decisions together. Include topic, evidence, why judgment is needed, options/trade-offs, and recommendation when useful.
+6. Record the human item-level decision. In one-at-a-time mode continue one item at a time. Do not dump the remaining queue unless explicitly asked.
 7. Keep minor/informational observations for the final recap unless they combine into a material risk.
 8. When all required items are resolved, present a short recap and ask for one final document-level decision: approve, request changes, or reject.
-9. After explicit final decision only, update the reviewed artifact's `review_status` and `approval_reference` when available. Do not change substantive sections. On approval, also run `check_upstream_gate.py --stamp-approved <artifact>` (any gated skill's copy) to record `approved_sha256`.
+9. After explicit final decision only, update the reviewed artifact's `review_status` and `approval_reference` when available. Do not change substantive sections. On approval, also run `check_upstream_gate.py --stamp-approved <artifact>` to record `approved_sha256`; also set `approved_by_role`, `delegation_reference`, and `independent_reviewer_role` when the approver is the author. When approving a design, update and stamp each ADR it cites in the same commit. Editorial fixes after approval: re-stamp after the human confirms they are editorial, and note it in the session's resolved items.
 10. If changes are requested, route substantive edits to the owning stage skill. The review session records requested changes and remains traceable.
 11. If interrupted, persist `review_status: in-progress` and `current_item`; next invocation resumes from the next unresolved item.
 12. If the artifact changed since the session baseline, mark the session stale, determine which prior decisions are affected, and re-review those items before final approval.

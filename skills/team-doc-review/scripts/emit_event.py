@@ -108,9 +108,14 @@ def cmd_start(a):
     if a.risk_level: fields['risk_level']=a.risk_level
     st={"session_id":sid,"skill":a.skill,"started_at":now_iso(),"start_epoch_ms":int(datetime.now(timezone.utc).timestamp()*1000),"fields":fields,"repo_fingerprint":fingerprint(root),"git_commit":git_commit(root)}
     sp=session_path(root,sid); sp.parent.mkdir(parents=True,exist_ok=True); sp.write_text(json.dumps(st,sort_keys=True),encoding='utf-8')
+    (root/'.ai-workflow/telemetry/current-session').write_text(sid,encoding='utf-8')  # default for event/complete (F-08)
     e=make_base(root,sid,a.skill,'skill_started',st); e.update(fields); append(root,e); print(sid)
 
 def load_session(root,sid):
+    if not sid:
+        cur=root/'.ai-workflow/telemetry/current-session'
+        if not cur.exists(): raise FileNotFoundError('no --session-id and no current session; run start first')
+        sid=cur.read_text(encoding='utf-8').strip()
     p=session_path(root,sid)
     if not p.exists(): raise FileNotFoundError(f"telemetry session not found: {sid}")
     return json.loads(p.read_text(encoding='utf-8')),p
@@ -118,11 +123,11 @@ def load_session(root,sid):
 def cmd_event(a):
     if a.session_id == 'telemetry-disabled': return
     if a.event not in ALLOWED_EVENTS or a.event in {'skill_started','skill_completed'}: raise ValueError('unsupported event for event command')
-    root=repo_root(); st,_=load_session(root,a.session_id); e=make_base(root,a.session_id,st['skill'],a.event,st); e.update(st.get('fields',{})); e.update(parse_fields(a.field)); append(root,e)
+    root=repo_root(); st,_=load_session(root,a.session_id); a.session_id=st['session_id']; e=make_base(root,a.session_id,st['skill'],a.event,st); e.update(st.get('fields',{})); e.update(parse_fields(a.field)); append(root,e)
 
 def cmd_complete(a):
     if a.session_id == 'telemetry-disabled': return
-    root=repo_root(); st,p=load_session(root,a.session_id); now_ms=int(datetime.now(timezone.utc).timestamp()*1000)
+    root=repo_root(); st,p=load_session(root,a.session_id); a.session_id=st['session_id']; now_ms=int(datetime.now(timezone.utc).timestamp()*1000)
     fields=parse_fields(a.field); fields['result']=a.result; fields['duration_ms']=max(0,now_ms-int(st.get('start_epoch_ms',now_ms)))
     e=make_base(root,a.session_id,st['skill'],'skill_completed',st); e.update(st.get('fields',{})); e.update(fields); append(root,e)
     st['completed_at']=now_iso(); st['result']=a.result; st['duration_ms']=fields['duration_ms']; p.write_text(json.dumps(st,sort_keys=True),encoding='utf-8')
@@ -130,11 +135,11 @@ def cmd_complete(a):
 def main():
     ap=argparse.ArgumentParser(); sub=ap.add_subparsers(dest='cmd',required=True)
     s=sub.add_parser('start'); s.add_argument('--skill',required=True); s.add_argument('--session-id'); s.add_argument('--artifact-id'); s.add_argument('--artifact-type'); s.add_argument('--risk-level'); s.add_argument('--field',action='append',default=[])
-    e=sub.add_parser('event'); e.add_argument('--session-id',required=True); e.add_argument('--event',required=True); e.add_argument('--field',action='append',default=[])
-    c=sub.add_parser('complete'); c.add_argument('--session-id',required=True); c.add_argument('--result',choices=['success','blocked','failed'],required=True); c.add_argument('--field',action='append',default=[])
+    e=sub.add_parser('event'); e.add_argument('--session-id'); e.add_argument('--event',required=True); e.add_argument('--field',action='append',default=[])
+    c=sub.add_parser('complete',aliases=['end']); c.add_argument('--session-id'); c.add_argument('--result',choices=['success','blocked','failed'],required=True); c.add_argument('--field',action='append',default=[])
     a=ap.parse_args()
     try:
-        {'start':cmd_start,'event':cmd_event,'complete':cmd_complete}[a.cmd](a)
+        {'start':cmd_start,'event':cmd_event,'complete':cmd_complete,'end':cmd_complete}[a.cmd](a)
     except Exception as exc:
         # Callers must treat this as a telemetry warning, not a lifecycle failure.
         print(f"telemetry warning: {type(exc).__name__}: {exc}",file=sys.stderr)

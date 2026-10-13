@@ -43,7 +43,7 @@ python scripts/emit_event.py event --session-id <session-id> --event <event-name
 python scripts/emit_event.py complete --session-id <session-id> --result <success|blocked|failed> [--field key=value ...]
 ```
 
-The `start` command prints the session ID. Keep it for the rest of the current skill invocation. Always attempt `complete` before returning from a normally completed invocation.
+The `start` command prints the session ID and stores it in `.ai-workflow/telemetry/current-session`; `event` and `complete` (alias `end`) use it when `--session-id` is omitted. Run the script by its path inside the skill (e.g. `python3 <skill-dir>/scripts/emit_event.py`) from the repository root. On failure it prints `telemetry warning: ...` to stderr and exits 2; report the warning, never stop the stage. Always attempt `complete` before returning from a normally completed invocation.
 
 ## Common events
 
