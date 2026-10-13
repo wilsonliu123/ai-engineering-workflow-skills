@@ -35,6 +35,11 @@ Fixes: QA: execution-assignment (clarified by 剑秋 on 10/13: the design is cor
 - qa-report template: §8.1 Known limitations, §8.2 Accepted non-defect issues (QA: final-assessment, QA: template).
 - team-requirements glossary: list product terms that stay untranslated (UX-S14, D-10).
 
+### Follow-up after QA / Tech Leader review
+- `check_upstream_gate.py` (6 identical copies): an `approved` upstream without `approved_sha256` now reports `BLOCK` (exit 1) with a `--stamp-approved` hint, whether or not `--downstream` is used. **Migration:** run `--stamp-approved` once per approved v0.4 document; before that, every gate on v0.4 artifacts BLOCKs (intended).
+- `validate_qa.py`: when `qa-report.md` exists, `--evidence-dir` is required. **Migration:** evidence without a baseline must be re-imported with `--requirements` / `--test-plan`.
+- team-qa SKILL.md: also `--record` / `--downstream` the test-cases baseline; migration note added. The qa-report template and governance doc mention both rules.
+
 ## Deferred (not done: would add complexity or is out of scope for script/template fixes)
 - P1-1 stronger validators (multi-value Covers, Must→AC, traceability table, dev-prep dependency cycles, design state matrix, QA AC coverage, report counts vs evidence, review head_commit vs range): F-05, F-14, D-02, UX-05, T-03, QA: validate_qa.
 - "approved but content changed" check inside each stage validator: the gate covers it; the validators have diverged copies of `gov()`.
@@ -48,6 +53,9 @@ Fixes: QA: execution-assignment (clarified by 剑秋 on 10/13: the design is cor
 - P2-4 flaky rules, partial-execution state, negative-test guidance, interaction-state evidence (UX-S15), external-attachment field for manual evidence.
 - P2-5 single shared script copy (deliberately kept duplicated; identical-content rule documented in README).
 - P2-6 items (T-09, D-11, D-16 registry, D-17, D-19, F-01). UX-S9/S12/S13 (visual-acceptance template, screenshot naming, manual TC owner).
+
+- QA follow-up minors: list voided evidence in qa-report; make a missing `decided_by` an error instead of a WARN; guidance for negative / CI-must-fail tests (TC-069 style); check report numbers against evidence.
+- T-03: `head_commit` in code review is hand-written and not compared with the reviewed range.
 
 ## Pre-existing, unchanged
 - In v0.4, `validate_review_session.py` fails on 5 of the 6 TeamBoard review sessions (missing `current_item`, `## Resolved/Remaining items`). It still does; nothing here changes that.

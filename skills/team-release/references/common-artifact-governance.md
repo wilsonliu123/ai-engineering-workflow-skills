@@ -63,6 +63,8 @@ Content baselines are machine-maintained by `scripts/check_upstream_gate.py` (by
 - Every later gate run uses `--downstream <downstream.md> <upstream ...>`; any content change reports `STALE` and exits non-zero.
 - Hashes ignore YAML frontmatter. `sad.md` and dev-prep `index.md` hash their whole package directory (attachments included). A directory argument (e.g. wireframes and UI acceptance under `docs/ux/<feature-slug>/`) is hashed as a whole, so UX artifacts are covered without extra fields.
 
+An `approved` artifact without `approved_sha256` is reported `BLOCK`. Migration from v0.4: after confirming the approval still applies to the current content, run `--stamp-approved` once per approved document.
+
 On `STALE`: preserve the historical approval, set the downstream artifact `validity: stale`, assess impact, re-review as required, then re-run `--record` (and `--stamp-approved` after re-approval). This replaces hand-written "approval carried forward" notes; a purely editorial upstream change still needs one re-record, noted in one line in the downstream change log.
 
 Never attach an old approval to changed content silently.

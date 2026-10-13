@@ -82,5 +82,6 @@ Issues accepted by a named decision (who, reference) that are not defects; do no
 ## 9. Residual risks and decision points
 
 ## 10. QA conclusion for human review
+Before concluding, `validate_qa.py docs/qa/<feature-slug> --evidence-dir <normalized-dir>` must pass (`--evidence-dir` is mandatory once this report exists).
 State only what the evidence supports. Do not self-approve release.
 ```

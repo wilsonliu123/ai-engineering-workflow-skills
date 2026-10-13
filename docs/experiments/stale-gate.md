@@ -138,3 +138,67 @@ $ python3 $S/team-qa/scripts/validate_qa.py docs/qa/team-board --evidence-dir $E
 ## 11. Original repo untouched
   0 changed files in /workspace/skill-validation/team-board
 ```
+
+## Follow-up (commit 025dc0b): stricter gate and validate_qa
+
+Script: [`followup.sh`](followup.sh), run on a fresh copy at `/tmp/tb-followup`.
+
+The log above predates `025dc0b`. With the stricter gate, steps 1–2 of `stale-gate.sh` would also need `--stamp-approved` on `sad.md` first.
+
+**Regression note:** on the unmodified TeamBoard every `check_upstream_gate.py` call in `regress.sh` now exits 1 with `BLOCK: ... approved but no approved_sha256`. This is intended. v0.4 artifacts have no hash, so to migrate, run `--stamp-approved` once per approved document after confirming the approval still applies. Likewise, `validate_qa.py docs/qa/team-board` without `--evidence-dir` now fails because `qa-report.md` exists.
+
+```text
+## (b) approved upstream without approved_sha256 (unmodified v0.4 artifacts)
+$ python3 $S/team-qa/scripts/check_upstream_gate.py docs/requirements/team-board.md docs/design/team-board/sad.md
+  BLOCK: docs/requirements/team-board.md: approved but no approved_sha256 (run check_upstream_gate.py --stamp-approved docs/requirements/team-board.md once)
+  BLOCK: docs/design/team-board/sad.md: approved but no approved_sha256 (run check_upstream_gate.py --stamp-approved docs/design/team-board/sad.md once)
+  exit=1
+$ python3 $S/team-qa/scripts/check_upstream_gate.py --downstream docs/qa/team-board/test-spec.md docs/requirements/team-board.md docs/design/team-board/sad.md
+  BLOCK: docs/requirements/team-board.md: approved but no approved_sha256 (run check_upstream_gate.py --stamp-approved docs/requirements/team-board.md once)
+  BLOCK: docs/design/team-board/sad.md: approved but no approved_sha256 (run check_upstream_gate.py --stamp-approved docs/design/team-board/sad.md once)
+  BLOCK: docs/qa/team-board/test-spec.md: no recorded baseline for docs/requirements/team-board.md (run --record)
+  BLOCK: docs/qa/team-board/test-spec.md: no recorded baseline for docs/design/team-board/sad.md (run --record)
+  exit=1
+## (c) consistent state: stamp, record, fresh evidence
+$ python3 $S/team-qa/scripts/check_upstream_gate.py --stamp-approved docs/requirements/team-board.md
+  STAMPED: docs/requirements/team-board.md approved_sha256=112210833162a2636d3cda08a1525416c4ba5658826cff011b2b97ccdaa9d33c
+  exit=0
+$ python3 $S/team-qa/scripts/check_upstream_gate.py --stamp-approved docs/design/team-board/sad.md
+  STAMPED: docs/design/team-board/sad.md approved_sha256=321c7b692cbee4e3e08a8e396f4165619c9bf7f3b49bb12270d60e32e6216c1f
+  exit=0
+$ python3 $S/team-qa/scripts/check_upstream_gate.py --record docs/qa/team-board/test-spec.md docs/requirements/team-board.md docs/design/team-board/sad.md
+  RECORDED: 2 upstream baseline(s) in docs/qa/team-board/test-spec.md
+  PASS: all upstream artifacts are complete, approved, and current and match recorded baselines
+  exit=0
+$ python3 $S/team-qa/scripts/check_upstream_gate.py --record docs/qa/team-board/test-cases.md docs/requirements/team-board.md docs/design/team-board/sad.md
+  RECORDED: 2 upstream baseline(s) in docs/qa/team-board/test-cases.md
+  PASS: all upstream artifacts are complete, approved, and current and match recorded baselines
+  exit=0
+$ python3 $S/team-qa/scripts/check_upstream_gate.py --downstream docs/qa/team-board/test-spec.md docs/requirements/team-board.md docs/design/team-board/sad.md
+  PASS: all upstream artifacts are complete, approved, and current and match recorded baselines
+  exit=0
+$ python3 $S/team-qa/scripts/check_upstream_gate.py --downstream docs/qa/team-board/test-cases.md docs/requirements/team-board.md docs/design/team-board/sad.md
+  PASS: all upstream artifacts are complete, approved, and current and match recorded baselines
+  exit=0
+$ python3 $S/team-qa-evidence/scripts/normalize_evidence.py evidence/2d29e13/junit/go.xml --format junit --tool go --output-dir $EV/go --commit 2d29e13 --executed-at 2026-10-13T10:15:00+08:00 --requirements docs/requirements/team-board.md --test-plan docs/qa/team-board/test-cases.md
+  {"normalized": 40, "dropped_without_tc": 8, "first_id": "EVD-001", "output_dir": "$EV/go"}
+  exit=0
+$ python3 $S/team-qa/scripts/validate_qa.py docs/qa/team-board --evidence-dir $EV
+  INFO: evidence usable=40 void(excluded)=0
+  OK: QA artifacts valid
+  exit=0
+## (a) stale state (requirement edited) and validate_qa without --evidence-dir
+$ python3 $S/team-qa/scripts/check_upstream_gate.py --downstream docs/qa/team-board/test-cases.md docs/requirements/team-board.md docs/design/team-board/sad.md
+  STALE: docs/requirements/team-board.md: content changed after approval (approved_sha256 112210833162 != current 8ae62da00ef0)
+  STALE: docs/requirements/team-board.md changed since docs/qa/team-board/test-cases.md recorded it (112210833162 -> 8ae62da00ef0); mark docs/qa/team-board/test-cases.md validity: stale and re-assess
+  exit=1
+$ python3 $S/team-qa/scripts/validate_qa.py docs/qa/team-board
+  ERROR: qa-report.md exists: --evidence-dir <normalized-evidence-dir> is required (final-assessment must check evidence baselines)
+  exit=1
+$ python3 $S/team-qa/scripts/validate_qa.py docs/qa/team-board --evidence-dir $EV
+  INFO: evidence usable=40 void(excluded)=0
+  ERROR: $EV/go/EVD-001.json: STALE evidence: docs/requirements/team-board.md changed since this evidence was produced; void it or re-run
+  ... (39 more identical STALE evidence lines)
+  exit=1
+## original repo: 0 changed files
+```

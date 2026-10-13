@@ -163,9 +163,11 @@ Not every feature requires every non-functional category.
 
 ## Validation
 
-When execution is available run `scripts/validate_qa.py docs/qa/<feature-slug> [--evidence-dir <normalized-dir>]` from the repository root (argument is the QA directory). `--evidence-dir` is required for final-assessment.
+When execution is available run `scripts/validate_qa.py docs/qa/<feature-slug> [--evidence-dir <normalized-dir>]` from the repository root (argument is the QA directory). `--evidence-dir` is required whenever `qa-report.md` exists; without it the validator fails.
 
-Before authoritative planning or final assessment, run `scripts/check_upstream_gate.py --downstream docs/qa/<feature-slug>/test-spec.md docs/requirements/<feature-slug>.md docs/design/<feature-slug>/sad.md` (use `--record` when the test spec is first created). `BLOCK` or `STALE` (non-zero exit) stops authoritative QA work.
+Before authoritative planning or final assessment, run `scripts/check_upstream_gate.py --downstream docs/qa/<feature-slug>/test-spec.md docs/requirements/<feature-slug>.md docs/design/<feature-slug>/sad.md` (use `--record` when the test spec is first created). Also record the test-cases baseline: `check_upstream_gate.py --record docs/qa/<feature-slug>/test-cases.md docs/requirements/<feature-slug>.md docs/design/<feature-slug>/sad.md`, and check it with `--downstream` before final assessment. `BLOCK` or `STALE` (non-zero exit) stops authoritative QA work.
+
+Migration from v0.4: approved documents without `approved_sha256` BLOCK until `check_upstream_gate.py --stamp-approved <doc>` is run once (after confirming the approval still applies); evidence without a baseline is rejected and must be re-imported with `--requirements` / `--test-plan`.
 
 ## Observability
 
