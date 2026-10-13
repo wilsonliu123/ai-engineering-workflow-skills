@@ -83,7 +83,7 @@ def set_fm(f,key,block):
  fm=re.sub(rf'(?ms)^{key}:.*?(?=^\S|\Z)','',fm+'\n').rstrip('\n')
  Path(f).write_text(f'---\n{fm}\n{block}\n---\n{body}',encoding='utf-8')
 
-def norm(x): return re.sub(r'[^a-z0-9]','',re.sub(r'\(.*?\)','',(x or '')).lower())  # 'PM (delegated)' == 'PM'
+def norm(x): return re.sub(r'[\W_]','',re.sub(r'[(（].*?[)）]','',(x or '')).casefold())  # 'PM (delegated)' == 'PM'; Unicode-aware so CJK role names never collapse to ''
 
 def validity_problems(p,t=None):
  """Shared: a stale/unknown artifact is not reviewable or usable (KnowBase #12/#13)."""

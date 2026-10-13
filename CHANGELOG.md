@@ -4,6 +4,10 @@ Source of issue IDs: TeamBoard validation report (`docs/skill-validation/VALIDAT
 
 Rules followed: no new skills, no new workflow steps beyond what is listed, scripts shared across skills stay byte-identical.
 
+## v0.6.8
+
+- KnowBase #17: `check_upstream_gate.py` `norm()` kept only `[a-z0-9]`, so CJK-only role names (e.g. 全栈工程师) collapsed to '' and distinct roles compared equal, defeating the author-cannot-self-approve check. Now Unicode-aware (`[\W_]`, casefold, strips full-width parens). Shared across all 9 skills.
+
 ## v0.6.7 — KnowBase #16
 
 - No skill template defines `requirements_approved_sha256`; it was an ad-hoc copy that went stale. Shared `validity_problems()` now BLOCKs any frontmatter `*_sha256` key other than `approved_sha256`; governance says `approved_sha256` and `upstream:` are the only hash fields.
