@@ -40,6 +40,13 @@ Fixes: QA: execution-assignment (clarified by 剑秋 on 10/13: the design is cor
 - `validate_qa.py`: when `qa-report.md` exists, `--evidence-dir` is required. **Migration:** evidence without a baseline must be re-imported with `--requirements` / `--test-plan`.
 - team-qa SKILL.md: also `--record` / `--downstream` the test-cases baseline; migration note added. The qa-report template and governance doc mention both rules.
 
+## v0.6.1 — 2026-10-13 (KnowBase live fixes, check_upstream_gate.py in all 9 copies)
+- A directory upstream (e.g. `docs/ux/<slug>/`) now takes its governance from `<dir>/README.md` frontmatter. It is status- and approval-checked like a file. `--stamp-approved <dir>` writes into the README; the hash covers the whole directory and excludes the README frontmatter. A missing README or a missing directory BLOCKs. Previously a directory always passed the status check.
+- `--record` on an upstream that does not exist yet stores `sha256: pending`. The gate reports `PENDING` and exits 1 until `--record` is re-run after the upstream exists. Re-running `--record` adds or updates entries.
+- In `--record` / `--downstream` mode the gate reads the upstreams declared in the downstream frontmatter (`requirements`, `design`, `test_spec`, `test_cases`, `test_plan`, `execution_matrix`, `review`, `dev_prep`, `dev_delivery`, `ux`, `ux_reference`, `source_requirements`). It BLOCKs if a declared upstream is neither passed nor recorded. `--downstream` also re-checks every recorded upstream.
+- Governance (all copies): documents the three rules above, and states that `review_status` has only five values (no `in-review`).
+- Experiments: `knowbase-gate.sh` added; `migrate-teamboard.sh` adapted (UX README frontmatter, test-cases records test-spec).
+
 ## v0.6 — 2026-10-13: every deferred item fixed
 
 Commits: `22612ad` core · `a8c6fc3` requirements · `04058f2` design · `674628e` dev-prep/handoff · `471bc5a` review/release · `791380e` QA+evidence · `36620ef` doc-review/telemetry · `8bb8d1e` fixes · `cdcf367` experiment. Earlier: `8bd5b73` P0-1 · `dbbd1b6` P0-2 · `68beea9` decided_by · `4a088c5` small fixes · `025dc0b` gate/QA blockers.

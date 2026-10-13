@@ -11,7 +11,7 @@ artifact_id: <stable-id>
 artifact_type: <requirements|requirements-testability|design|test-spec|qa-execution-matrix|qa-execution-run|dev-prep|dev-handoff|code-review|qa-report|release-handoff>
 feature: <feature-slug>
 artifact_status: <draft|complete|superseded>
-review_status: <not-started|in-progress|changes-requested|approved|rejected>
+review_status: <not-started|in-progress|changes-requested|approved|rejected>   # only these five; there is no `in-review`
 validity: <current|stale|unknown>
 risk_level: <low|medium|high|critical>
 owner_role: <role>
@@ -95,6 +95,12 @@ Content baselines are machine-maintained by `scripts/check_upstream_gate.py` (by
 - Hashes ignore YAML frontmatter. `sad.md` and dev-prep `index.md` hash their whole package directory (attachments included). A directory argument (e.g. wireframes and UI acceptance under `docs/ux/<feature-slug>/`) is hashed as a whole, so UX artifacts are covered without extra fields.
 
 An `approved` artifact without `approved_sha256` is reported `BLOCK`. Migration from v0.4: after confirming the approval still applies to the current content, run `--stamp-approved` once per approved document.
+
+Directory packages (e.g. `docs/ux/<feature-slug>/`) carry governance in `<dir>/README.md` frontmatter (`artifact_status`, `review_status`, `validity`, approval fields). `--stamp-approved <dir>` hashes the whole directory (README frontmatter excluded) and writes `approved_sha256` into the README. A directory without README.md, or a missing directory, BLOCKs.
+
+Upstream not created yet: `--record <downstream> <missing-upstream>` stores `sha256: pending`. Every gate run then reports `PENDING` and exits non-zero (never PASS) until `--record` is re-run after the upstream exists and is approved. Re-running `--record` adds or updates entries and keeps the others.
+
+Declared upstreams: in `--record` / `--downstream` mode the gate reads the downstream's frontmatter keys `requirements`, `design`, `test_spec`, `test_cases`, `test_plan`, `execution_matrix`, `review`, `dev_prep`, `dev_delivery`, `ux`, `ux_reference`, `source_requirements` and BLOCKs if a declared path is neither passed on the command line nor recorded. `--downstream` always re-checks every recorded upstream too.
 
 On `STALE`: preserve the historical approval, set the downstream artifact `validity: stale`, assess impact, re-review as required, then re-run `--record` (and `--stamp-approved` after re-approval). This replaces hand-written "approval carried forward" notes; a purely editorial upstream change still needs one re-record, noted in one line in the downstream change log.
 

@@ -364,3 +364,53 @@ $ python3 $S/team-qa/scripts/validate_qa.py docs/qa/team-board --evidence-dir .a
   exit=1
 ## original repo: 0 changed files
 ```
+
+
+## v0.6.1 gate fixes (KnowBase live run)
+
+KnowBase checks: [`knowbase-gate.sh`](knowbase-gate.sh), run on a throw-away clone; nothing was pushed to know-base.
+
+TeamBoard: `migrate-teamboard.sh` was adapted in two places. The UX README now gets governance frontmatter and is stamped as a directory package. `test-cases.md` now also records `test-spec.md`, which it declares as `test_spec:`. The result is unchanged: the 10 consistent-state checks pass, and release still BLOCKs on author == approver.
+
+```text
+## (a) design gate over docs/ux/know-base (README review_status: in-review)
+$ check_upstream_gate.py --record docs/design/know-base/sad.md docs/requirements/know-base.md docs/ux/know-base
+  BLOCK: docs/ux/know-base: gate failed ({'artifact_status': 'complete', 'review_status': 'in-review', 'validity': 'current'})
+  exit=1
+## (a2) directory without README / missing directory
+$ check_upstream_gate.py /tmp/kb-noreadme
+  BLOCK: /tmp/kb-noreadme: directory package has no README.md carrying its governance frontmatter
+  exit=1
+$ check_upstream_gate.py docs/ux/missing
+  BLOCK: docs/ux/missing: missing
+  exit=1
+## (b) test-spec --record while sad.md does not exist
+$ check_upstream_gate.py --record docs/qa/know-base/test-spec.md docs/requirements/know-base.md docs/design/know-base/sad.md
+  RECORDED: 2 upstream baseline(s) in docs/qa/know-base/test-spec.md
+  PENDING: docs/design/know-base/sad.md does not exist yet; recorded as pending, re-run --record once it exists
+  exit=1
+  upstream:
+    - path: docs/requirements/know-base.md
+      sha256: 2c6ac6e73c1bd3714208651febdfaed8e36ca0926c1f2013a7f86a8706685fd8
+    - path: docs/design/know-base/sad.md
+      sha256: pending
+  ---
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+  PENDING: docs/design/know-base/sad.md not created yet (recorded as pending)
+  exit=1
+## (b2) sad.md created and approved (test fixture), then re-record
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+  PENDING: docs/design/know-base/sad.md now exists; re-run --record to baseline it
+  exit=1
+$ check_upstream_gate.py --record docs/qa/know-base/test-spec.md docs/requirements/know-base.md docs/design/know-base/sad.md
+  RECORDED: 2 upstream baseline(s) in docs/qa/know-base/test-spec.md
+  PASS: all upstream artifacts are complete, approved, and current and match recorded baselines
+  exit=0
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+  PASS: all upstream artifacts are complete, approved, and current and match recorded baselines
+  exit=0
+## (c) committed test-spec declares design: but it is neither passed nor recorded
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+  BLOCK: docs/qa/know-base/test-spec.md declares design: docs/design/know-base/sad.md but it is neither passed nor recorded (add it to the gate call / --record)
+  exit=1
+```

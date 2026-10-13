@@ -20,10 +20,14 @@ Approval rules for an `approved` upstream (structured fields, see common-artifac
   passes with AT-RISK (work may start); a downstream that is itself approved while any upstream
   is still at risk is BLOCKed in --downstream mode.
 
-<upstream> is a primary .md artifact or a directory (e.g. docs/ux/<slug>/).
+<upstream> is a primary .md artifact or a directory package (e.g. docs/ux/<slug>/) whose governance
+frontmatter lives in <dir>/README.md (README frontmatter is excluded from the hash; no README -> BLOCK).
+--record on a missing upstream stores `sha256: pending`; the gate reports PENDING (exit 1) until
+--record is re-run after it exists. In --record/--downstream mode, upstreams declared in the downstream
+frontmatter (requirements:, design:, test_spec:, test_cases:, ux_reference:, ...) must be passed or recorded.
 Content hash: YAML frontmatter of .md files is ignored (governance edits do not count).
 sad.md / index.md hash their whole package directory (attachments included); a
-directory hashes every file under it. Exit: 0 PASS, 1 BLOCK/STALE, 2 usage.
+directory hashes every file under it. Exit: 0 PASS, 1 BLOCK/STALE/PENDING, 2 usage.
 """
 import hashlib,re,sys
 from pathlib import Path
@@ -60,7 +64,7 @@ def recorded(down):
  m=re.search(r'(?ms)^upstream:\s*\n((?:[ \t]+.*\n?)*)',fm)
  out={}
  if m:
-  for path,sha in re.findall(r'-\s*path:\s*(\S+)\s*\n\s+sha256:\s*([0-9a-f]{64})',m.group(1)): out[path]=sha
+  for path,sha in re.findall(r'-\s*path:\s*(\S+)\s*\n\s+sha256:\s*([0-9a-f]{64}|pending)',m.group(1)): out[path]=sha
  return out
 
 def set_fm(f,key,block):
@@ -89,10 +93,27 @@ def at_risk(t):
  r=val(t,'proceed_at_risk')
  return r if r and r.lower() not in ('null','none','no','false') and not r.startswith('<') else None
 
+def gov_file(p):
+ """Directory packages (e.g. docs/ux/<slug>/) keep governance in <dir>/README.md frontmatter."""
+ p=Path(p); return p/'README.md' if p.is_dir() else p
+
+DECLARED_KEYS=('requirements','design','test_spec','test_cases','test_plan','execution_matrix','review','dev_prep','dev_delivery','ux','ux_reference','source_requirements')
+def declared(down):
+ """Upstreams a downstream declares in frontmatter (first token of each value; placeholders/null ignored)."""
+ fm=split_fm(Path(down).read_text(encoding='utf-8'))[0]; out={}
+ for k in DECLARED_KEYS:
+  v=val(fm,k)
+  if not v: continue
+  v=v.split()[0].strip('"\'')
+  if v.lower() in ('null','none','unknown','n/a','-') or v.startswith(('<','./','http')): continue
+  out[Path(v).as_posix()]=k
+ return out
+
 def status_problems(p,risky=None):
  if not p.exists(): return [f'BLOCK: {p}: missing']
- if p.is_dir(): return []  # UX/asset directories carry no governance status
- t=p.read_text(encoding='utf-8'); bad=[]
+ gp=gov_file(p)
+ if not gp.is_file(): return [f'BLOCK: {p}: directory package has no README.md carrying its governance frontmatter']
+ t=gp.read_text(encoding='utf-8'); bad=[]
  got={k:val(t,k) for k in STATUS_OK}
  if got!=STATUS_OK:
   if at_risk(t) and got['artifact_status']=='complete' and got['validity']=='current' and got['review_status'] in ('not-started','in-progress'):
@@ -105,32 +126,46 @@ def main(a):
  if not a or a[0] in ('-h','--help'): print(__doc__); return 2
  if a[0]=='--hash' and len(a)==2: print(content_hash(a[1])); return 0
  if a[0]=='--stamp-approved' and len(a)==2:
-  h=content_hash(a[1]); set_fm(a[1],'approved_sha256',f'approved_sha256: {h}'); print(f'STAMPED: {a[1]} approved_sha256={h}'); return 0
+  g=gov_file(a[1])
+  if not g.is_file(): print(f'BLOCK: {a[1]}: no README.md to carry governance'); return 1
+  h=content_hash(a[1]); set_fm(g,'approved_sha256',f'approved_sha256: {h}'); print(f'STAMPED: {g} approved_sha256={h}'); return 0
  mode=down=None
  if a[0] in ('--downstream','--record'):
   if len(a)<3: print(__doc__); return 2
   mode,down,a=a[0],Path(a[1]),a[2:]
  if any(x.startswith('--') for x in a): print(__doc__); return 2
- ups=[Path(x) for x in a]; bad=[]; risky=[]
- for p in ups: bad+=status_problems(p,risky)
+ ups=[Path(x) for x in a]; bad=[]; risky=[]; pend=[]
+ if mode and not down.is_file(): print(f'BLOCK: {down}: downstream missing'); return 1
+ rec=recorded(down) if mode else {}
+ if mode=='--downstream':  # recorded upstreams are always re-checked
+  ups+=[Path(k) for k in rec if Path(k).as_posix() not in {u.as_posix() for u in ups}]
+ for p in ups:
+  k=p.as_posix()
+  if mode=='--record' and not p.exists(): pend.append(f'PENDING: {k} does not exist yet; recorded as pending, re-run --record once it exists'); continue
+  if mode=='--downstream' and rec.get(k)=='pending':
+   pend.append(f'PENDING: {k} '+('now exists; re-run --record to baseline it' if p.exists() else 'not created yet (recorded as pending)')); continue
+  bad+=status_problems(p,risky)
+ if mode:
+  have={u.as_posix() for u in ups}|set(rec)
+  for d,key in declared(down).items():
+   if d not in have: bad.append(f'BLOCK: {down} declares {key}: {d} but it is neither passed nor recorded (add it to the gate call / --record)')
  if mode=='--downstream':
-  if not down.is_file(): bad.append(f'BLOCK: {down}: downstream missing')
-  else:
-   if risky and val(down.read_text(encoding='utf-8'),'review_status')=='approved': bad.append(f'BLOCK: {down}: approved while upstream still at risk ({", ".join(map(str,risky))}); approve upstream first')
-   rec=recorded(down)
-   for p in ups:
-    if not p.exists(): continue
-    k=p.as_posix()
-    if k not in rec: bad.append(f'BLOCK: {down}: no recorded baseline for {k} (run --record)')
-    elif rec[k]!=content_hash(p): bad.append(f'STALE: {k} changed since {down} recorded it ({rec[k][:12]} -> {content_hash(p)[:12]}); mark {down} validity: stale and re-assess')
+  if risky and val(down.read_text(encoding='utf-8'),'review_status')=='approved': bad.append(f'BLOCK: {down}: approved while upstream still at risk ({", ".join(map(str,risky))}); approve upstream first')
+  for p in ups:
+   k=p.as_posix()
+   if not p.exists() or rec.get(k)=='pending': continue
+   if k not in rec: bad.append(f'BLOCK: {down}: no recorded baseline for {k} (run --record)')
+   elif rec[k]!=content_hash(p): bad.append(f'STALE: {k} changed since {down} recorded it ({rec[k][:12]} -> {content_hash(p)[:12]}); mark {down} validity: stale and re-assess')
  if bad:
-  for x in bad: print(x)
+  for x in bad+pend: print(x)
   return 1
  if mode=='--record':
-  if not down.is_file(): print(f'BLOCK: {down}: downstream missing'); return 1
-  rec=recorded(down); rec.update({p.as_posix():content_hash(p) for p in ups})
+  rec.update({p.as_posix():(content_hash(p) if p.exists() else 'pending') for p in ups})
   set_fm(down,'upstream','upstream:\n'+''.join(f'  - path: {k}\n    sha256: {v}\n' for k,v in rec.items()).rstrip('\n'))
   print(f'RECORDED: {len(ups)} upstream baseline(s) in {down}')
+ if pend:
+  for x in pend: print(x)
+  return 1
  print('PASS: all upstream artifacts are complete, approved, and current'+(' and match recorded baselines' if mode else ''))
  return 0
 if __name__=='__main__': raise SystemExit(main(sys.argv[1:]))

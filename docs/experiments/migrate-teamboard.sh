@@ -17,6 +17,11 @@ for f in $RQ $SAD docs/design/$F/frontend.md docs/design/$F/backend.md docs/desi
 setfm $RQ owner_role "PM"   # requirements author was the PM (F-19)
 setfm $RQ independent_reviewer_role "QA (requirements-testability, pass-with-conditions @ ade3c57)"
 echo "  done"
+# v0.6.1: directory packages carry governance in README.md frontmatter (wireframes accepted through the design review, PM delegated)
+python3 - <<'PY'
+p='docs/ux/team-board/README.md'; t=open(p).read()
+open(p,'w').write("---\nartifact_id: UX-team-board\nartifact_type: ux-wireframes\nfeature: team-board\nartifact_status: complete\nreview_status: approved\nvalidity: current\nrisk_level: medium\nowner_role: UI/Ux\napproval_reference: docs/workflow/reviews/DESIGN-team-board.review.md\napproved_by_role: PM (delegated)\ndelegation_reference: 剑秋, group chat 2026-10-13\n---\n"+t)
+PY
 echo "## M2. Content gaps the new validators flag, filled from facts already in the repo"
 python3 - <<'PY'
 import re
@@ -35,11 +40,11 @@ t=t.replace('## 6. Validation Baseline','''## 5a. Environment prerequisites
 PY
 echo "  done"
 echo "## M3. Stamp approvals once (after confirming approvals still apply)"
-for f in $RQ $SAD $ADR $IDX $TS $TC $EM $DD $CR $QR $RH; do run python3 $G --stamp-approved $f; done 2>&1 | grep -E "STAMPED|exit=[^0]"
+for f in $UX $RQ $SAD $ADR $IDX $TS $TC $EM $DD $CR $QR $RH; do run python3 $G --stamp-approved $f; done 2>&1 | grep -E "STAMPED|exit=[^0]"
 echo "## M4. Record upstream baselines"
 run python3 $G --record $SAD $RQ $UX
 run python3 $G --record $TS $RQ $SAD
-run python3 $G --record $TC $RQ $SAD
+run python3 $G --record $TC $RQ $SAD $TS
 run python3 $G --record $IDX $RQ $SAD $TS
 run python3 $G --record $DD $RQ $SAD $IDX $TS $TC $UX
 run python3 $G --record $CR $RQ $SAD $IDX $DD
@@ -64,7 +69,7 @@ run python3 $S/team-review/scripts/validate_review.py $CR $RQ $SAD
 run python3 $Q docs/qa/$F --evidence-dir $EV
 run python3 $S/team-release/scripts/validate_release.py $RH
 run python3 $G --downstream $SAD $RQ $UX
-run python3 $G --downstream $TC $RQ $SAD
+run python3 $G --downstream $TC $RQ $SAD $TS
 run python3 $G --downstream $QR $RQ $SAD $TS $TC $EM $DD $CR $UX
 run python3 $G --downstream $RH $QR $CR $DD
 echo "  hash comparability: gate --hash of requirements = evidence baseline sha256?"
@@ -73,7 +78,7 @@ echo "  gate:     $(python3 $G --hash $RQ)"
 
 echo; echo "## S. Stale experiment: change approved requirement (title 1-120 -> 1-100)"
 sed -i 's/title (required, 1–120 chars trimmed)/title (required, 1–100 chars trimmed)/' $RQ
-run python3 $G --downstream $TC $RQ $SAD
+run python3 $G --downstream $TC $RQ $SAD $TS
 run python3 $S/team-requirements/scripts/validate_requirements.py $RQ
 run python3 $Q docs/qa/$F
 run python3 $Q docs/qa/$F --evidence-dir $EV
