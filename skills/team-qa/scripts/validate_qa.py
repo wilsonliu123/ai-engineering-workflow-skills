@@ -120,8 +120,9 @@ def main():
   if paths['qa-report.md'].is_file():
    rt=paths['qa-report.md'].read_text()
    if (fm(rt,'result_counts') or '').split()!=cl.split()[1:]:e.append(f'qa-report result_counts ({fm(rt,"result_counts")}) != evidence ({cl[15:]}); regenerate with --emit-table')
+   s8=re.search(r'(?ms)^## 8\..*?(?=^## 9|\Z)',rt); s8=s8.group(0) if s8 else ''
    for v in out['void']:
-    if v not in rt:e.append(f'void evidence {v} not listed in qa-report §8.3')
+    if v not in s8:e.append(f'void evidence {v} not listed in qa-report §8.3')
  for x in e:print('ERROR:',x)
  if e:return 1
  print('OK: QA artifacts valid');return 0

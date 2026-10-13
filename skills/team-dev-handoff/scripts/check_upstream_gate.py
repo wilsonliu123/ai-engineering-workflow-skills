@@ -69,7 +69,7 @@ def set_fm(f,key,block):
  fm=re.sub(rf'(?ms)^{key}:.*?(?=^\S|\Z)','',fm+'\n').rstrip('\n')
  Path(f).write_text(f'---\n{fm}\n{block}\n---\n{body}',encoding='utf-8')
 
-def norm(x): return re.sub(r'[^a-z0-9]','',(x or '').lower())
+def norm(x): return re.sub(r'[^a-z0-9]','',re.sub(r'\(.*?\)','',(x or '')).lower())  # 'PM (delegated)' == 'PM'
 
 def approval_problems(p,t=None):
  """Shared approval checks (also used by stage validators). Returns BLOCK/STALE strings."""

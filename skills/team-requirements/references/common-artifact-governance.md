@@ -119,6 +119,16 @@ Requirements establish the initial risk level. Downstream stages may raise risk 
 
 Higher risk must result in deeper human review and stronger evidence expectations.
 
+## Running bundled scripts
+
+Scripts live in the skill directory; run them from the repository root with the skill path, e.g. `python3 <skill-dir>/scripts/check_upstream_gate.py ...`. Paths in arguments and recorded baselines are repository-relative.
+
+## Migrating v0.4 artifacts
+
+1. Add `approved_by_role` / `delegation_reference` (and `independent_reviewer_role` where the author approved) to approved artifacts, from the existing review sessions.
+2. After confirming each approval still applies, run `--stamp-approved` once per approved artifact (incl. ADRs and design attachments' package).
+3. Run `--record` for each downstream artifact; re-import evidence with `--requirements --test-plan --design`; regenerate `result_counts` with `validate_qa.py --emit-table`.
+
 ## Observability invariant
 
 Workflow telemetry is non-authoritative and best-effort. Telemetry availability or failure must never change artifact content, `artifact_status`, `review_status`, `validity`, approval authority, or stage-gate decisions. Use `references/observability-protocol.md` for the event contract.
