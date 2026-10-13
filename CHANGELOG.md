@@ -4,6 +4,10 @@ Source of issue IDs: TeamBoard validation report (`docs/skill-validation/VALIDAT
 
 Rules followed: no new skills, no new workflow steps beyond what is listed, scripts shared across skills stay byte-identical.
 
+## v0.6.6 — KnowBase #14
+
+- `validity_problems()` (shared, all 9 copies) also re-hashes every recorded `upstream:` baseline: a changed upstream => STALE, a `pending` one => PENDING, a missing path => BLOCK. Every stage validator now agrees with `check_upstream_gate.py --downstream` even if the owner has not hand-marked `validity: stale`.
+
 ## v0.6.5 — KnowBase #13 (and sweep for the same gap)
 
 - New shared `validity_problems()` in `check_upstream_gate.py` (all 9 copies): `validity: stale|unknown` => BLOCK.

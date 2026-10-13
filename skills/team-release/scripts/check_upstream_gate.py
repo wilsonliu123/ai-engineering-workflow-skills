@@ -88,7 +88,12 @@ def norm(x): return re.sub(r'[^a-z0-9]','',re.sub(r'\(.*?\)','',(x or '')).lower
 def validity_problems(p,t=None):
  """Shared: a stale/unknown artifact is not reviewable or usable (KnowBase #12/#13)."""
  p=Path(p); t=t if t is not None else p.read_text(encoding='utf-8'); v=val(t,'validity')
- return [f'BLOCK: {p}: validity is {v}; re-run check_upstream_gate.py --record against current upstreams, re-assess, then set validity: current'] if v in ('stale','unknown') else []
+ bad=[f'BLOCK: {p}: validity is {v}; re-run check_upstream_gate.py --record against current upstreams, re-assess, then set validity: current'] if v in ('stale','unknown') else []
+ for up,sha in recorded(p).items():  # recorded baselines are re-hashed, so a stale file cannot pass while still marked current (KnowBase #14)
+  if sha=='pending': bad.append(f'PENDING: {p}: upstream {up} recorded as pending; re-run --record once it exists')
+  elif not Path(up).exists(): bad.append(f'BLOCK: {p}: recorded upstream {up} is missing')
+  elif content_hash(up)!=sha: bad.append(f'STALE: {p}: {up} changed since it was recorded ({sha[:12]} -> {content_hash(up)[:12]}); mark validity: stale, re-assess, re-run --record')
+ return bad
 
 def approval_problems(p,t=None):
  """Shared approval checks (also used by stage validators). Returns BLOCK/STALE strings."""
