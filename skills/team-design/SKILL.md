@@ -193,7 +193,7 @@ Before authoritative design work, require the Requirements primary artifact to s
 Propagate `risk_level` from Requirements and raise it if design introduces additional architecture, security, data, migration, compatibility, or operational risk. Do not lower it without explicit human confirmation. When an approved Design is later regenerated because upstream requirements changed, set downstream Dev Prep and affected QA planning to stale through impact reporting.
 
 ## Deterministic upstream gate check
-When execution is available, run `scripts/check_upstream_gate.py` against every required upstream primary artifact before authoritative downstream work. A non-zero exit blocks authoritative progression. Do not override the script result by interpretation; resolve the upstream governance state first.
+When execution is available, run `scripts/check_upstream_gate.py --downstream <this-stage-primary> <upstream ...>` against every required upstream primary artifact (and `docs/ux/<feature-slug>/` when used) before authoritative downstream work; on first creation use `--record` instead, which gates and then writes the content baselines. A non-zero exit (`BLOCK` or `STALE`) blocks authoritative progression. Do not override the script result by interpretation; resolve the upstream governance state first.
 
 ## Workflow observability (v0.4)
 

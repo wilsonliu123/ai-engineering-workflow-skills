@@ -242,7 +242,7 @@ Release handoff preparation requires an exact release candidate identity. Author
 The Release artifact may become human-approved as a document only after the review protocol; that approval records acceptance of the handoff record and does not itself mean production deployment occurred. Deployment/release execution remains a separate real-world fact that must be evidenced.
 
 ## Deterministic upstream gate check
-When execution is available, run `scripts/check_upstream_gate.py` against every required upstream primary artifact before authoritative downstream work. A non-zero exit blocks authoritative progression. Do not override the script result by interpretation; resolve the upstream governance state first.
+When execution is available, run `scripts/check_upstream_gate.py --downstream <this-stage-primary> <upstream ...>` against every required upstream primary artifact (and `docs/ux/<feature-slug>/` when used) before authoritative downstream work; on first creation use `--record` instead, which gates and then writes the content baselines. A non-zero exit (`BLOCK` or `STALE`) blocks authoritative progression. Do not override the script result by interpretation; resolve the upstream governance state first.
 
 ## Workflow observability (v0.3)
 

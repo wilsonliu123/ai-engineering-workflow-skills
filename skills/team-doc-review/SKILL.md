@@ -22,7 +22,7 @@ Read `references/common-artifact-governance.md` and `references/review-method.md
 6. Record the human item-level decision. Continue one item at a time. Do not dump the remaining queue unless explicitly asked.
 7. Keep minor/informational observations for the final recap unless they combine into a material risk.
 8. When all required items are resolved, present a short recap and ask for one final document-level decision: approve, request changes, or reject.
-9. After explicit final decision only, update the reviewed artifact's `review_status` and `approval_reference` when available. Do not change substantive sections.
+9. After explicit final decision only, update the reviewed artifact's `review_status` and `approval_reference` when available. Do not change substantive sections. On approval, also run `check_upstream_gate.py --stamp-approved <artifact>` (any gated skill's copy) to record `approved_sha256`.
 10. If changes are requested, route substantive edits to the owning stage skill. The review session records requested changes and remains traceable.
 11. If interrupted, persist `review_status: in-progress` and `current_item`; next invocation resumes from the next unresolved item.
 12. If the artifact changed since the session baseline, mark the session stale, determine which prior decisions are affected, and re-review those items before final approval.

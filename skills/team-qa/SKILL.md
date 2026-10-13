@@ -165,6 +165,8 @@ Not every feature requires every non-functional category.
 
 When execution is available run `scripts/validate_qa.py docs/qa/<feature-slug>`.
 
+Before authoritative planning or final assessment, run `scripts/check_upstream_gate.py --downstream docs/qa/<feature-slug>/test-spec.md docs/requirements/<feature-slug>.md docs/design/<feature-slug>/sad.md` (use `--record` when the test spec is first created). `BLOCK` or `STALE` (non-zero exit) stops authoritative QA work.
+
 ## Observability
 
 Emit best-effort events such as `qa_requirements_reviewed`, `qa_plan_completed`, `qa_execution_assigned`, `qa_execution_handoff_created`, and `qa_final_assessment_completed`. Telemetry failure must never affect QA artifacts or decisions.
@@ -179,3 +181,4 @@ Emit best-effort events such as `qa_requirements_reviewed`, `qa_plan_completed`,
 - `references/execution-run-template.md`
 - `references/qa-report-template.md`
 - `scripts/validate_qa.py`
+- `scripts/check_upstream_gate.py`

@@ -56,7 +56,14 @@ Supporting files cannot independently authorize downstream execution.
 
 ## Baseline and stale detection
 
-Record exact upstream document paths and Git baselines whenever available. If an approved upstream artifact changes after a downstream artifact was created or approved, preserve the historical approval but mark the downstream artifact `validity: stale` until impact is assessed and required re-review completes.
+Content baselines are machine-maintained by `scripts/check_upstream_gate.py` (byte-identical copy in every gated skill). Do not hand-write hashes.
+
+- On approval of any primary artifact, run `check_upstream_gate.py --stamp-approved <artifact>`; it writes `approved_sha256`. If content later changes while still `approved`, the gate reports `STALE`.
+- When a downstream stage starts authoritative work, run `check_upstream_gate.py --record <downstream.md> <upstream ...>`; it writes `upstream: [{path, sha256}]` into the downstream frontmatter.
+- Every later gate run uses `--downstream <downstream.md> <upstream ...>`; any content change reports `STALE` and exits non-zero.
+- Hashes ignore YAML frontmatter. `sad.md` and dev-prep `index.md` hash their whole package directory (attachments included). A directory argument (e.g. wireframes and UI acceptance under `docs/ux/<feature-slug>/`) is hashed as a whole, so UX artifacts are covered without extra fields.
+
+On `STALE`: preserve the historical approval, set the downstream artifact `validity: stale`, assess impact, re-review as required, then re-run `--record` (and `--stamp-approved` after re-approval). This replaces hand-written "approval carried forward" notes; a purely editorial upstream change still needs one re-record, noted in one line in the downstream change log.
 
 Never attach an old approval to changed content silently.
 
