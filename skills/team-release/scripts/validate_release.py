@@ -14,7 +14,7 @@ def gov(text, errors):
 
 HEAD=["## 1. Delivery intent and scope","## 2. Release candidate identity","## 4. Review evidence","## 5. QA evidence","## 8. Known limitations, standards exceptions, and residual risk","## 10. Human review / acceptance records","## 11. Handoff summary"]
 def main():
- if len(sys.argv)!=2:return 2
+ if len(sys.argv)!=2:print('Usage: validate_release.py <release-handoff.md>  (run from repo root)');return 2
  p=Path(sys.argv[1]);e=[]
  if not p.is_file():print('ERROR: missing release');return 1
  t=p.read_text();gov(t,e)

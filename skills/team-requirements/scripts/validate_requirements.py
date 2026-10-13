@@ -14,7 +14,7 @@ def gov(text, errors):
 
 HEAD=["## 1. Summary","## 2. Goals and non-goals","## 4. Scope","## 6. Functional requirements","## 7. Acceptance criteria","## 12. Open questions and blockers","## 13. Traceability"]
 def main():
- if len(sys.argv)!=2:return 2
+ if len(sys.argv)!=2:print('Usage: validate_requirements.py <docs/requirements/<slug>.md>  (run from repo root)');return 2
  p=Path(sys.argv[1]); e=[]
  if not p.is_file(): print("ERROR: file not found"); return 1
  t=p.read_text(); gov(t,e)

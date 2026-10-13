@@ -73,6 +73,12 @@ test_environment: <environment-or-unknown>
 ## 8. Evidence coverage and limitations
 Summarize mapped evidence, missing evidence, unsupported evidence formats, and tested-target identity gaps.
 
+### 8.1 Known limitations
+Numbered list, copied verbatim into release notes: untested areas (browsers, performance, accessibility), missing evidence, accepted risks with scope, process deviations.
+
+### 8.2 Accepted non-defect issues
+Issues accepted by a named decision (who, reference) that are not defects; do not log them as QA-DEF.
+
 ## 9. Residual risks and decision points
 
 ## 10. QA conclusion for human review

@@ -38,7 +38,7 @@ def record(eid, tc, result, tool, src, args, metrics=None, notes="", defect=None
         "source_tool": tool,
         "result": result,
         "target": {"commit": args.commit, "build": args.build, "environment": args.environment},
-        "executed_at": args.executed_at or datetime.now(timezone.utc).isoformat(),
+        "executed_at": args.executed_at or "unknown",
         "source_reference": src,
         "defect_reference": defect,
         "metrics": metrics or {},
@@ -52,7 +52,8 @@ def parse_junit(path,args):
     root=ET.parse(path).getroot(); out=[]; i=1
     for case in root.iter("testcase"):
         tc=tc_id((case.get("name") or "")+" "+(case.get("classname") or ""))
-        if not tc: continue
+        if not tc:
+            args.dropped.append(f'{case.get("classname") or ""} {case.get("name") or ""}'.strip()); continue
         if case.find("failure") is not None or case.find("error") is not None: st="fail"
         elif case.find("skipped") is not None: st="blocked"
         else: st="pass"
@@ -88,16 +89,19 @@ def main():
     p.add_argument("--requirements",help="requirements primary artifact the run was judged against (baseline)")
     p.add_argument("--test-plan",help="test-cases.md the run was judged against (baseline)")
     a=p.parse_args(); path=Path(a.input)
-    a.baseline=baseline(a.requirements,a.test_plan)
+    a.baseline=baseline(a.requirements,a.test_plan); a.dropped=[]
+    if not a.executed_at: print("WARN: no --executed-at; executed_at recorded as 'unknown' (not the import time)",file=sys.stderr)
     if a.baseline is None: print("WARN: no --requirements/--test-plan; evidence has no baseline and validate_qa --evidence-dir will reject it",file=sys.stderr)
     try: rows=parse_junit(path,a) if a.format=="junit" else parse_json(path,a)
     except Exception as e:
         print(f"ERROR: {e}",file=sys.stderr); return 2
     if not rows:
         print("ERROR: no supported test-case evidence found",file=sys.stderr); return 3
+    for d in a.dropped: print(f"WARN: dropped test without TC-### id: {d}",file=sys.stderr)
     od=Path(a.output_dir); od.mkdir(parents=True,exist_ok=True)
-    for i,r in enumerate(rows,1):
+    start=max([int(m.group(1)) for x in od.glob("EVD-*.json") for m in [re.match(r"EVD-(\d+)\.json$",x.name)] if m]+[0])
+    for i,r in enumerate(rows,start+1):
         r["evidence_id"]=f"EVD-{i:03d}"
         (od/f"EVD-{i:03d}.json").write_text(json.dumps(r,ensure_ascii=False,indent=2)+"\n")
-    print(json.dumps({"normalized":len(rows),"output_dir":str(od)})); return 0
+    print(json.dumps({"normalized":len(rows),"dropped_without_tc":len(a.dropped),"first_id":f"EVD-{start+1:03d}","output_dir":str(od)})); return 0
 if __name__=="__main__": raise SystemExit(main())

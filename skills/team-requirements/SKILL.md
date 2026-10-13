@@ -98,7 +98,7 @@ When modifying an existing requirements file:
 
 Maintain `docs/shared/glossary.md` on demand. Create it when the first material domain term needs a canonical definition. Update it when requirements work discovers a new canonical term, alias, ambiguity, or changed domain meaning. Do not put requirements or implementation notes in the glossary. Reuse existing terms instead of creating synonyms.
 
-Use `references/glossary-template.md`. Glossary updates are supporting shared context; they do not replace the requirements package gate.
+For UI-text requirements, also list product terms that intentionally stay untranslated (brand names, role labels) so text/translation test cases have a reference. Use `references/glossary-template.md`. Glossary updates are supporting shared context; they do not replace the requirements package gate.
 
 ## v0.3 completion and invalidation
 When content is complete enough for review, set `artifact_status: complete`, `review_status: not-started`, and `validity: current`, then pass through the QA requirements-testability gate before final human review. When updating a previously approved requirement, compare its prior baseline and identify downstream Design, Dev Prep, Test Spec, and other artifacts whose recorded requirements baseline no longer matches. Report them as stale candidates; do not silently preserve downstream readiness.

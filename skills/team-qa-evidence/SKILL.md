@@ -41,7 +41,7 @@ Also maintain a lightweight index when practical:
 
 `.ai-workflow/evidence/<feature-slug>/evidence-index.json`
 
-Do not commit raw tool output by default. Preserve external links or source paths instead.
+Do not commit raw tool output by default. Exception (standard step): before final-assessment, copy the raw reports and screenshots the evidence points to into `evidence/<tested-commit-sha>/` and commit them with `git add -f evidence/<sha>/` (they are usually gitignored and overwritten by the next CI run). Point `source_reference` there. Exclude databases or secrets unless the repo is private and the data is synthetic.
 
 ## Normalized evidence contract
 
@@ -88,7 +88,8 @@ Use when QA provides an automated-test, API-test, load-test, stress-test, CI, or
 
 Bundled `scripts/normalize_evidence.py` supports:
 
-- JUnit-style XML with test case names that contain a `TC-###` identifier.
+- JUnit-style XML with test case names that contain a `TC-###` identifier (regex `\bTC-\d{3,}\b`; e.g. Go `TestTC017_x` does NOT match, use `TestX/TC-017_y` subtests). Tests without an id are dropped with a `WARN` line and counted as `dropped_without_tc`.
+- Numbering continues after the highest existing `EVD-###.json` in `--output-dir`; nothing is overwritten.
 - Generic JSON arrays/objects containing `test_case_id` and `result` or `status`.
 - Manual evidence JSON created by this skill.
 

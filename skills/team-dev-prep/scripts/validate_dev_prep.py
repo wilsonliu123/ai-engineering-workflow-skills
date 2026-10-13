@@ -14,7 +14,7 @@ def gov(text, errors):
 
 HEAD=["## 1. Purpose and Handoff Scope","## 2. Authoritative Inputs","## 5. Task Plan","## 6. Validation Baseline","## 7. Risks, Blockers, and Open Items"]
 def main():
- if len(sys.argv)!=4:return 2
+ if len(sys.argv)!=4:print('Usage: validate_dev_prep.py <docs/dev-prep/<slug>> <requirements.md> <sad.md>  (run from repo root)');return 2
  d=Path(sys.argv[1]); req=Path(sys.argv[2]); sad=Path(sys.argv[3]); idx=d/'index.md'; e=[]
  if not idx.is_file() or not req.is_file() or not sad.is_file():print("ERROR: missing input");return 1
  t=idx.read_text(); gov(t,e)

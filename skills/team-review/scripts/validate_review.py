@@ -14,7 +14,7 @@ def gov(text, errors):
 
 HEAD=["## 1. Review Scope and Evidence","## 2. Engineering Standards Review","## 3. Requirement and Acceptance-Criteria Review","## 4. Architecture and Design Review","## 6. Findings","## 8. Test and CI Evidence","## 10. Human Review Summary"]
 def main():
- if len(sys.argv)!=4:return 2
+ if len(sys.argv)!=4:print('Usage: validate_review.py <docs/review/<slug>/code-review.md> <docs/requirements/<slug>.md> <docs/design/<slug>/sad.md>  (run from repo root)');return 2
  p=Path(sys.argv[1]); e=[]
  if not p.is_file():print("ERROR: missing review");return 1
  t=p.read_text(); gov(t,e)

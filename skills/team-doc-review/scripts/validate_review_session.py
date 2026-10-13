@@ -2,7 +2,7 @@
 import re,sys
 from pathlib import Path
 def main():
- if len(sys.argv)!=2:return 2
+ if len(sys.argv)!=2:print('Usage: validate_review_session.py <docs/workflow/reviews/<id>.review.md>  (run from repo root)');return 2
  p=Path(sys.argv[1]);
  if not p.is_file(): print('ERROR: file missing'); return 1
  t=p.read_text(); e=[]

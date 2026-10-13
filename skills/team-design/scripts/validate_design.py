@@ -14,7 +14,7 @@ def gov(text, errors):
 
 HEAD=["## 1. Design summary","## 2. Current-state context","## 3. Proposed architecture","## 4. Data and interfaces","## 7. Design decisions and alternatives","## 8. Risks, assumptions, and open questions","## 10. Design validation points"]
 def main():
- if len(sys.argv)!=3:return 2
+ if len(sys.argv)!=3:print('Usage: validate_design.py <docs/design/<slug>> <docs/requirements/<slug>.md>  (run from repo root)');return 2
  d=Path(sys.argv[1]); rp=Path(sys.argv[2]); s=d/'sad.md'; e=[]
  if not s.is_file() or not rp.is_file():print("ERROR: missing sad or requirements");return 1
  t=s.read_text(); r=rp.read_text(); gov(t,e)
