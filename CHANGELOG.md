@@ -7,6 +7,7 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 ## v0.6.8
 
 - KnowBase #17: `check_upstream_gate.py` `norm()` kept only `[a-z0-9]`, so CJK-only role names (e.g. 全栈工程师) collapsed to '' and distinct roles compared equal, defeating the author-cannot-self-approve check. Now Unicode-aware (`[\W_]`, casefold, strips full-width parens). Shared across all 9 skills.
+- KnowBase #18: governance now states `docs/shared/engineering-standards.md` is a governed upstream (canonical frontmatter, approved once, recorded, STALE on edit) instead of leaving its status undefined. Docs only; gate unchanged.
 
 ## v0.6.7 — KnowBase #16
 

@@ -35,6 +35,10 @@ Do not copy hashes into other frontmatter fields (e.g. `requirements_approved_sh
 
 Do not use a single `status` field as both completion state and human approval state.
 
+## Shared engineering standards
+
+`docs/shared/engineering-standards.md` is a governed upstream, not an exempt input. It carries the same canonical frontmatter (`artifact_type: engineering-standards`, `owner_role: Tech Lead`, `review_status`, `validity`), is approved once at repository level by an independent reviewer, and is `--record`ed like any other upstream. Editing it after approval makes every recording downstream STALE until re-recorded.
+
 ## Approval gate
 
 A downstream stage may enter its authoritative execution mode only when every required upstream package satisfies:
