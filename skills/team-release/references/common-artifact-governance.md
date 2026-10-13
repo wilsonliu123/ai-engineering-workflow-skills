@@ -39,6 +39,8 @@ Do not use a single `status` field as both completion state and human approval s
 
 `docs/shared/engineering-standards.md` is a governed upstream, not an exempt input. It carries the same canonical frontmatter (`artifact_type: engineering-standards`, `owner_role: Tech Lead`, `review_status`, `validity`), is approved once at repository level by an independent reviewer, and is `--record`ed like any other upstream. Editing it after approval makes every recording downstream STALE until re-recorded.
 
+Requirements are upstream of UX and of the engineering standards, so in a requirements document `ux_reference:` and `engineering_standards:` are references only: never `--record` them there, and the gate does not treat them as declared upstreams.
+
 ## Approval gate
 
 A downstream stage may enter its authoritative execution mode only when every required upstream package satisfies:

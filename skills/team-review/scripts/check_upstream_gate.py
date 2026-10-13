@@ -123,7 +123,9 @@ DECLARED_KEYS=('requirements','design','test_spec','test_cases','test_plan','exe
 def declared(down):
  """Upstreams a downstream declares in frontmatter (first token of each value; placeholders/null ignored)."""
  fm=split_fm(Path(down).read_text(encoding='utf-8'))[0]; out={}
+ ref_only=('ux_reference','engineering_standards') if (val(fm,'artifact_type') or '').strip('"\'')=='requirements' else ()  # requirements are upstream of UX/standards: these keys are references, not upstreams
  for k in DECLARED_KEYS:
+  if k in ref_only: continue
   v=val(fm,k)
   if not v: continue
   v=v.split()[0].strip('"\'')
