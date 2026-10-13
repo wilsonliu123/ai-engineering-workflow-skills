@@ -77,6 +77,7 @@ def main():
   t=paths['execution-matrix.md'].read_text();gov(t,e)
   if '# QA Execution Matrix' not in t:e.append('execution-matrix missing title')
   if 'Human decision' not in t:e.append('execution-matrix must record human decision')
+  if not fm(t,'decided_by') or fm(t,'decided_by').startswith('<'):print('WARN: execution-matrix has no decided_by (who chose execution types)')
  if paths['execution-run.md'].is_file():
   t=paths['execution-run.md'].read_text();gov(t,e)
   if not fm(t,'tested_commit') and not fm(t,'tested_build'):e.append('execution-run needs candidate identity')
