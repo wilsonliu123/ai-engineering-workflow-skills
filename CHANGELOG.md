@@ -11,6 +11,9 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 - KnowBase #19: team-dev-prep cited `GOTOOLCHAIN=local` as a pinning example, but it disables toolchain download and uses the local Go. Example now requires installing the exact toolchain in `make setup` plus a `go version` check in `make ci`.
 - KnowBase #18b: gate DECLARED_KEYS now includes `engineering_standards`, so a downstream that declares the standards but never records them is BLOCKed; `engineering_standards: unavailable` is skipped. Shared across all 9 skills.
 - KnowBase #20: in a requirements document the gate no longer treats `ux_reference:` / `engineering_standards:` as declared upstreams (both are downstream of requirements; recording them made a cycle). Governance states they are references only. Other artifact types unchanged.
+- KnowBase #21: team-dev-prep no longer asks to merge `.gitignore.ai-workflow` (the file never existed); git-identity check kept.
+- KnowBase #22: gate usage documents that plain status mode BLOCKs an unapproved upstream while --record/--downstream report AT-RISK (intended). Shared across 9 skills.
+- KnowBase #23: `validate_dev_prep.py` accepts `- Enabling work: <reason>` instead of a REQ citation, matching SKILL.md; task-template gains that line.
 
 ## v0.6.7 — KnowBase #16
 

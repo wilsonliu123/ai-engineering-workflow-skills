@@ -23,6 +23,7 @@ Describe the observable result of this task in one or two paragraphs.
 
 ## 2. Traceability
 - Requirements: REQ-...
+- Enabling work: <only when no REQ applies: why this task is needed>
 - Acceptance criteria: AC-...
 - Design constraints: <links/sections>
 - Interface/schema: <canonical source if applicable>

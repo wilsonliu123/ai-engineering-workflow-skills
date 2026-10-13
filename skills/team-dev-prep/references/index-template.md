@@ -59,7 +59,7 @@ source_commit: <git-sha-or-unknown>
 | Tool / version (pinned) | Needed for | Present? (command run) | Owning task |
 |---|---|---|---|
 - Toolchain pinning: e.g. `GOTOOLCHAIN=local`, exact Node/Go versions; no auto-upgrades.
-- Repo setup: `.gitignore.ai-workflow` merged into `.gitignore` (`cat .gitignore.ai-workflow >> .gitignore`, then de-duplicate); repo-local git identity configured.
+- Repo setup: repo-local git identity configured.
 - Missing tools are installed by a `make setup` (or equivalent) target owned by the first coding task, never by this skill.
 
 ## 6. Validation Baseline

@@ -24,7 +24,9 @@ Approval rules for an `approved` upstream (structured fields, see common-artifac
 frontmatter lives in <dir>/README.md (README frontmatter is excluded from the hash; no README -> BLOCK).
 --record on a missing upstream stores `sha256: pending`; the gate reports PENDING (exit 1) until
 --record is re-run after it exists. An existing but unapproved upstream (not rejected/superseded/stale)
-is recorded with `status: at-risk` (AT-RISK, exit 1); after it is approved and stamped, --record again. In --record/--downstream mode, upstreams declared in the downstream
+is recorded with `status: at-risk` (AT-RISK, exit 1); after it is approved and stamped, --record again.
+Plain status mode (no --record/--downstream) answers "is it approved for use?": the same unapproved upstream
+is BLOCK there unless it carries proceed_at_risk; this difference is intended. In --record/--downstream mode, upstreams declared in the downstream
 frontmatter (requirements:, design:, test_spec:, test_cases:, ux_reference:, ...) must be passed or recorded.
 Content hash: YAML frontmatter of .md files is ignored (governance edits do not count).
 sad.md / index.md hash their whole package directory (attachments included); a

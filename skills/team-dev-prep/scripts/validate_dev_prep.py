@@ -38,7 +38,7 @@ def main():
   x=p.read_text(); m=re.search(r"(?m)^task_id:\s*(TASK-\d{3})",x)
   if not m: continue
   r=set(re.findall(r"\bREQ-\d{3,}\b",x))
-  if not r:e.append(f"{m.group(1)} cites no REQ")
+  if not r and not re.search(r"(?m)^- Enabling work:\s*\S",x):e.append(f"{m.group(1)} cites no REQ (or add '- Enabling work: <reason>')")
   for u in r-reqs:e.append(f"{m.group(1)} cites unknown {u}")
   covered|=r
   b=re.search(r"(?m)^- Blocking tasks:\s*(.*)$",x); deps[m.group(1)]=set(re.findall(r"TASK-\d{3}",b.group(1))) if b else set()
