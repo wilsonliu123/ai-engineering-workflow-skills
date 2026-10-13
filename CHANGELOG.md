@@ -24,6 +24,7 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 ## Deferred (not in scope; no new skill during fixes)
 
 - KnowBase #15 — `validate_ux.py` for the UX package (no UX skill exists in this set). Candidate checks proposed by UI/Ux: (1) README state matrix maps cell-by-cell to requirement §5, no blank cells, N/A with reason matching the requirement; (2) README §1 lists every screen-related AC by full id (e.g. `AC-033`, not `/033`); (3) no 【提案】 copy left; copy not given verbatim by the requirement cites a PD id in decisions; (4) every PNG/SVG listed in README exists. Meanwhile: gate/--downstream cover governance and hashes; `validate_design.py` covers screen, situation-matrix and full REQ/AC coverage downstream.
+- KnowBase TC-072 gap: `validate_qa.py` checks AC coverage only; design-only rules (e.g. interface.md CSRF header) can go untested. Candidate: QA checklist item or validator check for design normative rules. Not added (scope).
 
 ## v0.6.6 — KnowBase #14
 
