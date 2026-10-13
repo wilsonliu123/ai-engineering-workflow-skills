@@ -66,6 +66,7 @@ def status_problems(p):
  got={k:val(t,k) for k in STATUS_OK}
  if got!=STATUS_OK: bad.append(f'BLOCK: {p}: gate failed ({got})')
  ap=val(t,'approved_sha256')
+ if got.get('review_status')=='approved' and not ap: bad.append(f'BLOCK: {p}: approved but no approved_sha256 (run check_upstream_gate.py --stamp-approved {p} once)')
  if ap and ap!=content_hash(p): bad.append(f'STALE: {p}: content changed after approval (approved_sha256 {ap[:12]} != current {content_hash(p)[:12]})')
  return bad
 

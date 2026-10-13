@@ -57,7 +57,7 @@ def main():
  if '--evidence-dir' in a:
   i=a.index('--evidence-dir'); ev=a[i+1] if i+1<len(a) else None; a=a[:i]+a[i+2:]
  if len(a)!=1 or ev=='' or (ev is None and '--evidence-dir' in sys.argv):
-  print('Usage: validate_qa.py <docs/qa/<feature-slug>> [--evidence-dir <normalized-evidence-dir>]  (run from repo root)'); return 2
+  print('Usage: validate_qa.py <docs/qa/<feature-slug>> [--evidence-dir <normalized-evidence-dir>]  (run from repo root; --evidence-dir is REQUIRED when qa-report.md exists)'); return 2
  root=Path(a[0]); e=[]
  paths={n:root/n for n in ['requirements-testability.md','test-spec.md','test-cases.md','execution-matrix.md','execution-run.md','qa-report.md']}
  if not any(p.is_file() for p in paths.values()): e.append('no QA artifacts')
@@ -86,6 +86,7 @@ def main():
   for h in ['## 1. Tested identity and scope','## 2. Execution summary','## 3. Test results','## 4. Acceptance coverage','## 10. QA conclusion for human review']:
    if h not in t:e.append('qa-report missing '+h)
   if not fm(t,'tested_commit') and not fm(t,'tested_build'):e.append('qa-report needs tested identity')
+ if paths['qa-report.md'].is_file() and not ev: e.append('qa-report.md exists: --evidence-dir <normalized-evidence-dir> is required (final-assessment must check evidence baselines)')
  if ev:
   tc=None
   for n in ('qa-report.md','execution-run.md'):
