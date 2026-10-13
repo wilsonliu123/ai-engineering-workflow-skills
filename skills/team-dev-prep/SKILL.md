@@ -177,6 +177,10 @@ Run:
 
 when execution is available.
 
+### 8a. Environment prerequisites (owning step for setup)
+
+Before finishing, check (do not install) every tool the build, tests and CI need: run `command -v`/`--version` for compilers, package managers, `make`, test reporters (e.g. `gotestsum`), and E2E browsers. Record results in `index.md` §5a "Environment prerequisites". Assign anything missing to the first coding task as a `make setup` (or equivalent) target, with pinned versions (e.g. `GOTOOLCHAIN=local`; for Playwright on non-Ubuntu Debian use `playwright install chromium` plus explicit system packages instead of `--with-deps`). Also confirm `.gitignore.ai-workflow` is merged into `.gitignore`, a repo-local git identity exists, and `docs/shared/engineering-standards.md` has a stack-specific section (language, test, CI, toolchain pinning); if it lacks one, list it as a blocker for the Tech Lead.
+
 ### 9. Finish in `review` state
 
 Set the package primary artifact to `artifact_status: complete` when complete enough for human review; otherwise `artifact_status: draft`. Set `review_status: not-started` before review begins.
@@ -214,6 +218,8 @@ When possible, record the repository baseline commit and the exact source docume
 - Task briefs define execution scope for the current task; they do not override requirements or design.
 
 ## Handoff to the coding stage
+
+If a human allows coding before dev-prep approval, they add `proceed_at_risk: <reference>` to `index.md`; the gate then passes with AT-RISK and the handoff cannot be approved until dev-prep is approved. Post-hoc approval without that record is a process deviation to disclose.
 
 After human approval, RD/Coding AI should begin from `docs/dev-prep/<feature-slug>/index.md`, select an approved task, then read the task brief and its referenced authoritative sources before modifying code.
 

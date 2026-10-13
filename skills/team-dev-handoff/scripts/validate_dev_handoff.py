@@ -14,6 +14,7 @@ def main():
  for x in HEAD:
   if x not in t:e.append('missing heading '+x)
  if re.search(r'(?mi)^review_status:\s*approved\b',t) and not re.search(r'(?mi)^approval_reference:\s*(?!null|none|pending)\S+',t): e.append('approved requires approval_reference')
+ if not re.search(r'(?m)^upstream:\s*$',t): e.append('missing upstream: baselines (run check_upstream_gate.py --record <dev-delivery.md> <requirements> <sad.md> <dev-prep index.md> <test-spec> <test-cases> [docs/ux/<slug>])')
  for x in e: print('ERROR:',x)
  if e:return 1
  print('OK: dev handoff valid'); return 0

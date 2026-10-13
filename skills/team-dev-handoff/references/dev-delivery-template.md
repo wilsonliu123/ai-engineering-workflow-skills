@@ -11,9 +11,8 @@ risk_level: <low|medium|high|critical>
 owner_role: Developer
 reviewer_roles: [Tech Lead]
 source_commit: <implementation-head-or-unknown>
-requirements_baseline: <path@commit>
-design_baseline: <path@commit>
 dev_prep_baseline: <path@commit>
+upstream: <written by check_upstream_gate.py --record: requirements, design package, dev-prep, test-spec, test-cases, docs/ux/<slug>>
 approval_reference: null
 ---
 # <Feature> — Development Delivery

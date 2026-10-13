@@ -54,6 +54,14 @@ source_commit: <git-sha-or-unknown>
 |---|---|---|---|---|
 | TASK-001 | ... | REQ-..., AC-... | none | draft |
 
+## 5a. Environment prerequisites
+<!-- Checked facts, not wishes. One row per tool the build/test/CI needs (incl. browsers for E2E). -->
+| Tool / version (pinned) | Needed for | Present? (command run) | Owning task |
+|---|---|---|---|
+- Toolchain pinning: e.g. `GOTOOLCHAIN=local`, exact Node/Go versions; no auto-upgrades.
+- Repo setup: `.gitignore.ai-workflow` merged into `.gitignore` (`cat .gitignore.ai-workflow >> .gitignore`, then de-duplicate); repo-local git identity configured.
+- Missing tools are installed by a `make setup` (or equivalent) target owned by the first coding task, never by this skill.
+
 ## 6. Validation Baseline
 ### 6.1 Shared build/test/check commands or locations
 ### 6.2 Evidence expected from implementation
