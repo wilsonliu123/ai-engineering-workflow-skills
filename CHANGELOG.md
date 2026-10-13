@@ -40,27 +40,59 @@ Fixes: QA: execution-assignment (clarified by 剑秋 on 10/13: the design is cor
 - `validate_qa.py`: when `qa-report.md` exists, `--evidence-dir` is required. **Migration:** evidence without a baseline must be re-imported with `--requirements` / `--test-plan`.
 - team-qa SKILL.md: also `--record` / `--downstream` the test-cases baseline; migration note added. The qa-report template and governance doc mention both rules.
 
-## Deferred (not done: would add complexity or is out of scope for script/template fixes)
-- P1-1 stronger validators (multi-value Covers, Must→AC, traceability table, dev-prep dependency cycles, design state matrix, QA AC coverage, report counts vs evidence, review head_commit vs range): F-05, F-14, D-02, UX-05, T-03, QA: validate_qa.
-- "approved but content changed" check inside each stage validator: the gate covers it; the validators have diverged copies of `gov()`.
-- P1-2 structured approval fields and the author ≠ approver rule (F-11, F-19, F-20).
-- P1-3 batch review in team-doc-review (F-22).
-- P1-4 environment/setup step and per-stage `git add` scope (D-01, D-06, D-13, T-08, F-21).
-- P1-5 remainder: severity vocabulary, `.gitignore.ai-workflow` merge note, `review_status` initial value (F-00, F-02, F-07). emit_event `end`/`complete` (D-12, T-07): the skill docs already say `complete`; no change needed.
-- P2-1 template additions (screen list, five-situation checklist, frontend state alignment: UX-03/04/06/08, F-06/F-10/F-12).
-- P2-2 qa-report table generated from evidence; trimming the test-cases template.
-- P2-3 risk-accepted early start, ADR status on design approval, design-change flow after review (D-03, D-04, D-14, T-04).
-- P2-4 flaky rules, partial-execution state, negative-test guidance, interaction-state evidence (UX-S15), external-attachment field for manual evidence.
-- P2-5 single shared script copy (deliberately kept duplicated; identical-content rule documented in README).
-- P2-6 items (T-09, D-11, D-16 registry, D-17, D-19, F-01). UX-S9/S12/S13 (visual-acceptance template, screenshot naming, manual TC owner).
+## v0.6 — 2026-10-13: every deferred item fixed
 
-- QA follow-up minors: list voided evidence in qa-report; make a missing `decided_by` an error instead of a WARN; guidance for negative / CI-must-fail tests (TC-069 style); check report numbers against evidence.
-- T-03: `head_commit` in code review is hand-written and not compared with the reviewed range.
+Commits: `22612ad` core · `a8c6fc3` requirements · `04058f2` design · `674628e` dev-prep/handoff · `471bc5a` review/release · `791380e` QA+evidence · `36620ef` doc-review/telemetry · `8bb8d1e` fixes · `cdcf367` experiment. Earlier: `8bd5b73` P0-1 · `dbbd1b6` P0-2 · `68beea9` decided_by · `4a088c5` small fixes · `025dc0b` gate/QA blockers.
 
-## Pre-existing, unchanged
-- In v0.4, `validate_review_session.py` fails on 5 of the 6 TeamBoard review sessions (missing `current_item`, `## Resolved/Remaining items`). It still does; nothing here changes that.
+**Migration from v0.4:** see "Migrating v0.4 artifacts" in `common-artifact-governance.md`, and the worked example `docs/experiments/migrate-teamboard.sh`.
 
-### Note: two hash formats (follow-up from QA re-verify)
+### Issue → commit
+
+| Issue IDs | Fix | Commit |
+|---|---|---|
+| D-15, T-01, D-05, D-07, D-18, F-18, F-20, UX-02, UX-07, UX-S11, QA: injection experiment / post-approval edits (a4f891d, d322f75, 02f2daf, 3ca9aa4) | content-hash gate, package and UX-directory hashing, approved_sha256 | 8bd5b73, 025dc0b |
+| QA: rev3 evidence void, QA: evidence commit check, report root cause 3 | evidence baseline + void; validate_qa rejects | dbbd1b6, 025dc0b |
+| Hash unification, evidence binds sad.md, `--evidence-dir` usage | one content_hash() imported everywhere; design baseline | 22612ad |
+| "approved but changed" in stage validators | approval_problems() in every validator | 22612ad |
+| F-11, F-19, F-20, QA: delegated approver = author | approved_by_role, delegation_reference, independent_reviewer_role (enforced) | 22612ad, 8bb8d1e |
+| D-04, D-14, QA: execution-handoff with unapproved upstream | proceed_at_risk + AT-RISK; downstream cannot be approved while at risk; pre-check runs | 22612ad, 674628e, 791380e |
+| F-02, F-04, F-03, F-07, QA: unconfirmed assumptions | initial values; Blocking OQ ⇒ draft (validated); no-human rule; artifact_type only + feature | 22612ad, a8c6fc3 |
+| F-15, F-16, F-17, QA: testability approval/stale | testability has no separate approval and goes stale via `--record`; scope changes re-trigger it | 22612ad |
+| F-21, D-18 (shared worktree), T-08, QA: git identity | git add own paths; repo-local identity in env step | 22612ad, 674628e |
+| F-22 | review_mode batch | 22612ad, 36620ef |
+| P2-5, QA: duplication | kept per-skill (self-contained skills); `tools/check_shared.sh` drift guard; fixed pre-existing drift in team-dev-handoff review-protocol.md | 22612ad |
+| F-05, F-14, QA: traceability consistency (G-03) | multi-Covers, unknown REQ, Must→AC, §13 == Covers | a8c6fc3 |
+| F-06, F-10, F-12, F-13, UX-01, UX-06, QA: five situations / screen list | requirements template: screens, situation matrix (403/404), delivery constraints, decisions, ux_reference | a8c6fc3 |
+| D-10, UX-S14 | copy canonical in requirements; glossary incl. untranslated terms | 4a088c5, a8c6fc3, 04058f2 |
+| UX-03, UX-04, UX-05, UX-08 | frontend situation matrix + guidance; validate_design checks screens/matrix/attachments | 04058f2 |
+| D-03 | ADR approved + stamped with design; validator | 04058f2, 36620ef |
+| T-04 | design change from review routed to team-design | 04058f2, 471bc5a |
+| D-01, D-06, D-13, F-00, F-01, QA: environment | dev-prep step 8a + index §5a (check only; make setup owned by first coding task) | 674628e |
+| D-02 | validate_dev_prep: REQ citations, coverage, deps, cycles | 674628e |
+| D-09 | dev-delivery `upstream:` incl. test plan and UX | 674628e |
+| T-02 | usage messages | 4a088c5 |
+| T-03 | validate_review: head_commit exists and no later code commits | 471bc5a |
+| T-05 | carry-forward notes replaced by re-stamp/re-record; editorial rule | 22612ad, 36620ef |
+| T-06, D-16 | QA owns TC IDs/sub-test names; `Automated test name` field; review maps regressions via QA | 471bc5a, 791380e |
+| T-07, D-12, F-08 | emit_event `end` alias, current-session file, documented invocation | 36620ef |
+| T-09 | incremental re-review §9a | 471bc5a |
+| QA: severity names | one scale blocker/major/minor/note | 471bc5a |
+| D-08, QA: regex drop / numbering / executed_at / skipped | WARN + count, continuing numbering, unknown time, skipped→not-executed | 4a088c5, 791380e |
+| QA: flaky, partial, negative (CI-must-fail), report numbers vs evidence, void listing, generated table, decided_by strict, AC coverage, test-cases fields, testability conclusion/rounds/closed gaps, reviewer roles, Mode 4/5 upstream sets, manual attachments, evidence-index schema, commit normalized JSON | validate_qa + templates + qa-method | 791380e, 8bb8d1e |
+| P2-2 (generated table, trim test-cases) | `--emit-table`; optional fields omitted | 791380e |
+| D-11, D-17, D-19 | qa-method test data / isolation / server logs | 791380e |
+| UX-S9, UX-S12, UX-S13, UX-S15 | ui-acceptance template, `<Screen>-<situation>` naming, manual owner + evidence link, interaction-state evidence | 791380e |
+| UX-S10, UX-S16, QA: run2 archive | `evidence/<sha>/` standard step | 4a088c5, 791380e |
+| Pre-existing review-session failures | completed sessions don't need current_item / Remaining items (skill bug) | 36620ef |
+| P0-3 → P2 | decided_by (now an error) | 68beea9, 791380e |
+| F-09 | no change needed (gate already blocked unapproved upstream) | — |
+
+### Remaining, with justification
+- **One shared copy instead of duplicates (P2-5):** not done, on purpose. Each skill must stay self-contained (each ships its own zip), and the constraint was to keep the copies byte-identical. `tools/check_shared.sh` enforces that.
+- **"REQ rule → TC" numeric index (QA suggestion 5 in the core defect):** not added. It would be a hand-maintained index. Impact analysis is covered by the content-hash gate (STALE), evidence binding, and the every-AC-has-a-TC check.
+- **Legacy TeamBoard review sessions:** 5 sessions miss `review_session_status`, `artifact_path` or `## Resolved items`. That is authoring content, not a skill defect, so they still fail until someone edits them. The skill bug (requiring an open-session queue on completed sessions) is fixed.
+
+### History: two hash formats (resolved in 22612ad)
 The evidence `requirements` hash and the gate's `approved_sha256` are both computed with frontmatter stripped, but with different algorithms: `check_upstream_gate.py` hashes `name + \0 + sha256(body) + \n` per file (so it also works on directories), while `validate_qa.py` / evidence import hash the body directly. Each detects staleness correctly on its own; the values are just not comparable to each other. Deferred: unify into one function.
 
-Also deferred: evidence does not bind `sad.md` (design changes are caught by the gate only); usage line still shows `[--evidence-dir]` in brackets.
+Resolved in 22612ad: hash unified; evidence binds `sad.md` (design changes are caught by the gate only); usage line still shows `[--evidence-dir]` in brackets.
