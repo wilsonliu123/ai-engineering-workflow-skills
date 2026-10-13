@@ -5,7 +5,7 @@ rm -rf $W && gh repo clone wilsonliu123/know-base $W -- -q && cd $W || exit 2
 r(){ echo "\$ check_upstream_gate.py $*"; python3 $G "$@" 2>&1 | sed 's/^/  /'; echo "  exit=${PIPESTATUS[0]}"; }
 mkdir -p docs/design/know-base
 printf -- '---\nartifact_id: DESIGN-know-base\nartifact_type: design\nfeature: know-base\nartifact_status: draft\nreview_status: not-started\nvalidity: current\nowner_role: Tech Lead\nrequirements: docs/requirements/know-base.md\n---\n# draft\n' > docs/design/know-base/sad.md
-echo "## (a) design gate over docs/ux/know-base (README review_status: in-review)"
+echo "## (a) design gate over docs/ux/know-base (UX README not approved)"
 r --record docs/design/know-base/sad.md docs/requirements/know-base.md docs/ux/know-base
 echo "## (a2) directory without README / missing directory"
 cp -r docs/ux/know-base /tmp/kb-noreadme && rm /tmp/kb-noreadme/README.md; r /tmp/kb-noreadme; rm -rf /tmp/kb-noreadme; r docs/ux/missing
@@ -23,3 +23,17 @@ r --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
 echo "## (c) committed test-spec declares design: but it is neither passed nor recorded"
 git checkout -q docs/qa/know-base/test-spec.md
 r --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+echo "## (#7) at-risk recording: test-cases over requirements (approved), test-spec (unapproved), sad (missing)"
+git checkout -q -- docs; rm -rf docs/design; TS=docs/qa/know-base/test-spec.md; D=docs/qa/know-base/test-cases.md
+r --record $D docs/requirements/know-base.md $TS docs/design/know-base/sad.md
+sed -n '/^upstream:/,/^---/p' $D | sed 's/^/  /'
+r --downstream $D docs/requirements/know-base.md
+cp $TS /tmp/kb-ts.bak; echo x >> $TS; echo "## (#7b) at-risk upstream changed"; r --downstream $D docs/requirements/know-base.md; cp /tmp/kb-ts.bak $TS
+echo "## (#7c) approve + stamp test-spec (fixture), then re-record"
+sed -i 's/^artifact_status: draft/artifact_status: complete/;s/^review_status: not-started/review_status: approved\napproved_by_role: QA Lead\napproval_reference: fixture/' $TS
+python3 $G --stamp-approved $TS >/dev/null
+r --downstream $D docs/requirements/know-base.md
+r --record $D docs/requirements/know-base.md $TS docs/design/know-base/sad.md
+echo "## (#7d) rejected upstream still BLOCKs"
+sed -i 's/^review_status: approved/review_status: rejected/' $TS
+r --record $D docs/requirements/know-base.md $TS

@@ -40,6 +40,17 @@ Fixes: QA: execution-assignment (clarified by 剑秋 on 10/13: the design is cor
 - `validate_qa.py`: when `qa-report.md` exists, `--evidence-dir` is required. **Migration:** evidence without a baseline must be re-imported with `--requirements` / `--test-plan`.
 - team-qa SKILL.md: also `--record` / `--downstream` the test-cases baseline; migration note added. The qa-report template and governance doc mention both rules.
 
+## v0.6.2
+
+- `check_upstream_gate.py --record`: an upstream that exists but is not approved (draft, in progress, or changes requested) is now recorded with its hash and `status: at-risk`. The script prints AT-RISK and exits 1. Pending handling is unchanged.
+- Gate and `--downstream`:
+  - An at-risk entry gives AT-RISK and exits 1.
+  - If the at-risk upstream's hash has changed, the result is STALE.
+  - Once the upstream is approved, the gate asks you to re-run `--record`, which clears the status.
+- Rejected and void upstreams still BLOCK.
+- Governance: when two artifacts of the same stage are reviewed together, approve and stamp the upstream first, then re-record the downstream, then approve the downstream.
+- Tests: the QA test-cases case (skill-issues #7) is added to `knowbase-gate.sh`, and its log is in `docs/experiments/stale-gate.md`.
+
 ## v0.6.1 — 2026-10-13 (KnowBase live fixes, check_upstream_gate.py in all 9 copies)
 - A directory upstream (e.g. `docs/ux/<slug>/`) now takes its governance from `<dir>/README.md` frontmatter. It is status- and approval-checked like a file. `--stamp-approved <dir>` writes into the README; the hash covers the whole directory and excludes the README frontmatter. A missing README or a missing directory BLOCKs. Previously a directory always passed the status check.
 - `--record` on an upstream that does not exist yet stores `sha256: pending`. The gate reports `PENDING` and exits 1 until `--record` is re-run after the upstream exists. Re-running `--record` adds or updates entries.

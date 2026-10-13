@@ -414,3 +414,89 @@ $ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requir
   BLOCK: docs/qa/know-base/test-spec.md declares design: docs/design/know-base/sad.md but it is neither passed nor recorded (add it to the gate call / --record)
   exit=1
 ```
+
+
+## v0.6.2 at-risk recording (skill-issues #7)
+
+The TeamBoard migration is unchanged: 10 checks pass and release still BLOCKs. Full `knowbase-gate.sh` run:
+
+```text
+## (a) design gate over docs/ux/know-base (UX README not approved)
+$ check_upstream_gate.py --record docs/design/know-base/sad.md docs/requirements/know-base.md docs/ux/know-base
+  RECORDED: 2 upstream baseline(s) in docs/design/know-base/sad.md
+  AT-RISK: docs/ux/know-base exists but is not approved; recorded with status: at-risk, re-run --record after it is approved and stamped
+  exit=1
+## (a2) directory without README / missing directory
+$ check_upstream_gate.py /tmp/kb-noreadme
+  BLOCK: /tmp/kb-noreadme: directory package has no README.md carrying its governance frontmatter
+  exit=1
+$ check_upstream_gate.py docs/ux/missing
+  BLOCK: docs/ux/missing: missing
+  exit=1
+## (b) test-spec --record while sad.md does not exist
+$ check_upstream_gate.py --record docs/qa/know-base/test-spec.md docs/requirements/know-base.md docs/design/know-base/sad.md
+  RECORDED: 2 upstream baseline(s) in docs/qa/know-base/test-spec.md
+  PENDING: docs/design/know-base/sad.md does not exist yet; recorded as pending, re-run --record once it exists
+  exit=1
+  upstream:
+    - path: docs/requirements/know-base.md
+      sha256: 2c6ac6e73c1bd3714208651febdfaed8e36ca0926c1f2013a7f86a8706685fd8
+    - path: docs/design/know-base/sad.md
+      sha256: pending
+  ---
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+  PENDING: docs/design/know-base/sad.md not created yet (recorded as pending)
+  exit=1
+## (b2) sad.md created and approved (test fixture), then re-record
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+  PENDING: docs/design/know-base/sad.md now exists; re-run --record to baseline it
+  exit=1
+$ check_upstream_gate.py --record docs/qa/know-base/test-spec.md docs/requirements/know-base.md docs/design/know-base/sad.md
+  RECORDED: 2 upstream baseline(s) in docs/qa/know-base/test-spec.md
+  PASS: all upstream artifacts are complete, approved, and current and match recorded baselines
+  exit=0
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+  PASS: all upstream artifacts are complete, approved, and current and match recorded baselines
+  exit=0
+## (c) committed test-spec declares design: but it is neither passed nor recorded
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-spec.md docs/requirements/know-base.md
+  PENDING: docs/design/know-base/sad.md now exists; re-run --record to baseline it
+  exit=1
+## (#7) at-risk recording: test-cases over requirements (approved), test-spec (unapproved), sad (missing)
+$ check_upstream_gate.py --record docs/qa/know-base/test-cases.md docs/requirements/know-base.md docs/qa/know-base/test-spec.md docs/design/know-base/sad.md
+  RECORDED: 3 upstream baseline(s) in docs/qa/know-base/test-cases.md
+  AT-RISK: docs/qa/know-base/test-spec.md exists but is not approved; recorded with status: at-risk, re-run --record after it is approved and stamped
+  PENDING: docs/design/know-base/sad.md does not exist yet; recorded as pending, re-run --record once it exists
+  exit=1
+  upstream:
+    - path: docs/requirements/know-base.md
+      sha256: 2c6ac6e73c1bd3714208651febdfaed8e36ca0926c1f2013a7f86a8706685fd8
+    - path: docs/qa/know-base/test-spec.md
+      sha256: 4f503ba2655e2224ac6b23bcedb23d7fa9c304079cd43e5ecf5c1412e13293c0
+      status: at-risk
+    - path: docs/design/know-base/sad.md
+      sha256: pending
+  ---
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-cases.md docs/requirements/know-base.md
+  AT-RISK: docs/qa/know-base/test-spec.md recorded at risk (not approved yet)
+  PENDING: docs/design/know-base/sad.md not created yet (recorded as pending)
+  exit=1
+## (#7b) at-risk upstream changed
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-cases.md docs/requirements/know-base.md
+  STALE: docs/qa/know-base/test-spec.md changed since docs/qa/know-base/test-cases.md recorded it at risk (4f503ba2655e -> fb88b0ebb2ab)
+  PENDING: docs/design/know-base/sad.md not created yet (recorded as pending)
+  exit=1
+## (#7c) approve + stamp test-spec (fixture), then re-record
+$ check_upstream_gate.py --downstream docs/qa/know-base/test-cases.md docs/requirements/know-base.md
+  AT-RISK: docs/qa/know-base/test-spec.md is now approved; re-run --record to clear at-risk
+  PENDING: docs/design/know-base/sad.md not created yet (recorded as pending)
+  exit=1
+$ check_upstream_gate.py --record docs/qa/know-base/test-cases.md docs/requirements/know-base.md docs/qa/know-base/test-spec.md docs/design/know-base/sad.md
+  RECORDED: 3 upstream baseline(s) in docs/qa/know-base/test-cases.md
+  PENDING: docs/design/know-base/sad.md does not exist yet; recorded as pending, re-run --record once it exists
+  exit=1
+## (#7d) rejected upstream still BLOCKs
+$ check_upstream_gate.py --record docs/qa/know-base/test-cases.md docs/requirements/know-base.md docs/qa/know-base/test-spec.md
+  BLOCK: docs/qa/know-base/test-spec.md: gate failed ({'artifact_status': 'complete', 'review_status': 'rejected', 'validity': 'current'})
+  exit=1
+```

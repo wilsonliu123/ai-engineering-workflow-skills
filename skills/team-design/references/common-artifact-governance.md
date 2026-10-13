@@ -100,6 +100,10 @@ Directory packages (e.g. `docs/ux/<feature-slug>/`) carry governance in `<dir>/R
 
 Upstream not created yet: `--record <downstream> <missing-upstream>` stores `sha256: pending`. Every gate run then reports `PENDING` and exits non-zero (never PASS) until `--record` is re-run after the upstream exists and is approved. Re-running `--record` adds or updates entries and keeps the others.
 
+Upstream not approved yet: `--record` stores its hash with `status: at-risk`, prints `AT-RISK` and exits non-zero; other upstreams are recorded normally. The gate keeps reporting `AT-RISK` (or `STALE` if it changed) until it is approved, stamped and re-recorded. Rejected, superseded or stale upstreams still BLOCK.
+
+- Same-stage co-review order (e.g. test-spec and test-cases reviewed together): approve and `--stamp-approved` the upstream first, re-run `--record` on the downstream, then approve the downstream.
+
 Declared upstreams: in `--record` / `--downstream` mode the gate reads the downstream's frontmatter keys `requirements`, `design`, `test_spec`, `test_cases`, `test_plan`, `execution_matrix`, `review`, `dev_prep`, `dev_delivery`, `ux`, `ux_reference`, `source_requirements` and BLOCKs if a declared path is neither passed on the command line nor recorded. `--downstream` always re-checks every recorded upstream too.
 
 On `STALE`: preserve the historical approval, set the downstream artifact `validity: stale`, assess impact, re-review as required, then re-run `--record` (and `--stamp-approved` after re-approval). This replaces hand-written "approval carried forward" notes; a purely editorial upstream change still needs one re-record, noted in one line in the downstream change log.
