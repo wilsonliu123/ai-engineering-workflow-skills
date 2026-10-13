@@ -23,6 +23,16 @@ def main():
  for h in HEAD:
   if h not in t:e.append('missing heading: '+h)
  if not fm(t,'release_candidate'):e.append('missing release_candidate')
+ # release candidate must equal QA tested_commit and review head (when files are at standard paths)
+ rc=(fm(t,'release_candidate') or '').split()[0] if fm(t,'release_candidate') else ''
+ feat=fm(t,'feature')
+ if rc and feat:
+  for path,key in ((f'docs/qa/{feat}/qa-report.md','tested_commit'),):
+   q=Path(path)
+   if q.is_file():
+    v=(fm(q.read_text(),key) or '').split()
+    if v and not (v[0].startswith(rc) or rc.startswith(v[0])):e.append(f'release_candidate {rc} != {path} {key} {v[0]}')
+ if '## 8.' in t and re.search(r'(?ms)^## 8\..*?(?=^## 9)',t) and not re.search(r'(?m)^\s*(\d+\.|-)\s+\S',re.search(r'(?ms)^## 8\..*?(?=^## 9|\Z)',t).group(0)):e.append('section 8 known limitations is empty (copy QA report 8.1)')
  for x in e:print('ERROR:',x)
  if e:return 1
  print('OK: release valid');return 0

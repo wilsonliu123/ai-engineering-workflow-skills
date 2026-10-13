@@ -54,7 +54,7 @@ test_environment: <environment-or-unknown>
 
 ## 5. Defects and blockers
 ### QA-DEF-001 — <Title>
-- **Severity:**
+- **Severity:** blocker | major | minor | note
 - **TC / REQ / AC:**
 - **Tested version:**
 - **Preconditions:**

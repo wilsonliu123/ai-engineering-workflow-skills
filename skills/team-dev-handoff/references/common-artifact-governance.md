@@ -109,6 +109,10 @@ When review requests content changes:
 4. Re-enter document review.
 5. Do not let `team-doc-review` rewrite substantive source content on behalf of the owning stage skill.
 
+## Severity vocabulary
+
+Findings and defects (code review, QA defects, release blockers) use one scale: `blocker` (unsafe to proceed), `major` (must fix or explicitly accept before release), `minor`, `note`. `risk_level` (`low|medium|high|critical`) is a separate artifact-level field and is never used for findings.
+
 ## Risk propagation
 
 Requirements establish the initial risk level. Downstream stages may raise risk when new technical, security, data, migration, compatibility, or operational concerns are discovered. Do not lower a previously approved risk level without explicit human confirmation.

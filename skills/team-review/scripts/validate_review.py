@@ -24,6 +24,19 @@ def main():
   if h not in t:e.append("missing heading: "+h)
  for k in ["base_commit","head_commit","review_target"]:
   if not fm(t,k):e.append("missing "+k)
+ sev=re.findall(r"(?m)^- Severity:\s*(\S+)",t)
+ for s in sev:
+  if s not in {"blocker","major","minor","note","blocker|major|minor|note"} and not s.startswith("blocker"):e.append("invalid finding severity: "+s)
+ # T-03: head_commit must be the reviewed code state
+ import subprocess
+ h=(fm(t,"head_commit") or "").split()[0] if fm(t,"head_commit") else ""
+ if h and h!="unknown" and not h.startswith("<"):
+  g=lambda *a: subprocess.run(["git",*a],capture_output=True,text=True)
+  if g("rev-parse","--git-dir").returncode==0:
+   if g("cat-file","-e",h+"^{commit}").returncode!=0:e.append(f"head_commit {h} is not a commit in this repository")
+   else:
+    later=g("log","--format=%h %s",f"{h}..HEAD","--","." ,":(exclude)docs",":(exclude)evidence",":(exclude).ai-workflow",":(exclude)reports").stdout.strip()
+    if later:e.append(f"code changed after reviewed head_commit {h} (re-review the delta, then update head_commit): "+"; ".join(later.splitlines()[:5]))
  for x in e:print("ERROR:",x)
  if e:return 1
  print("OK: code review valid");return 0

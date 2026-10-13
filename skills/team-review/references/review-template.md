@@ -83,6 +83,13 @@ List only actual execution evidence. For each item include revision/environment 
 ## 9. Open Risks and Unverified Areas
 List unresolved assumptions, missing evidence, partial review areas, and anything QA/humans must pay attention to.
 
+### 9a. Re-review (incremental) — repeat per round
+- Round / date:
+- Previous head_commit → new head_commit (diff reviewed: `git diff <prev>..<new>`):
+- Findings re-checked (REV-xxx → resolved / still open, evidence):
+- New findings in the delta:
+<!-- Update head_commit in frontmatter to the new commit; validate_review.py fails if code changed after head_commit. -->
+
 ## 10. Human Review Summary
 - Open blocker findings: <count>
 - Open major findings: <count>

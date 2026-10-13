@@ -167,6 +167,8 @@ Each actionable finding must include:
 - recommended disposition,
 - status (`open`, `resolved`, `accepted-risk`, or `not-applicable`) only when supported by actual review state.
 
+For every finding that needs a regression test, name the target TC from `test-cases.md` and ask QA (owner of TC IDs and test names) to confirm or create it; never invent TC numbers or sub-test names. If the finding requires a design change, record it and route it to `team-design` (the design owner edits; the reviewer does not).
+
 Use severity based on impact, not stylistic preference:
 
 - `blocker` — unsafe to proceed; likely severe security/data loss/correctness issue or a hard violation of a must-have requirement.
