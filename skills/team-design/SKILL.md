@@ -57,6 +57,8 @@ Create only when applicable:
 
 Do not create empty placeholder files for non-applicable areas. `sad.md` must state which optional documents apply.
 
+UX artifacts (wireframes, copy deck, UI acceptance) live in `docs/ux/<feature-slug>/` and are referenced by `ux_reference`; they are produced by the UX role, not by this skill. Gate them as a directory (`check_upstream_gate.py --record docs/design/<slug>/sad.md docs/requirements/<slug>.md docs/ux/<slug>`).
+
 ## Workflow
 
 ### 1. Resolve the work item
@@ -185,7 +187,11 @@ When possible, record the repository baseline commit and the exact requirement p
 
 Create an ADR under `docs/shared/adr/` only when a design decision is long-lived, cross-module, difficult to reverse, involves material trade-offs, changes a core boundary/contract, or requires an exception to engineering standards. Do not create ADRs for routine implementation choices.
 
-Use `references/adr-template.md`. The SAD must reference applicable ADRs. ADRs require human review; an unapproved ADR cannot authorize downstream implementation.
+Use `references/adr-template.md`. The SAD must reference applicable ADRs. ADRs require human review; an unapproved ADR cannot authorize downstream implementation. ADRs are approved together with the design: the design review session lists each ADR as an item, and the approval step updates and stamps the ADR (`review_status`, `approved_by_role`, `--stamp-approved`) in the same commit. `validate_design.py` fails when an approved SAD cites an unapproved ADR.
+
+## Design change requested by code review
+
+When `team-review` finds that the design must change, the reviewer records the finding only. The design owner updates the design through this skill (new commit), the design returns to `review_status: in-progress` → re-approval, and downstream artifacts go STALE through the gate; no hand-written carry-forward notes.
 
 ## v0.2 preflight gate
 Before authoritative design work, require the Requirements primary artifact to satisfy `artifact_status: complete`, `review_status: approved`, `validity: current`. Record the exact requirements baseline commit/content identity. If the requirement is not approved/current, stop authoritative design; only non-authoritative impact analysis may proceed.

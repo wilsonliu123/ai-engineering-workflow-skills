@@ -25,6 +25,24 @@ def main():
  req=set(re.findall(r"\bREQ-[A-Z0-9_-]+\b",r)); ac=set(re.findall(r"\bAC-[A-Z0-9_-]+\b",r))
  if req and not (set(re.findall(r"\bREQ-[A-Z0-9_-]+\b",t))&req):e.append("SAD lacks REQ traceability")
  if ac and not (set(re.findall(r"\bAC-[A-Z0-9_-]+\b",t))&ac):e.append("SAD lacks AC traceability")
+ # attachments (D-05/UX-05): every optional doc must carry feature + artifact_status
+ for a in ['frontend.md','backend.md','interface.md']:
+  ap=d/a
+  if ap.is_file():
+   at=ap.read_text()
+   if not fm(at,'artifact_status'):e.append(f"{a} missing artifact_status")
+ fe=d/'frontend.md'
+ screens=sorted(set(re.findall(r"(?m)^\|\s*(S\d+[a-z]?)\s*\|",r)))
+ if fe.is_file():
+  ft=fe.read_text()
+  for sid in screens:
+   if not re.search(rf"\b{sid}\b",ft):e.append(f"frontend.md does not cover screen {sid}")
+  if '### Situation coverage' in r and 'Situation matrix' not in ft:e.append("frontend.md lacks the situation matrix required by the requirement")
+ # ADRs cited by an approved SAD must be approved (D-03)
+ if fm(t,'review_status')=='approved':
+  for adr in sorted(set(re.findall(r"\bADR-\d{3}\b",t))):
+   hits=list(Path('docs/shared/adr').glob(adr+'*.md'))
+   if hits and fm(hits[0].read_text(),'review_status')!='approved':e.append(f"{adr} cited by approved SAD is not approved ({hits[0]})")
  for x in e:print("ERROR:",x)
  if e:return 1
  print("OK: design valid");return 0
