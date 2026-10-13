@@ -85,6 +85,11 @@ def set_fm(f,key,block):
 
 def norm(x): return re.sub(r'[^a-z0-9]','',re.sub(r'\(.*?\)','',(x or '')).lower())  # 'PM (delegated)' == 'PM'
 
+def validity_problems(p,t=None):
+ """Shared: a stale/unknown artifact is not reviewable or usable (KnowBase #12/#13)."""
+ p=Path(p); t=t if t is not None else p.read_text(encoding='utf-8'); v=val(t,'validity')
+ return [f'BLOCK: {p}: validity is {v}; re-run check_upstream_gate.py --record against current upstreams, re-assess, then set validity: current'] if v in ('stale','unknown') else []
+
 def approval_problems(p,t=None):
  """Shared approval checks (also used by stage validators). Returns BLOCK/STALE strings."""
  p=Path(p); t=t if t is not None else p.read_text(encoding='utf-8'); bad=[]

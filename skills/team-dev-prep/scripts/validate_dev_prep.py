@@ -2,7 +2,7 @@
 import re,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from check_upstream_gate import approval_problems  # shared: approved_sha256, approved_by_role, author != approver
+from check_upstream_gate import approval_problems, validity_problems  # shared: approved_sha256, approved_by_role, author != approver
 def fm(text,key):
  m=re.search(rf"(?m)^{re.escape(key)}:\s*(.+?)\s*$",text); return m.group(1).strip() if m else None
 def gov(text, errors):
@@ -19,7 +19,7 @@ def main():
  if len(sys.argv)!=4:print('Usage: validate_dev_prep.py <docs/dev-prep/<slug>> <requirements.md> <sad.md>  (run from repo root)');return 2
  d=Path(sys.argv[1]); req=Path(sys.argv[2]); sad=Path(sys.argv[3]); idx=d/'index.md'; e=[]
  if not idx.is_file() or not req.is_file() or not sad.is_file():print("ERROR: missing input");return 1
- t=idx.read_text(); gov(t,e); e+=approval_problems(idx,t)
+ t=idx.read_text(); gov(t,e); e+=approval_problems(idx,t)+validity_problems(idx,t)
  for h in HEAD:
   if h not in t:e.append("missing heading: "+h)
  tasks=list((d/'tasks').glob('*.md')) if (d/'tasks').is_dir() else []

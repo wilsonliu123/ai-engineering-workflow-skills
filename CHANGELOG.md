@@ -4,6 +4,12 @@ Source of issue IDs: TeamBoard validation report (`docs/skill-validation/VALIDAT
 
 Rules followed: no new skills, no new workflow steps beyond what is listed, scripts shared across skills stay byte-identical.
 
+## v0.6.5 — KnowBase #13 (and sweep for the same gap)
+
+- New shared `validity_problems()` in `check_upstream_gate.py` (all 9 copies): `validity: stale|unknown` => BLOCK.
+- Called by every stage validator next to `approval_problems()`: requirements, design (sad + frontend/backend/interface), dev-prep, review, QA (all QA files incl. test-cases; replaces the v0.6.4 local check), dev-handoff, release.
+- `validate_review_session.py` is not changed: review sessions carry no `validity` field.
+
 ## v0.6.4 — KnowBase #12
 
 - `validate_qa.py` fails (exit 1) when any QA artifact has `validity: stale` or `unknown`; it used to report OK.

@@ -3,7 +3,7 @@ import json,re,sys
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from check_upstream_gate import content_hash, approval_problems  # one hash algorithm for gate, evidence and validate_qa
+from check_upstream_gate import content_hash, approval_problems, validity_problems  # one hash algorithm for gate, evidence and validate_qa
 def baseline(req,plan,design):
  """Evidence baseline: requirements, test-cases and design package the run was judged against."""
  if not (req and plan and design): return None
@@ -66,10 +66,8 @@ def main():
  root=Path(a[0]); e=[]
  paths={n:root/n for n in ['requirements-testability.md','test-spec.md','test-cases.md','execution-matrix.md','execution-run.md','qa-report.md']}
  if not any(p.is_file() for p in paths.values()): e.append('no QA artifacts')
- for n,p in paths.items():  # KnowBase #12: stale/unknown artifacts are not reviewable
-  if p.is_file() and fm(p.read_text(),'validity') in ('stale','unknown'): e.append(f'{n}: validity is {fm(p.read_text(),"validity")}; re-run check_upstream_gate.py --record and set validity: current before review')
  if paths['requirements-testability.md'].is_file():
-  t=paths['requirements-testability.md'].read_text(); gov(t,e);e+=approval_problems(paths['requirements-testability.md'],t)
+  t=paths['requirements-testability.md'].read_text(); gov(t,e);e+=approval_problems(paths['requirements-testability.md'],t)+validity_problems(paths['requirements-testability.md'],t)
   for h in ['## 2. Testability summary','## 3. Blocking gaps','## 5. Non-functional criteria needing measurable targets']:
    if h not in t:e.append('requirements-testability missing '+h)
   c=re.search(r'(?mi)^[-*\s]*\**conclusion:?\**\s*`?(pass-with-conditions|pass|block)\b',t)
@@ -78,11 +76,12 @@ def main():
   rows=[l for l in (g.group(1).splitlines() if g else []) if re.match(r'\s*\|\s*G-?\w+',l)]
   if c and c.group(1).lower()=='pass' and rows:e.append('requirements-testability lists blocking gaps but concludes pass')
  if paths['test-spec.md'].is_file():
-  t=paths['test-spec.md'].read_text();gov(t,e);e+=approval_problems(paths['test-spec.md'],t)
+  t=paths['test-spec.md'].read_text();gov(t,e);e+=approval_problems(paths['test-spec.md'],t)+validity_problems(paths['test-spec.md'],t)
   for h in ['## 1. Purpose and scope','## 2. Risk assessment','## 5. Acceptance coverage plan','## 6. Entry criteria','## 7. Completion criteria']:
    if h not in t:e.append('test-spec missing '+h)
  if paths['test-cases.md'].is_file():
   t=paths['test-cases.md'].read_text(); tcs=sorted(set(re.findall(r'(?m)^##\s+(TC-\d{3,})\b',t)))
+  e+=validity_problems(paths['test-cases.md'],t)
   if '## Coverage index' not in t:e.append('test-cases missing coverage index')
   for k in ('artifact_id','review_status','artifact_status'):
    if not fm(t,k):e.append('test-cases missing '+k)
@@ -92,15 +91,15 @@ def main():
    for x in sorted(acs-set(re.findall(r'\bAC-\d{3,}\b',t))):e.append(f'{x} has no test case')
   if re.search(r'(?im)^- \*\*Execution assignment:\*\*\s*(manual|automated|hybrid)\s*$',t): e.append('test-cases must not contain AI-selected execution assignment before human assignment')
  if paths['execution-matrix.md'].is_file():
-  t=paths['execution-matrix.md'].read_text();gov(t,e);e+=approval_problems(paths['execution-matrix.md'],t)
+  t=paths['execution-matrix.md'].read_text();gov(t,e);e+=approval_problems(paths['execution-matrix.md'],t)+validity_problems(paths['execution-matrix.md'],t)
   if '# QA Execution Matrix' not in t:e.append('execution-matrix missing title')
   if 'Human decision' not in t:e.append('execution-matrix must record human decision')
   if not fm(t,'decided_by') or fm(t,'decided_by').startswith('<'):e.append('execution-matrix needs decided_by (who chose execution types)')
  if paths['execution-run.md'].is_file():
-  t=paths['execution-run.md'].read_text();gov(t,e);e+=approval_problems(paths['execution-run.md'],t)
+  t=paths['execution-run.md'].read_text();gov(t,e);e+=approval_problems(paths['execution-run.md'],t)+validity_problems(paths['execution-run.md'],t)
   if not fm(t,'tested_commit') and not fm(t,'tested_build'):e.append('execution-run needs candidate identity')
  if paths['qa-report.md'].is_file():
-  t=paths['qa-report.md'].read_text();gov(t,e);e+=approval_problems(paths['qa-report.md'],t)
+  t=paths['qa-report.md'].read_text();gov(t,e);e+=approval_problems(paths['qa-report.md'],t)+validity_problems(paths['qa-report.md'],t)
   for h in ['## 1. Tested identity and scope','## 2. Execution summary','## 3. Test results','## 4. Acceptance coverage','## 10. QA conclusion for human review']:
    if h not in t:e.append('qa-report missing '+h)
   if not fm(t,'tested_commit') and not fm(t,'tested_build'):e.append('qa-report needs tested identity')
