@@ -63,7 +63,7 @@ Read `references/observability-protocol.md` before execution. Start a telemetry 
    - Run `scripts/validate_requirements.py <requirements-file>`.
    - Fix structural errors before presenting the result.
    - If critical decisions remain open, keep `artifact_status: draft` and list blockers.
-   - If the document is complete enough for human review, set `review_status: in-progress`.
+   - If the document is complete enough for human review, set `artifact_status: complete` and keep `review_status: not-started` (it becomes `in-progress` when the human review starts).
    - Never set `review_status: approved` unless the user explicitly confirms approval or an authoritative approval record is provided.
 
 6. **QA testability gate, then human review**
@@ -101,4 +101,4 @@ Maintain `docs/shared/glossary.md` on demand. Create it when the first material 
 For UI-text requirements, also list product terms that intentionally stay untranslated (brand names, role labels) so text/translation test cases have a reference. Use `references/glossary-template.md`. Glossary updates are supporting shared context; they do not replace the requirements package gate.
 
 ## v0.3 completion and invalidation
-When content is complete enough for review, set `artifact_status: complete`, `review_status: not-started`, and `validity: current`, then pass through the QA requirements-testability gate before final human review. When updating a previously approved requirement, compare its prior baseline and identify downstream Design, Dev Prep, Test Spec, and other artifacts whose recorded requirements baseline no longer matches. Report them as stale candidates; do not silently preserve downstream readiness.
+When content is complete enough for review, set `artifact_status: complete`, `review_status: not-started`, and `validity: current`, then pass through the QA requirements-testability gate before final human review. When updating a previously approved requirement, run `scripts/check_upstream_gate.py --downstream <artifact> docs/requirements/<slug>.md` for each downstream artifact (Design, Dev Prep, Test Spec, test cases, requirements-testability, UX) and report every `STALE`; do not silently preserve downstream readiness.

@@ -6,12 +6,14 @@ Use this structure for `docs/requirements/<feature-slug>.md`. Sections marked **
 ---
 artifact_id: REQDOC-<feature-slug>
 artifact_type: requirements
-document_type: requirements
+feature: <feature-slug>
 artifact_status: draft
 review_status: not-started
 validity: current
 risk_level: <low|medium|high|critical>
 approval_reference: null
+approved_by_role: null
+delegation_reference: null
 owner_role: Product Owner
 reviewer_roles:
   - Tech Lead
@@ -19,6 +21,7 @@ reviewer_roles:
 source_commit: <git commit, or "unavailable" when no git context exists>
 engineering_standards: docs/shared/engineering-standards.md | unavailable
 related_work_item: <issue/ticket/url/id if available, otherwise omit>
+ux_reference: <docs/ux/<feature-slug>/ when the feature has UI, otherwise omit>
 ---
 
 # <Feature or change name>
@@ -44,6 +47,16 @@ related_work_item: <issue/ticket/url/id if available, otherwise omit>
 ## 5. User and business flows
 <!-- Required when the feature changes a workflow. Describe normal and important alternate/error flows. -->
 
+### Screens (UI features only)
+| Screen ID | Name | Entry point |
+|---|---|---|
+| S1 | ... | ... |
+
+### Situation coverage (UI/API features)
+For every screen or endpoint, state the behavior for the five situations; cells without an AC must say how they are verified.
+| Screen / endpoint | Normal | Invalid input | No permission (403) | Not found / hidden (404) | Empty data | Network loss / timeout |
+|---|---|---|---|---|---|---|
+
 ## 6. Functional requirements
 ### REQ-001 — <short title>
 - **Requirement:** ...
@@ -55,7 +68,7 @@ related_work_item: <issue/ticket/url/id if available, otherwise omit>
 
 ## 7. Acceptance criteria
 ### AC-001 — <observable outcome>
-- **Covers:** REQ-001
+- **Covers:** REQ-001  (comma-separate when an AC covers several REQs; §13 must match)
 - **Given:** ...
 - **When:** ...
 - **Then:** ...
@@ -79,12 +92,23 @@ related_work_item: <issue/ticket/url/id if available, otherwise omit>
 ## 10. Dependencies and constraints
 - Reference applicable repository-wide constraints from `docs/shared/engineering-standards.md` instead of duplicating them.
 - External systems, contracts, platform constraints, regulatory constraints, deadlines if authoritative.
+### Delivery constraints
+- Confirmed technology/stack or delivery constraints requested by the owner (not product behavior). Do not turn them into REQ items.
 
 ## 11. Assumptions
-- A-001: <explicit assumption and impact if false>
+- A-001: <explicit assumption and impact if false> — Needs confirmation by: <role>
+
+### 11a. Confirmed decisions
+| ID | Decision | Decided by (role) | Reference |
+|---|---|---|---|
+| D-001 | ... | ... | ... |
+
+### 11b. Glossary and copy
+- Canonical terms live in `docs/shared/glossary.md`, including terms that stay untranslated (brand, role labels). UI copy is canonical in this document (or the `ux_reference` copy deck); design and test cases quote it, never re-word it.
 
 ## 12. Open questions and blockers
 - OQ-001: <question> — Owner role: <role> — Blocking: Yes/No
+<!-- Any Blocking: Yes keeps artifact_status: draft (validator enforced). With no human reachable, record the choice as an Assumption + OQ instead of deciding silently. -->
 
 ## 13. Traceability
 | Requirement | Acceptance criteria | Source / rationale |
@@ -109,6 +133,7 @@ related_work_item: <issue/ticket/url/id if available, otherwise omit>
 - `artifact_status: complete`: content is complete enough for human review.
 - `review_status: not-started|in-progress|changes-requested|approved|rejected`: human review lifecycle.
 - `validity: current|stale|unknown`: whether the artifact still matches its authoritative upstream/baseline context.
+- Initial values: `artifact_status: draft`, `review_status: not-started`, `validity: current`; when complete, stay `not-started` until QA testability review and human review begin.
 - `review_status: approved` requires an explicit human decision or authoritative external record and an `approval_reference` when available.
 
 ## Git metadata

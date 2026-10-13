@@ -26,8 +26,31 @@ def main():
  req=set(re.findall(r"(?m)^###\s+(REQ-\d{3,})\b",t)); ac=set(re.findall(r"(?m)^###\s+(AC-\d{3,})\b",t))
  if not req:e.append("no REQ IDs")
  if not ac:e.append("no AC IDs")
- covers=set(re.findall(r"(?m)^- \*\*Covers:\*\*\s*(REQ-\d{3,})\b",t))
- if covers-req:e.append("AC references unknown REQ")
+ if not fm(t,"feature"):e.append("missing feature in frontmatter")
+ # AC -> REQ (multi-value Covers, F-05/F-14)
+ ac_cov={}
+ for m in re.finditer(r"(?ms)^###\s+(AC-\d{3,})\b(.*?)(?=^##)",t):
+  c=re.search(r"(?m)^- \*\*Covers:\*\*\s*(.+)$",m.group(2))
+  ac_cov[m.group(1)]=set(re.findall(r"REQ-\d{3,}",c.group(1))) if c else set()
+  if not ac_cov[m.group(1)]:e.append(f"{m.group(1)} has no Covers: REQ")
+  for r in ac_cov[m.group(1)]-req:e.append(f"{m.group(1)} covers unknown {r}")
+ # Must REQ needs >=1 AC
+ for m in re.finditer(r"(?ms)^###\s+(REQ-\d{3,})\b(.*?)(?=^##)",t):
+  if re.search(r"(?m)^- \*\*Priority:\*\*\s*Must",m.group(2)) and not any(m.group(1) in v for v in ac_cov.values()):e.append(f"Must requirement {m.group(1)} has no acceptance criterion")
+ # §13 traceability must match Covers
+ sec=re.search(r"(?ms)^## 13\. Traceability(.*?)(?=^## |\Z)",t)
+ if sec:
+  rows={}
+  for line in sec.group(1).splitlines():
+   c=[x.strip() for x in line.strip().strip("|").split("|")]
+   if c and re.fullmatch(r"REQ-\d{3,}",c[0]):rows[c[0]]=set(re.findall(r"AC-\d{3,}",c[1] if len(c)>1 else ""))
+  for r in sorted(req):
+   want={a for a,v in ac_cov.items() if r in v}
+   if r not in rows:e.append(f"traceability table missing {r}")
+   elif rows[r]!=want:e.append(f"traceability {r} lists {sorted(rows[r])} but Covers give {sorted(want)}")
+ # Blocking OQ => draft (F-04)
+ if fm(t,"artifact_status")=="complete" and re.search(r"(?mi)^- OQ-\d+:.*Blocking:\s*Yes\b",t):e.append("Blocking: Yes open question requires artifact_status: draft")
+ if fm(t,"document_type"):print("WARN: document_type is redundant; use artifact_type only")
  for x in e:print("ERROR:",x)
  if e:return 1
  print("OK: requirements valid");return 0
