@@ -26,7 +26,7 @@ Do not create empty optional guides.
 1. Resolve exact implementation identity: PR/commit/head, local change scope, build/artifact identity when available.
 2. Compare actual changes to dev-prep tasks, requirements/AC, SAD/interfaces, ADRs, and engineering standards.
 3. Record implemented scope, omitted/deferred scope, and any implementation/design deviation. Do not silently normalize deviations.
-4. Record only commands/tests/checks actually executed, with result and revision/environment when known. “Test exists” is not “test passed.”
+4. Cite the per-task entry gate, CI result, review record and execution path defined in `team-dev-prep` "Handoff to the coding stage". Record only commands/tests/checks actually executed, with result and revision/environment when known. “Test exists” is not “test passed.”
 5. Identify documentation updates caused by the implementation and produce only those required guides.
 6. Record known limitations, unresolved risks, migration/config changes, and areas code review/QA should emphasize.
 7. Set `artifact_status: complete` when factual handoff is complete, otherwise `draft`; set `review_status: not-started`; set `validity: current` relative to the implementation baseline.

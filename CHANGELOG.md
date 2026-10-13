@@ -14,6 +14,7 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 - KnowBase #21: team-dev-prep no longer asks to merge `.gitignore.ai-workflow` (the file never existed); git-identity check kept.
 - KnowBase #22: gate usage documents that plain status mode BLOCKs an unapproved upstream while --record/--downstream report AT-RISK (intended). Shared across 9 skills.
 - KnowBase #23: `validate_dev_prep.py` accepts `- Enabling work: <reason>` instead of a REQ citation, matching SKILL.md; task-template gains that line.
+- KnowBase #24: no coding skill existed. Without adding a skill, team-dev-prep "Handoff to the coding stage" now defines the per-task contract: entry gate (`--downstream` on dev-prep index), per-task evidence, review record path, E2E execution path (only the production path counts), and UX acceptance under `docs/ux-acceptance/`. team-dev-handoff step 4 cites it. Validators unchanged.
 
 ## v0.6.7 — KnowBase #16
 

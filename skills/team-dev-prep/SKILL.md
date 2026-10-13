@@ -225,6 +225,13 @@ After human approval, RD/Coding AI should begin from `docs/dev-prep/<feature-slu
 
 The coding stage may use any team-approved AI coding tool or personal workflow. The standardized contract is the task package and its upstream sources, not the individual's prompting style.
 
+Per-task coding contract (there is no separate coding skill; this is it):
+1. **Entry gate:** before starting each TASK, `check_upstream_gate.py --downstream docs/dev-prep/<feature-slug>/index.md <its recorded upstreams>` must PASS. Coding never edits dev-prep or any upstream; a needed change goes back to the owning stage as a revision.
+2. **Evidence per TASK:** the implementing commit, the repository CI entry (e.g. `make ci`) result on that commit, the skill version used, and the recording path. `team-dev-handoff` §5 cites these; do not reconstruct them afterwards.
+3. **Code review record:** `docs/workflow/reviews/TASK-<nnn>-<feature-slug>.review.md` with reviewed commit, reviewer role (not the author), decision, and follow-ups with the TASK they land in.
+4. **Execution path:** E2E and UI evidence states where it ran (dev server or the production build served the way the design specifies). Only the production path counts as acceptance evidence for behavior that depends on it (headers, CSP, cookies, same-origin hosting, logs).
+5. **UX acceptance:** for UI tasks, the UX owner compares each screen to the approved wireframes on the production path and records it under `docs/ux-acceptance/<feature-slug>/` (never inside the approved `docs/ux/` package) with screenshot or recording, wireframe id, and commit.
+
 ## Bundled resources
 
 - `references/dev-prep-method.md` — decomposition and dependency method.
