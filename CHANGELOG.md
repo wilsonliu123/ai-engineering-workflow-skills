@@ -59,3 +59,8 @@ Fixes: QA: execution-assignment (clarified by 剑秋 on 10/13: the design is cor
 
 ## Pre-existing, unchanged
 - In v0.4, `validate_review_session.py` fails on 5 of the 6 TeamBoard review sessions (missing `current_item`, `## Resolved/Remaining items`). It still does; nothing here changes that.
+
+### Note: two hash formats (follow-up from QA re-verify)
+The evidence `requirements` hash and the gate's `approved_sha256` are both computed with frontmatter stripped, but with different algorithms: `check_upstream_gate.py` hashes `name + \0 + sha256(body) + \n` per file (so it also works on directories), while `validate_qa.py` / evidence import hash the body directly. Each detects staleness correctly on its own; the values are just not comparable to each other. Deferred: unify into one function.
+
+Also deferred: evidence does not bind `sad.md` (design changes are caught by the gate only); usage line still shows `[--evidence-dir]` in brackets.
