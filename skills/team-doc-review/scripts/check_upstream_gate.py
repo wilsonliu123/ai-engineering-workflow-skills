@@ -119,7 +119,7 @@ def gov_file(p):
  """Directory packages (e.g. docs/ux/<slug>/) keep governance in <dir>/README.md frontmatter."""
  p=Path(p); return p/'README.md' if p.is_dir() else p
 
-DECLARED_KEYS=('requirements','design','test_spec','test_cases','test_plan','execution_matrix','review','dev_prep','dev_delivery','ux','ux_reference','source_requirements')
+DECLARED_KEYS=('requirements','design','test_spec','test_cases','test_plan','execution_matrix','review','dev_prep','dev_delivery','ux','ux_reference','source_requirements','engineering_standards')
 def declared(down):
  """Upstreams a downstream declares in frontmatter (first token of each value; placeholders/null ignored)."""
  fm=split_fm(Path(down).read_text(encoding='utf-8'))[0]; out={}
@@ -127,7 +127,7 @@ def declared(down):
   v=val(fm,k)
   if not v: continue
   v=v.split()[0].strip('"\'')
-  if v.lower() in ('null','none','unknown','n/a','-') or v.startswith(('<','./','http')): continue
+  if v.lower() in ('null','none','unknown','unavailable','n/a','-') or v.startswith(('<','./','http')): continue
   out[Path(v).as_posix()]=k
  return out
 

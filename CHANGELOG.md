@@ -9,6 +9,7 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 - KnowBase #17: `check_upstream_gate.py` `norm()` kept only `[a-z0-9]`, so CJK-only role names (e.g. 全栈工程师) collapsed to '' and distinct roles compared equal, defeating the author-cannot-self-approve check. Now Unicode-aware (`[\W_]`, casefold, strips full-width parens). Shared across all 9 skills.
 - KnowBase #18: governance now states `docs/shared/engineering-standards.md` is a governed upstream (canonical frontmatter, approved once, recorded, STALE on edit) instead of leaving its status undefined. Docs only; gate unchanged.
 - KnowBase #19: team-dev-prep cited `GOTOOLCHAIN=local` as a pinning example, but it disables toolchain download and uses the local Go. Example now requires installing the exact toolchain in `make setup` plus a `go version` check in `make ci`.
+- KnowBase #18b: gate DECLARED_KEYS now includes `engineering_standards`, so a downstream that declares the standards but never records them is BLOCKed; `engineering_standards: unavailable` is skipped. Shared across all 9 skills.
 
 ## v0.6.7 — KnowBase #16
 
