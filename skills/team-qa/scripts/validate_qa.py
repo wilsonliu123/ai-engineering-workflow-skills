@@ -83,6 +83,12 @@ def main():
   t=paths['test-cases.md'].read_text(); tcs=sorted(set(re.findall(r'(?m)^##\s+(TC-\d{3,})\b',t)))
   e+=validity_problems(paths['test-cases.md'],t)
   if '## Coverage index' not in t:e.append('test-cases missing coverage index')
+  dc=re.search(r'(?ms)^## Design constraint coverage\n(.*?)(?=^## |\Z)',t)
+  if not dc:e.append('test-cases missing design constraint coverage')
+  else:
+   for r in re.findall(r'(?m)^\|(?!\s*-)(?!\s*Constraint\s*\|)(.*)\|\s*$',dc.group(1)):
+    c=r.split('|')[-1].strip()
+    if not(re.search(r'\bTC-\d{3,}\b',c) or re.match(r'(?i)n/a:\s*\S',c)):e.append('design constraint without TC or n/a reason: '+r.split('|')[0].strip())
   for k in ('artifact_id','review_status','artifact_status'):
    if not fm(t,k):e.append('test-cases missing '+k)
   rq=fm(t,'requirements')

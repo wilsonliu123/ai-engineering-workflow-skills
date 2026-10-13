@@ -24,6 +24,12 @@ source_commit: <commit-or-unknown>
 | Test case | REQ | AC | Class | Subtype | Priority | Execution assignment |
 |---|---|---|---|---|---|---|
 
+## Design constraint coverage
+Every normative security constraint in Design/interfaces, even without an AC.
+| Constraint | Source | Test case |
+|---|---|---|
+| <e.g. writes require X-Header> | <interface.md §4> | <TC-0xx or n/a: reason> |
+
 ## TC-001 — <Title>
 - **REQ:** REQ-001
 - **AC:** AC-001
