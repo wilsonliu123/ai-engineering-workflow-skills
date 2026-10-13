@@ -4,6 +4,10 @@ Source of issue IDs: TeamBoard validation report (`docs/skill-validation/VALIDAT
 
 Rules followed: no new skills, no new workflow steps beyond what is listed, scripts shared across skills stay byte-identical.
 
+## Deferred (not in scope; no new skill during fixes)
+
+- KnowBase #15 — `validate_ux.py` for the UX package (no UX skill exists in this set). Candidate checks proposed by UI/Ux: (1) README state matrix maps cell-by-cell to requirement §5, no blank cells, N/A with reason matching the requirement; (2) README §1 lists every screen-related AC by full id (e.g. `AC-033`, not `/033`); (3) no 【提案】 copy left; copy not given verbatim by the requirement cites a PD id in decisions; (4) every PNG/SVG listed in README exists. Meanwhile: gate/--downstream cover governance and hashes; `validate_design.py` covers screen, situation-matrix and full REQ/AC coverage downstream.
+
 ## v0.6.6 — KnowBase #14
 
 - `validity_problems()` (shared, all 9 copies) also re-hashes every recorded `upstream:` baseline: a changed upstream => STALE, a `pending` one => PENDING, a missing path => BLOCK. Every stage validator now agrees with `check_upstream_gate.py --downstream` even if the owner has not hand-marked `validity: stale`.
