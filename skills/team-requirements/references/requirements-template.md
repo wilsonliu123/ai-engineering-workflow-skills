@@ -53,7 +53,7 @@ ux_reference: <docs/ux/<feature-slug>/ when the feature has UI, otherwise omit>
 | S1 | ... | ... |
 
 ### Situation coverage (UI/API features)
-For every screen or endpoint, state the behavior for the five situations; cells without an AC must say how they are verified.
+For every screen or endpoint, state the behavior for the five situations; cells without an AC must say how they are verified. A situation that cannot occur is written `N/A — <reason>` (e.g. `N/A — other users' resources return 404, see AC-013`); never leave a cell blank and never invent a screen just to fill it.
 | Screen / endpoint | Normal | Invalid input | No permission (403) | Not found / hidden (404) | Empty data | Network loss / timeout |
 |---|---|---|---|---|---|---|
 

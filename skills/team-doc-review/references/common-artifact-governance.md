@@ -91,6 +91,7 @@ Content baselines are machine-maintained by `scripts/check_upstream_gate.py` (by
 - On approval of any primary artifact, run `check_upstream_gate.py --stamp-approved <artifact>`; it writes `approved_sha256`. If content later changes while still `approved`, the gate reports `STALE`.
 - When a downstream stage starts authoritative work, run `check_upstream_gate.py --record <downstream.md> <upstream ...>`; it writes `upstream: [{path, sha256}]` into the downstream frontmatter.
 - Every later gate run uses `--downstream <downstream.md> <upstream ...>`; any content change reports `STALE` and exits non-zero.
+- The first stage (requirements) has no upstream, so it never runs `--record`/`--downstream`. Its baseline is `approved_sha256` written by `--stamp-approved`; use `--hash <artifact>` only to print the current hash for a review note or to compare by hand.
 - Hashes ignore YAML frontmatter. `sad.md` and dev-prep `index.md` hash their whole package directory (attachments included). A directory argument (e.g. wireframes and UI acceptance under `docs/ux/<feature-slug>/`) is hashed as a whole, so UX artifacts are covered without extra fields.
 
 An `approved` artifact without `approved_sha256` is reported `BLOCK`. Migration from v0.4: after confirming the approval still applies to the current content, run `--stamp-approved` once per approved document.

@@ -5,9 +5,9 @@ description: Create or update the team's standardized system design documents fr
 
 # Team Design
 
-## Lifecycle governance (v0.4, authoritative)
+## Lifecycle governance (v0.6, authoritative)
 
-Read `references/common-artifact-governance.md` before creating or updating lifecycle artifacts. If older wording in this skill conflicts with that reference, the v0.4 governance reference takes precedence.
+Read `references/common-artifact-governance.md` before creating or updating lifecycle artifacts. If older wording in this skill conflicts with that reference, the governance reference takes precedence.
 
 Use `artifact_status`, `review_status`, `validity`, `risk_level`, source baselines, and package-level gates. Do not use a single `status` field for both completion and human approval.
 
@@ -201,6 +201,6 @@ Propagate `risk_level` from Requirements and raise it if design introduces addit
 ## Deterministic upstream gate check
 When execution is available, run `scripts/check_upstream_gate.py --downstream <this-stage-primary> <upstream ...>` against every required upstream primary artifact (and `docs/ux/<feature-slug>/` when used) before authoritative downstream work; on first creation use `--record` instead, which gates and then writes the content baselines. A non-zero exit (`BLOCK` or `STALE`) blocks authoritative progression. Do not override the script result by interpretation; resolve the upstream governance state first.
 
-## Workflow observability (v0.4)
+## Workflow observability
 
 Read `references/observability-protocol.md` before execution. Start a telemetry session with `scripts/emit_event.py` when the skill begins, emit the stage-specific events defined by the protocol at meaningful lifecycle points, and attempt a `skill_completed` event before returning. Telemetry is best-effort and **must never block or change** artifact generation, validation, approval, gate, or handoff behavior. Never log prompt text, code/document content, secrets, customer data, or personal identities.

@@ -20,7 +20,7 @@ ux_reference: docs/ux/<feature-slug>/   # wireframes S1..Sn; part of the gated U
 ## 3. Screen and interaction specification
 <!-- Use the requirement's screen IDs (S1..Sn) and quote its copy verbatim; do not re-word UI text. Link each screen to its wireframe in ux_reference. -->
 ### 3.1 Situation matrix
-<!-- Same columns as the requirement's situation coverage, plus Loading. One row per screen ID. Each cell: what the user sees, incl. retry/recovery for network loss (no separate retry section). -->
+<!-- Same columns as the requirement's situation coverage, plus Loading. One row per screen ID. Each cell: what the user sees, incl. retry/recovery for network loss (no separate retry section). A cell the requirement marks `N/A — <reason>` stays `N/A` with the same reason; do not design a screen for it. -->
 | Screen | Normal | Loading | Invalid input | No permission (403) | Not found / hidden (404) | Empty data | Network loss / timeout |
 |---|---|---|---|---|---|---|---|
 ### 3.2 Per-screen interactions
