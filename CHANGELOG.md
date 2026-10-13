@@ -4,6 +4,10 @@ Source of issue IDs: TeamBoard validation report (`docs/skill-validation/VALIDAT
 
 Rules followed: no new skills, no new workflow steps beyond what is listed, scripts shared across skills stay byte-identical.
 
+## v0.6.4 — KnowBase #12
+
+- `validate_qa.py` fails (exit 1) when any QA artifact has `validity: stale` or `unknown`; it used to report OK.
+
 ## v0.6.3 — KnowBase run fixes (skill-issues #8, #9, #11)
 
 - #11 (important) `validate_design.py` now fails when `sad.md` is `draft`, when `docs/shared/engineering-standards.md` is missing, or when §8.3 has a `Blocking: Yes` open question; REQ/AC coverage checks every id in the requirement across sad/frontend/backend/interface and lists missing ids (was: any one match).

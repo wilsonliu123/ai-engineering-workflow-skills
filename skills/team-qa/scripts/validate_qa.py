@@ -66,6 +66,8 @@ def main():
  root=Path(a[0]); e=[]
  paths={n:root/n for n in ['requirements-testability.md','test-spec.md','test-cases.md','execution-matrix.md','execution-run.md','qa-report.md']}
  if not any(p.is_file() for p in paths.values()): e.append('no QA artifacts')
+ for n,p in paths.items():  # KnowBase #12: stale/unknown artifacts are not reviewable
+  if p.is_file() and fm(p.read_text(),'validity') in ('stale','unknown'): e.append(f'{n}: validity is {fm(p.read_text(),"validity")}; re-run check_upstream_gate.py --record and set validity: current before review')
  if paths['requirements-testability.md'].is_file():
   t=paths['requirements-testability.md'].read_text(); gov(t,e);e+=approval_problems(paths['requirements-testability.md'],t)
   for h in ['## 2. Testability summary','## 3. Blocking gaps','## 5. Non-functional criteria needing measurable targets']:
