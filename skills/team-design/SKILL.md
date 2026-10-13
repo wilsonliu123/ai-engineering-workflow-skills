@@ -155,7 +155,7 @@ Git history is the primary version history. Do not auto-increment document versi
 Use role-based responsibility in document metadata, for example:
 
 - `owner_role: Tech Lead`
-- `reviewer_role: Architect`
+- `reviewer_roles: [Architect]`
 
 Record concrete people only in the actual PR/issue/review system when available.
 

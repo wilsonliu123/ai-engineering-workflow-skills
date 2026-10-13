@@ -13,7 +13,8 @@ validity: current
 risk_level: <low|medium|high|critical>
 approval_reference: null
 owner_role: QA
-reviewer_role: QA Lead
+reviewer_roles:
+  - QA Lead
 requirements: docs/requirements/<feature-slug>.md
 test_spec: docs/qa/<feature-slug>/test-spec.md
 test_cases: docs/qa/<feature-slug>/test-cases.md

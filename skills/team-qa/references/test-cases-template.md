@@ -11,7 +11,8 @@ artifact_status: draft
 review_status: not-started   # approved together with test-spec (one review session)
 validity: current
 owner_role: QA
-reviewer_role: QA Lead
+reviewer_roles:
+  - QA Lead
 requirements: docs/requirements/<feature-slug>.md
 test_spec: docs/qa/<feature-slug>/test-spec.md
 source_commit: <commit-or-unknown>

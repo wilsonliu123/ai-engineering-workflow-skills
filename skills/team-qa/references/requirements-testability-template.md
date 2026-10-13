@@ -13,7 +13,8 @@ validity: current
 risk_level: <low|medium|high|critical>
 approval_reference: null
 owner_role: QA
-reviewer_role: Product Owner   # requirement owner consumes this; no separate approval needed
+reviewer_roles:   # requirement owner consumes this; no separate approval needed
+  - Product Owner
 review_round: 1
 requirements: docs/requirements/<feature-slug>.md
 upstream: <written by check_upstream_gate.py --record>

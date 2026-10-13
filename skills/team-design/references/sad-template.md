@@ -6,7 +6,6 @@ Use this structure for `docs/design/<feature-slug>/sad.md`.
 ---
 artifact_id: DESIGN-<feature-slug>
 artifact_type: design
-document_type: sad
 feature: <feature-slug>
 artifact_status: draft
 review_status: not-started
@@ -14,7 +13,8 @@ validity: current
 risk_level: <low|medium|high|critical>
 approval_reference: null
 owner_role: Tech Lead
-reviewer_role: Architect
+reviewer_roles:
+  - Architect
 source_requirements: docs/requirements/<feature-slug>.md
 engineering_standards: docs/shared/engineering-standards.md
 codebase_commit: <git-sha-or-unknown>

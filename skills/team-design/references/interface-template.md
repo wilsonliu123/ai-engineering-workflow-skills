@@ -4,11 +4,12 @@ Use only when the feature changes a boundary between components, services, clien
 
 ```markdown
 ---
-document_type: interface-design
+artifact_type: interface-design
 feature: <feature-slug>
 artifact_status: draft
 owner_role: Tech Lead
-reviewer_role: Tech Lead
+reviewer_roles:
+  - Tech Lead
 source_sad: ./sad.md
 canonical_spec: <path-or-none>
 ---

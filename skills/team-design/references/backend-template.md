@@ -4,11 +4,12 @@ Use when the change affects services, APIs, integrations, persistence, or server
 
 ```markdown
 ---
-document_type: backend-design
+artifact_type: backend-design
 feature: <feature-slug>
 artifact_status: draft
 owner_role: Backend Engineer
-reviewer_role: Tech Lead
+reviewer_roles:
+  - Tech Lead
 source_sad: ./sad.md
 ---
 

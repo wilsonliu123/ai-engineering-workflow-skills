@@ -13,7 +13,8 @@ artifact_status: draft
 review_status: not-started
 validity: current
 owner_role: QA
-reviewer_role: QA Lead
+reviewer_roles:
+  - QA Lead
 decided_by: <who chose execution types: named human QA, or "agent acting as human QA (<role>)">
 test_spec: docs/qa/<feature-slug>/test-spec.md
 test_cases: docs/qa/<feature-slug>/test-cases.md

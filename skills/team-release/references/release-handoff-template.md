@@ -6,7 +6,6 @@ Use this structure as the default. Remove clearly inapplicable subsections only 
 ---
 artifact_id: RELEASE-<feature-slug>
 artifact_type: release-handoff
-document_type: release-handoff
 feature: <feature-slug>
 artifact_status: draft
 review_status: not-started

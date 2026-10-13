@@ -22,9 +22,17 @@ def main():
  t=s.read_text(); r=rp.read_text(); gov(t,e); e+=approval_problems(s,t)
  for h in HEAD:
   if h not in t:e.append("missing heading: "+h)
- req=set(re.findall(r"\bREQ-[A-Z0-9_-]+\b",r)); ac=set(re.findall(r"\bAC-[A-Z0-9_-]+\b",r))
- if req and not (set(re.findall(r"\bREQ-[A-Z0-9_-]+\b",t))&req):e.append("SAD lacks REQ traceability")
- if ac and not (set(re.findall(r"\bAC-[A-Z0-9_-]+\b",t))&ac):e.append("SAD lacks AC traceability")
+ # review readiness (KnowBase #11): draft, Blocking OQ, or missing standards => not reviewable
+ if fm(t,"artifact_status")=="draft":e.append("sad.md artifact_status is draft: not ready for review (set complete when review-ready)")
+ if not Path("docs/shared/engineering-standards.md").is_file():e.append("docs/shared/engineering-standards.md missing: design must stay draft (team-design SKILL.md)")
+ oq=re.search(r"(?ms)^### 8\.3.*?(?=^## |\Z)",t)
+ for line in (oq.group(0).splitlines() if oq else []):
+  if re.search(r"Blocking\s*[:：]\s*Yes",line,re.I):e.append("Blocking open question: "+line.strip()[:120])
+ # full coverage: every REQ/AC id in the requirement must appear somewhere in the design package
+ alltxt=t+"".join((d/a).read_text() for a in ['frontend.md','backend.md','interface.md'] if (d/a).is_file())
+ for pre in ("REQ","AC"):
+  ids=set(re.findall(rf"\b{pre}-[A-Z0-9_-]+\b",r)); miss=sorted(ids-set(re.findall(rf"\b{pre}-[A-Z0-9_-]+\b",alltxt)))
+  if miss:e.append(f"design does not cover {pre} ids: "+", ".join(miss))
  # attachments (D-05/UX-05): every optional doc must carry feature + artifact_status
  for a in ['frontend.md','backend.md','interface.md']:
   ap=d/a

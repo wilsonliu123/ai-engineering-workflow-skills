@@ -219,7 +219,7 @@ Git history is the primary version history. Do not auto-increment document versi
 Use role-based responsibility, for example:
 
 - `owner_role: Reviewer`
-- `reviewer_role: Tech Lead`
+- `reviewer_roles: [Tech Lead]`
 
 Record concrete people in the actual PR/issue/review system when available rather than requiring names in the template.
 

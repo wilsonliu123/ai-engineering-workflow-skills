@@ -6,7 +6,6 @@ Use this layout for `docs/dev-prep/<feature-slug>/index.md`.
 ---
 artifact_id: DEVPREP-<feature-slug>
 artifact_type: dev-prep
-document_type: development-preparation-index
 feature: <feature-slug>
 artifact_status: draft
 review_status: not-started
@@ -14,7 +13,8 @@ validity: current
 risk_level: <low|medium|high|critical>
 approval_reference: null
 owner_role: Tech Lead
-reviewer_role: Senior Engineer
+reviewer_roles:
+  - Senior Engineer
 requirements_source: docs/requirements/<feature-slug>.md
 design_source: docs/design/<feature-slug>/sad.md
 engineering_standards: docs/shared/engineering-standards.md

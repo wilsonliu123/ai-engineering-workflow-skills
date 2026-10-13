@@ -6,7 +6,6 @@ Create at `docs/review/<feature-slug>/code-review.md`.
 ---
 artifact_id: CODEREVIEW-<feature-slug>
 artifact_type: code-review
-document_type: code-review
 feature: <feature-slug>
 artifact_status: draft
 review_status: not-started
@@ -14,7 +13,8 @@ validity: current
 risk_level: <low|medium|high|critical>
 approval_reference: null
 owner_role: Reviewer
-reviewer_role: Tech Lead
+reviewer_roles:
+  - Tech Lead
 requirements_path: docs/requirements/<feature-slug>.md
 design_path: docs/design/<feature-slug>/sad.md
 dev_prep_path: docs/dev-prep/<feature-slug>/index.md | not-applicable

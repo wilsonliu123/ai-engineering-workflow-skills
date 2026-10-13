@@ -8,7 +8,8 @@ artifact_type: frontend-design
 feature: <feature-slug>
 artifact_status: draft
 owner_role: Frontend Engineer
-reviewer_role: Tech Lead
+reviewer_roles:
+  - Tech Lead
 source_sad: ./sad.md
 ux_reference: docs/ux/<feature-slug>/   # wireframes S1..Sn; part of the gated UX package
 ---

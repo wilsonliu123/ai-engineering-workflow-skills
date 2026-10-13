@@ -5,13 +5,14 @@ Recommended filename: `TASK-001-short-outcome.md`.
 
 ```markdown
 ---
-document_type: coding-task-brief
+artifact_type: coding-task-brief
 feature: <feature-slug>
 task_id: TASK-001
 artifact_status: complete
 validity: current
 owner_role: Developer
-reviewer_role: Tech Lead
+reviewer_roles:
+  - Tech Lead
 source_commit: <git-sha-or-unknown>
 ---
 
