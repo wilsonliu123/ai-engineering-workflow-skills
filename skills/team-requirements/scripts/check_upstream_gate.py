@@ -3,8 +3,9 @@
 
 Usage:
   check_upstream_gate.py <upstream> [<upstream> ...]                       status gate (+ approved_sha256 check)
-  check_upstream_gate.py --downstream <down.md> <upstream> [...]           also require each upstream to match
-                                                                           the baseline recorded in <down.md>
+  check_upstream_gate.py --downstream <down.md> [<upstream> ...]         also require each upstream to match
+                                                                           the baseline recorded in <down.md>; with no
+                                                                           <upstream>, checks the upstreams recorded in it
   check_upstream_gate.py --record <down.md> <upstream> [...]               gate, then write `upstream:` baselines
                                                                            into <down.md> frontmatter
   check_upstream_gate.py --stamp-approved <artifact>                       write approved_sha256 at approval time
@@ -28,6 +29,9 @@ is recorded with `status: at-risk` (AT-RISK, exit 1); after it is approved and s
 Plain status mode (no --record/--downstream) answers "is it approved for use?": the same unapproved upstream
 is BLOCK there unless it carries proceed_at_risk; this difference is intended. In --record/--downstream mode, upstreams declared in the downstream
 frontmatter (requirements:, design:, test_spec:, test_cases:, ux_reference:, ...) must be passed or recorded.
+--record always needs the upstream list (it writes exactly what is passed, merged with prior records).
+Chain check (#29): each upstream's own recorded upstream: baselines are re-hashed one level up; if one
+changed, the upstream is STALE in the chain (<up> -> <its upstream>) and the gate fails (exit 1).
 Content hash: YAML frontmatter of .md files is ignored (governance edits do not count).
 sad.md / index.md hash their whole package directory (attachments included); a
 directory hashes every file under it. Exit: 0 PASS, 1 BLOCK/STALE/PENDING, 2 usage.
@@ -135,6 +139,16 @@ def declared(down):
   out[Path(v).as_posix()]=k
  return out
 
+def chain_problems(p):
+ """#29: an approved upstream whose own recorded upstream changed is stale in the chain (one level)."""
+ g=gov_file(p)
+ if not g.is_file(): return []
+ bad=[]
+ for up,sha in recorded(g).items():
+  if sha=='pending' or not Path(up).exists(): continue
+  if content_hash(up)!=sha: bad.append(f'STALE: chain {p} -> {up}: {up} changed since {p} recorded it ({sha[:12]} -> {content_hash(up)[:12]}); {p} must be re-assessed, re-recorded and re-approved before downstreams use it')
+ return bad
+
 def status_problems(p,risky=None):
  if not p.exists(): return [f'BLOCK: {p}: missing']
  gp=gov_file(p)
@@ -146,7 +160,7 @@ def status_problems(p,risky=None):
    print(f'AT-RISK: {p}: not yet approved; proceeding under proceed_at_risk: {at_risk(t)}')
    if risky is not None: risky.append(p)
   else: bad.append(f'BLOCK: {p}: gate failed ({got})')
- return bad+approval_problems(p,t)
+ return bad+approval_problems(p,t)+chain_problems(p)
 
 def main(a):
  if not a or a[0] in ('-h','--help'): print(__doc__); return 2
@@ -157,7 +171,7 @@ def main(a):
   h=content_hash(a[1]); set_fm(g,'approved_sha256',f'approved_sha256: {h}'); print(f'STAMPED: {g} approved_sha256={h}'); return 0
  mode=down=None
  if a[0] in ('--downstream','--record'):
-  if len(a)<3: print(__doc__); return 2
+  if len(a)<(2 if a[0]=='--downstream' else 3): print(__doc__); return 2
   mode,down,a=a[0],Path(a[1]),a[2:]
  if any(x.startswith('--') for x in a): print(__doc__); return 2
  ups=[Path(x) for x in a]; bad=[]; risky=[]; pend=[]
@@ -165,6 +179,7 @@ def main(a):
  rec,rst=recorded(down,True) if mode else ({},{}); atr=[]
  if mode=='--downstream':  # recorded upstreams are always re-checked
   ups+=[Path(k) for k in rec if Path(k).as_posix() not in {u.as_posix() for u in ups}]
+  if not ups: print(f'BLOCK: {down}: no upstream passed and none recorded (run --record first)'); return 1
  for p in ups:
   k=p.as_posix()
   if mode=='--record' and not p.exists(): pend.append(f'PENDING: {k} does not exist yet; recorded as pending, re-run --record once it exists'); continue

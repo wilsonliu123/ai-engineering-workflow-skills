@@ -21,6 +21,10 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 
 - No skill template defines `requirements_approved_sha256`; it was an ad-hoc copy that went stale. Shared `validity_problems()` now BLOCKs any frontmatter `*_sha256` key other than `approved_sha256`; governance says `approved_sha256` and `upstream:` are the only hash fields.
 
+## v0.6.11
+- #28: `check_upstream_gate.py --downstream <down.md>` with no upstream args now checks the upstreams recorded in its `upstream:` frontmatter (previously printed usage, contradicting "passed or recorded"); BLOCKs if nothing is recorded. `--record` still requires the explicit list (usage says so). Shared across 9 skills.
+- #29: gate re-hashes each upstream's own recorded `upstream:` baselines (one level); a changed one reports `STALE: chain <up> -> <its upstream>` and fails (exit 1) in status, --record and --downstream modes. Deferred: full transitive walk. Shared across 9 skills.
+
 ## v0.6.10
 - #27: team-qa step 2 notes XSS TCs must verify escaping and CSP separately (no-CSP positive control, DOM assertions as primary evidence, zero `securitypolicyviolation`).
 
