@@ -21,6 +21,9 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 
 - No skill template defines `requirements_approved_sha256`; it was an ad-hoc copy that went stale. Shared `validity_problems()` now BLOCKs any frontmatter `*_sha256` key other than `approved_sha256`; governance says `approved_sha256` and `upstream:` are the only hash fields.
 
+## v0.6.10
+- #27: team-qa step 2 notes XSS TCs must verify escaping and CSP separately (no-CSP positive control, DOM assertions as primary evidence, zero `securitypolicyviolation`).
+
 ## v0.6.9
 - #26: team-qa test-cases step must list design security constraints in `## Design constraint coverage` (TC or `n/a: reason`); `validate_qa.py` enforces it; template updated.
 

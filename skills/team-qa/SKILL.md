@@ -75,7 +75,7 @@ Run after Requirements and Design are approved/current and before development pr
 Goal: define what must be tested and what evidence would prove it, without deciding the execution method.
 
 1. Read approved/current Requirements/AC, Design, interfaces, and Engineering Standards.
-2. Build risk-based coverage for every in-scope AC, and list every normative security constraint in Design/interfaces (auth, session, CSRF, access control, input limits) in the `## Design constraint coverage` table with a covering TC or `n/a: <reason>`.
+2. Build risk-based coverage for every in-scope AC, and list every normative security constraint in Design/interfaces (auth, session, CSRF, access control, input limits) in the `## Design constraint coverage` table with a covering TC or `n/a: <reason>`. For XSS/injection TCs, verify escaping and CSP separately: a positive control on a page without CSP, DOM assertions (no injected elements or `on*` attributes, payload shown as text) as primary evidence, and zero `securitypolicyviolation` events; never rely only on dialog or global-flag checks under CSP.
 3. Produce `test-spec.md` and `test-cases.md`.
 4. Include functional and non-functional verification where Requirements, Design, Engineering Standards, or risk justify it.
 5. For performance-related cases distinguish, when applicable: performance baseline, load, stress, spike, soak/endurance, scalability/capacity.
