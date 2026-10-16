@@ -10,7 +10,7 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 - #9 (residual): team-design SKILL.md states ADRs live only in `docs/shared/adr/`, even if an instruction says `docs/adr/`; `validate_design.py` fails when `docs/adr/ADR-*.md` exists, because those ADRs would skip the approved-ADR check.
 - #11 (residual): team-design SKILL.md says a draft blocked only by missing engineering standards cannot enter review; get the standards approved first, then set the design `complete`.
 - #15: still deferred (reason below).
-- Self-check: `tools/check_shared.sh` OK; gate scenario (stamp, record, --downstream with/without args, AT-RISK, chain STALE, no-record BLOCK) identical on all 9 copies; validators re-run on KnowBase `400f790`, all OK.
+- Self-check: `tools/check_shared.sh` OK; gate scenario (stamp, record, --downstream with/without args, AT-RISK, chain STALE, no-record BLOCK) identical on all 9 copies; validate_requirements, validate_design, validate_qa and validate_dev_prep re-run on KnowBase `400f790`, all OK; validate_review, validate_release, validate_dev_handoff and validate_review_session not re-run (no inputs prepared).
 
 ### Final status of all 30 KnowBase issues (#1–#29 plus #18b)
 
