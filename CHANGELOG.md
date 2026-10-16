@@ -4,6 +4,49 @@ Source of issue IDs: TeamBoard validation report (`docs/skill-validation/VALIDAT
 
 Rules followed: no new skills, no new workflow steps beyond what is listed, scripts shared across skills stay byte-identical.
 
+## v0.7.0 — final release (KnowBase run)
+
+- #8 (residual): `frontend-template.md`, `backend-template.md`, `interface-template.md` frontmatter add `review_status: not-started` and `validity: current` (reviewed with `sad.md`; validators already read `validity` on these files). `risk_level` stays on `sad.md` only.
+- #9 (residual): team-design SKILL.md states ADRs live only in `docs/shared/adr/`, even if an instruction says `docs/adr/`; `validate_design.py` fails when `docs/adr/ADR-*.md` exists, because those ADRs would skip the approved-ADR check.
+- #11 (residual): team-design SKILL.md says a draft blocked only by missing engineering standards cannot enter review; get the standards approved first, then set the design `complete`.
+- #15: still deferred (reason below).
+- Self-check: `tools/check_shared.sh` OK; gate scenario (stamp, record, --downstream with/without args, AT-RISK, chain STALE, no-record BLOCK) identical on all 9 copies; validators re-run on KnowBase `400f790`, all OK.
+
+### Final status of all 30 KnowBase issues (#1–#29 plus #18b)
+
+| # | Status | Commit | Note |
+|---|---|---|---|
+| 1 | fixed | `2419045` | team-requirements SKILL headings v0.4 → v0.6 |
+| 2 | fixed | `2419045` | first stage has no `--record`; baseline via `--stamp-approved` |
+| 3 | fixed | `a752712` | UX directory upstreams are status-gated (README.md) |
+| 4 | fixed | `a752712` | `--record` on a missing upstream stores `sha256: pending` |
+| 5 | fixed | `a752712` | gate checks upstreams declared in frontmatter |
+| 6 | fixed | `a752712` | `in-review` removed from governance (five review states) |
+| 7 | fixed | `e2e715c` | unapproved same-stage upstreams recorded as at-risk |
+| 8 | fixed | `6ea24e2 + v0.7.0` | canonical keys (`artifact_type` only, `reviewer_roles`); v0.7.0: frontend/backend/interface templates add `review_status`, `validity` |
+| 9 | fixed | `6ea24e2 + v0.7.0` | path is `docs/shared/adr/`; v0.7.0: SKILL.md says so explicitly, validate_design fails on ADRs in `docs/adr/` |
+| 10 | fixed | `e2e715c` | UX upstream recorded at-risk, so design can declare `ux_reference` before UX exists |
+| 11 | fixed | `6ea24e2 + v0.7.0` | validate_design fails on draft / missing standards / Blocking OQ, full REQ/AC coverage; v0.7.0: SKILL.md says how a standards-blocked draft enters review |
+| 12 | fixed | `b7e2f51` | validate_qa fails on stale/unknown |
+| 13 | fixed | `9ebbbe8` | shared `validity_problems()` in every validator |
+| 14 | fixed | `444f68e` | validators re-hash recorded upstream baselines |
+| 15 | deferred | — | see Deferred below: needs a UX skill / `validate_ux.py`; no new skills in this run |
+| 16 | fixed | `5f064ed` | ad-hoc `*_sha256` fields BLOCKed |
+| 17 | fixed | `3133ff1` | Unicode-aware role-name normalization |
+| 18 | fixed | `a9dfdea` | engineering-standards is a governed upstream (docs) |
+| 18b | fixed | `291b4bc` | `engineering_standards` in DECLARED_KEYS |
+| 19 | fixed | `27e9619` | `GOTOOLCHAIN=local` is not pinning |
+| 20 | fixed | `76cb23c` | requirements' `ux_reference`/`engineering_standards` are references, not upstreams |
+| 21 | fixed | `b5d62dc` | dev-prep `.gitignore` check removed |
+| 22 | closed | `b5d62dc` | status-mode BLOCK vs record AT-RISK is intended; documented |
+| 23 | fixed | `b5d62dc` | `- Enabling work: <reason>` accepted |
+| 24 | fixed | `c5f8f89` | coding-stage per-task contract in team-dev-prep (no new skill) |
+| 25 | fixed | `57b0642` | cross-reference corrected (step 4) |
+| 26 | fixed | `6606ea6` | design constraint coverage table in test-cases |
+| 27 | fixed | `f004576` | XSS TCs verify escaping and CSP separately |
+| 28 | fixed | `45c8a13` | `--downstream` with no args reads recorded upstreams |
+| 29 | fixed | `45c8a13` | one-level chain STALE; full transitive walk deferred |
+
 ## v0.6.8
 
 - KnowBase #17: `check_upstream_gate.py` `norm()` kept only `[a-z0-9]`, so CJK-only role names (e.g. 全栈工程师) collapsed to '' and distinct roles compared equal, defeating the author-cannot-self-approve check. Now Unicode-aware (`[\W_]`, casefold, strips full-width parens). Shared across all 9 skills.
@@ -32,6 +75,8 @@ Rules followed: no new skills, no new workflow steps beyond what is listed, scri
 - #26: team-qa test-cases step must list design security constraints in `## Design constraint coverage` (TC or `n/a: reason`); `validate_qa.py` enforces it; template updated.
 
 ## Deferred (not in scope; no new skill during fixes)
+
+- Deferred in v0.7.0: KnowBase #15 needs either a new UX skill or a `validate_ux.py` owned by no skill; both mean adding a skill, which this run's rule forbids. Gate status/hash checks still cover the UX package. Revisit as a separate UX skill. Also deferred: full transitive chain walk (#29), cited-but-missing ADR files are not yet an error (#9).
 
 - KnowBase #15 — `validate_ux.py` for the UX package (no UX skill exists in this set). Candidate checks proposed by UI/Ux: (1) README state matrix maps cell-by-cell to requirement §5, no blank cells, N/A with reason matching the requirement; (2) README §1 lists every screen-related AC by full id (e.g. `AC-033`, not `/033`); (3) no 【提案】 copy left; copy not given verbatim by the requirement cites a PD id in decisions; (4) every PNG/SVG listed in README exists. Meanwhile: gate/--downstream cover governance and hashes; `validate_design.py` covers screen, situation-matrix and full REQ/AC coverage downstream.
 

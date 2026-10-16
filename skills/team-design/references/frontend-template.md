@@ -7,6 +7,8 @@ Use when the change affects a user-facing/client application.
 artifact_type: frontend-design
 feature: <feature-slug>
 artifact_status: draft
+review_status: not-started   # reviewed and approved with sad.md
+validity: current
 owner_role: Frontend Engineer
 reviewer_roles:
   - Tech Lead

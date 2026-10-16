@@ -47,6 +47,8 @@ def main():
   for sid in screens:
    if not re.search(rf"\b{sid}\b",ft):e.append(f"frontend.md does not cover screen {sid}")
   if '### Situation coverage' in r and 'Situation matrix' not in ft:e.append("frontend.md lacks the situation matrix required by the requirement")
+ # KnowBase #9: ADRs outside docs/shared/adr/ escape the approval check below
+ if list(Path('docs/adr').glob('ADR-*.md')):e.append("ADRs found in docs/adr/: move them to docs/shared/adr/ (team-design SKILL.md)")
  # ADRs cited by an approved SAD must be approved (D-03)
  if fm(t,'review_status')=='approved':
   for adr in sorted(set(re.findall(r"\bADR-\d{3}\b",t))):

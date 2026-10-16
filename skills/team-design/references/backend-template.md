@@ -7,6 +7,8 @@ Use when the change affects services, APIs, integrations, persistence, or server
 artifact_type: backend-design
 feature: <feature-slug>
 artifact_status: draft
+review_status: not-started   # reviewed and approved with sad.md
+validity: current
 owner_role: Backend Engineer
 reviewer_roles:
   - Tech Lead

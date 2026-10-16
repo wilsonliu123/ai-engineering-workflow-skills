@@ -7,6 +7,8 @@ Use only when the feature changes a boundary between components, services, clien
 artifact_type: interface-design
 feature: <feature-slug>
 artifact_status: draft
+review_status: not-started   # reviewed and approved with sad.md
+validity: current
 owner_role: Tech Lead
 reviewer_roles:
   - Tech Lead

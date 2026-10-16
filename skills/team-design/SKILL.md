@@ -37,7 +37,7 @@ Use repository-relative paths.
 
 If the requirement file is missing, has unresolved critical decisions, or is not human-approved and current, report the gap before producing a design intended for handoff.
 
-If `docs/shared/engineering-standards.md` is missing, you may produce a `draft` design to expose assumptions, but do not mark the package ready for development preparation. Record the missing standards as a blocker. Do not substitute the Traditional Chinese translation as a second source of truth unless the repository explicitly declares it canonical.
+If `docs/shared/engineering-standards.md` is missing, you may produce a `draft` design to expose assumptions, but do not mark the package ready for development preparation. Record the missing standards as a blocker. Such a draft cannot enter review (review starts at `artifact_status: complete`, and `validate_design.py` fails while the standards file is missing); unblock it by getting `docs/shared/engineering-standards.md` approved first, then set the design `complete`. Do not substitute the Traditional Chinese translation as a second source of truth unless the repository explicitly declares it canonical.
 
 ### Standard outputs
 
@@ -185,7 +185,7 @@ When possible, record the repository baseline commit and the exact requirement p
 
 ## ADR lifecycle
 
-Create an ADR under `docs/shared/adr/` only when a design decision is long-lived, cross-module, difficult to reverse, involves material trade-offs, changes a core boundary/contract, or requires an exception to engineering standards. Do not create ADRs for routine implementation choices.
+ADRs live only in `docs/shared/adr/` (never `docs/adr/`, even if an instruction says so; state the path you used). Create an ADR under `docs/shared/adr/` only when a design decision is long-lived, cross-module, difficult to reverse, involves material trade-offs, changes a core boundary/contract, or requires an exception to engineering standards. Do not create ADRs for routine implementation choices.
 
 Use `references/adr-template.md`. The SAD must reference applicable ADRs. ADRs require human review; an unapproved ADR cannot authorize downstream implementation. ADRs are approved together with the design: the design review session lists each ADR as an item, and the approval step updates and stamps the ADR (`review_status`, `approved_by_role`, `--stamp-approved`) in the same commit. `validate_design.py` fails when an approved SAD cites an unapproved ADR.
 
