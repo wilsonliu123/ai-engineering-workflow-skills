@@ -18,6 +18,7 @@ Turn a reviewed requirement into a repository-grounded design package that human
 ## Hard boundaries
 
 - Write documentation only. Do not modify product code, tests, infrastructure, migrations, generated application artifacts, or runtime configuration.
+- Default output language: Write all design document prose, architecture explanations, and decision rationales in Traditional Chinese (繁體中文) by default, preserving technical terms, architecture symbols, code, and IDs intact.
 - Do not silently invent business rules, security policy, performance targets, data-retention rules, or externally visible behavior.
 - Do not mark a design `approved`. The skill may set `artifact_status: complete` when content is complete, but human `review_status` remains `not-started`/`in-progress` until an explicit human decision.
 - Do not treat a prototype, proposed interface, or inferred code behavior as an approved requirement.

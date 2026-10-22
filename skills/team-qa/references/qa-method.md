@@ -2,12 +2,13 @@
 
 ## Lifecycle model
 
-1. Requirements testability review.
-2. Test planning from approved Requirements + Design.
-3. Human execution assignment: QA humans choose automated/manual/hybrid/deferred one case at a time.
-4. Actual execution by existing QA agents/tools/humans outside `team-qa`.
-5. Evidence normalization by `team-qa-evidence`.
-6. Final assessment by `team-qa`.
+1. `requirements-review`: Requirements testability review.
+2. `test-planning`: test planning from approved Requirements + Design.
+3. `execution-assignment`: human QA chooses automated/manual/hybrid/deferred after planning and before execution; this preparation may run in parallel with development.
+4. `execution-handoff`: bind the candidate build/commit/environment to the planned run.
+5. Actual execution by existing QA agents/tools/humans outside `team-qa`.
+6. Evidence normalization by `team-qa-evidence`.
+7. `final-assessment`: assessment by `team-qa` from normalized execution evidence.
 
 ## Principles
 

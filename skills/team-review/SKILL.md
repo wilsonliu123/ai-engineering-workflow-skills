@@ -18,6 +18,7 @@ Produce a repository-grounded review record for the exact code change being revi
 ## Hard boundaries
 
 - Write review documentation only. Do not modify product code, tests, migrations, infrastructure, configuration, generated artifacts, requirements, design documents, or development-preparation documents.
+- Default output language: Write code review findings, summaries, and recommendations in Traditional Chinese (繁體中文) by default, preserving code snippets, diffs, line references, and technical identifiers.
 - Do not silently "fix" code while reviewing. Findings belong in the review document; remediation is a separate development action.
 - Do not change requirements or design to make the implementation appear conformant. Record the mismatch and route it to the appropriate upstream owner.
 - Do not mark the review `approved`. The skill may set `artifact_status: complete` when content is complete, but human `review_status` remains `not-started`/`in-progress` until an explicit human decision.
@@ -236,13 +237,9 @@ Record the reviewed base/head commit or PR reference when known. Use `unknown` r
 
 ## Handoff to QA
 
-After the implementation is corrected as needed and the team completes its normal human review/approval process, `team-qa` may consume:
+While review blockers remain, correction by the finding's owning stage and revalidation of affected artifacts are the primary next action. After correction and normal human review/approval, name `team-qa execution-handoff` when the candidate, required gates, and execution assignment are ready. Identify any missing prerequisites; pending human execution decisions point to `team-qa execution-assignment`.
 
-- the reviewed implementation version,
-- approved requirement/AC,
-- design package,
-- relevant review findings and limitations,
-- available build/test evidence.
+For assignment, candidate readiness, and evidence requirements, read [team-qa Modes 3 to 5 and actual QA execution](../team-qa/SKILL.md#mode-3--execution-assignment). The tester/toolchain executes outside `team-qa`; raw results go to `team-qa-evidence`, then normalized evidence supports `team-qa final-assessment`. Name the next action in the handoff and carry it out only within the user's existing authorization.
 
 QA must independently validate runtime behavior; it must not treat this code-review document as proof that acceptance criteria pass.
 

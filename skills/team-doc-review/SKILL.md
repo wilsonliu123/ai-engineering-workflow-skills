@@ -16,16 +16,15 @@ Read `references/common-artifact-governance.md` and `references/review-method.md
 ## Workflow
 1. Identify the primary artifact and verify its `artifact_status`. If not `complete`, do not approve it; report that source work is incomplete.
 2. Load authoritative upstream artifacts and exact baselines. If required upstream gates are invalid/stale, surface that before document approval.
-3. Load or create `docs/workflow/reviews/<artifact-id>.review.md` using `references/review-session-template.md`.
-4. Scan all issues internally, rank by risk and dependency, and store the queue in the review session.
-5. Present exactly one unresolved critical/material item to the human (default `review_mode: one-at-a-time`). In `review_mode: batch` (approver is a delegate, or `risk_level: low`) present the full ranked list once and record all decisions together. Include topic, evidence, why judgment is needed, options/trade-offs, and recommendation when useful.
-6. Record the human item-level decision. In one-at-a-time mode continue one item at a time. Do not dump the remaining queue unless explicitly asked.
+3. Load or create `docs/workflow/reviews/<artifact-id>.review.md` using `references/review-session-template.md`. Before resuming changed content, set `review_session_status: stale` and identify which prior decisions need re-review; retain unaffected decisions. Keep the session stale while affected items remain unresolved. After re-review against the current content, record the new session baseline and return to `in-progress` before the final document decision.
+4. Scan the artifact for both material problems and consequential proposals awaiting human acceptance. Apply the selection rules in `references/review-method.md`, rank by risk and dependency, and store concrete, answerable questions in the review session. Separate verified facts and minor observations from decisions; reuse applicable recorded human decisions.
+5. State how many material decisions remain, then present the highest-priority unresolved question using the decision format in `references/review-method.md` (default `review_mode: one-at-a-time`). In `review_mode: batch` (approver is a delegate, or `risk_level: low`), or when the human explicitly asks to see all questions, show the ranked questions together. Each question must name the actual proposal, source location, consequence, recommendation and alternatives; a topic label or general request to review the document is insufficient.
+6. Record the human item-level decision. In one-at-a-time mode continue one item at a time. Keep the remaining queue in the session unless batch mode or the human explicitly asks to see it.
 7. Keep minor/informational observations for the final recap unless they combine into a material risk.
-8. When all required items are resolved, present a short recap and ask for one final document-level decision: approve, request changes, or reject.
+8. When all required items are resolved, present a short recap and ask for one final document-level decision: approve, request changes, or reject. If no material questions remain, explain why, citing applicable prior human decisions and summarizing the checks; then request final approval without inventing extra questions. A pending question or failed required gate prevents final approval.
 9. After explicit final decision only, update the reviewed artifact's `review_status` and `approval_reference` when available. Do not change substantive sections. On approval, also run `check_upstream_gate.py --stamp-approved <artifact>` to record `approved_sha256`; also set `approved_by_role`, `delegation_reference`, and `independent_reviewer_role` when the approver is the author. When approving a design, update and stamp each ADR it cites in the same commit. Editorial fixes after approval: re-stamp after the human confirms they are editorial, and note it in the session's resolved items.
 10. If changes are requested, route substantive edits to the owning stage skill. The review session records requested changes and remains traceable.
-11. If interrupted, persist `review_status: in-progress` and `current_item`; next invocation resumes from the next unresolved item.
-12. If the artifact changed since the session baseline, mark the session stale, determine which prior decisions are affected, and re-review those items before final approval.
+11. If interrupted, persist the current `review_session_status` and `current_item`; next invocation resumes from the next unresolved item.
 
 ## Risk-based depth
 - low: ask only genuinely material decisions.
@@ -33,10 +32,11 @@ Read `references/common-artifact-governance.md` and `references/review-method.md
 - high/critical: explicitly inspect security/authorization, sensitive data, migrations/data loss, backward compatibility/contracts, tenant isolation, financial impact, irreversible architecture and recovery when relevant.
 
 ## Metadata changes allowed
-This skill may update only review/governance metadata and review session files after explicit decisions: `review_status`, `approval_reference`, and review session decision records. It must not rewrite requirements, design, task, review finding, QA result, or release substance.
+Review session files may store scan evidence, queued questions and progress before a human answers. Record decisions and update artifact review/governance metadata only from explicit human decisions, following step 9. This skill must not rewrite requirements, design, task, review finding, QA result, or release substance.
 
 ## Output behavior
-The normal response is interactive and contains one question at a time. Do not generate a long approval report unless the human asks for one.
+- Default output language: Write review session files (`docs/workflow/reviews/*.review.md`) and interactive review questions in Traditional Chinese (繁體中文) by default.
+In start/resume mode, when a material question remains, the response contains that concrete question, not only a scan summary, a session link, or a promise to ask later. Wait for the human's answer and keep `current_item` on it. Resume by showing the saved question with its context; for older session items without a `Question` field, reconstruct it from the source and saved evidence while preserving its ID and prior decisions. Repeat a resolved item only when its decision is affected by a changed baseline. Keep the remaining queue in the session unless batch mode or the human requests it. Decision synchronization uses the applicable explicit human record without inventing another question.
 
 ## Workflow observability (v0.3)
 

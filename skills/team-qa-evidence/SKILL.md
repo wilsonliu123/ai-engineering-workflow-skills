@@ -12,6 +12,7 @@ Convert real QA execution outcomes into normalized, traceable evidence without c
 ## Hard boundaries
 
 - Do not choose whether a test case should be automated, manual, hybrid, or deferred. That decision belongs to the human QA assignment step in `team-qa`.
+- Default output language: Write manual interview records and evidence notes in Traditional Chinese (繁體中文) by default, preserving raw log outputs, error strings, and test IDs.
 - Do not execute product tests unless the user explicitly supplies a tool action and asks for execution outside this skill's normal scope. The normal scope is evidence intake and normalization only.
 - Do not infer `pass` from code inspection, test existence, logs without a result, or absence of an error message.
 - Do not invent run IDs, screenshots, defect IDs, build IDs, environment data, or tester identities.

@@ -1,0 +1,45 @@
+{
+  "skill_name": "team-ux",
+  "evaluation_instructions": "Treat fixture observations as verified facts. Run each prompt independently against SKILL.md. Do not execute downstream coding or approve artifacts independently. Assess responses against assertions.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "generative-ux-from-requirements",
+      "prompt": "請用 team-ux 為 cards 功能建立 UX 規格包。已驗證 docs/requirements/cards.md 是 complete/approved/current，包含 S01（卡片列表）與 S02（卡片編輯對話框），REQ-01 到 REQ-03、AC-01 到 AC-05。目前沒有 Figma 設計稿，請以 generative mode 進行。不要修改程式碼，產出符合規範的 UX 設計規格。",
+      "expected_output": "Operates in generative mode, gates upstream requirements, creates docs/ux/cards/ package with README.md, wireframes.md, copy-deck.md, and ui-acceptance.md pre-populated with S01 and S02 situation coverage.",
+      "assertions": [
+        "Selects generative mode and records requirements baseline using check_upstream_gate.py.",
+        "Generates docs/ux/cards/ package with README.md, wireframes.md, copy-deck.md, and ui-acceptance.md.",
+        "Maps S01 and S02 to REQ-01..03 and AC-01..05.",
+        "Covers canonical situation states (normal, loading, invalid, 403, 404, empty, offline) in wireframes and ui-acceptance.md.",
+        "Leaves review_status pending human approval instead of marking it approved."
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "figma-bridge-mode",
+      "prompt": "請用 team-ux 處理 user-profile 功能的 UX 規格。Figma 檔案連結為 https://www.figma.com/design/xyz123/Profile-Flow?node-id=10-24。需求文件 docs/requirements/user-profile.md 已核准，定義 S01 (Profile View) 與 S02 (Avatar Crop)。請以 figma-bridge 模式掛載外部設計並產出驗收文件。",
+      "expected_output": "Operates in figma-bridge mode, records the Figma URL and frame mapping in README.md, extracts situation states, and pre-populates ui-acceptance.md for QA.",
+      "assertions": [
+        "Selects figma-bridge mode and preserves the Figma URL in README.md frontmatter and body.",
+        "Does not redraw or invent visual layouts that override the external design of record.",
+        "Pre-populates ui-acceptance.md coverage matrix for S01 and S02 with planned situation verifications.",
+        "Sets artifact_status complete when finished, awaiting human review."
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "changes-requested-flow",
+      "prompt": "用 team-ux 處理 docs/ux/cards/ 的審查回饋。審查紀錄指出 S01 缺少離線（offline）狀態下的提示與卡片唯讀行為規格。需求文件未變更。請說明如何處理。",
+      "expected_output": "Revises wireframes.md and copy-deck.md to specify offline toast message and read-only card styling, updates ui-acceptance.md, and re-validates the package without changing product code.",
+      "assertions": [
+        "Identifies changes-requested state and updates wireframes.md and copy-deck.md for the offline situation.",
+        "Updates ui-acceptance.md to reflect the offline test case.",
+        "Runs validate_ux.py to confirm package integrity before re-entering review."
+      ],
+      "files": []
+    }
+  ]
+}

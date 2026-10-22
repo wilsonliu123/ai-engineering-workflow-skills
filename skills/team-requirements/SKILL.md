@@ -23,6 +23,7 @@ Read `references/observability-protocol.md` before execution. Start a telemetry 
 
 - Write only requirements documentation. Do not modify product code, tests, build files, deployment configuration, or runtime state.
 - Default output path: `docs/requirements/{feature-slug}.md`.
+- Default output language: Write all requirements prose, descriptions, and acceptance criteria in Traditional Chinese (繁體中文) by default, preserving technical identifiers, code symbols, and IDs (`REQ-*`, `AC-*`) in standard technical format.
 - Update the existing requirement file for the same feature instead of creating version-suffixed copies.
 - Let Git provide history. Do not increment a document version on every edit.
 - Record responsibility by role, not by a person's name. Actual reviewer identity belongs in the repo's review/PR/issue history.

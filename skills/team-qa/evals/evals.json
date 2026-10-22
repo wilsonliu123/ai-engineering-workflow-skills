@@ -1,0 +1,66 @@
+{
+  "skill_name": "team-qa",
+  "evaluation_instructions": "These fixtures evaluate execution-assignment interaction only. Treat observations as verified; simulate the human-facing brief, picker question/options or focused follow-up, and intended state without modifying project files or executing tests. Read prompt-only fixtures, save initial responses/states, then score exact assertions without rewriting them. This is instruction behavior evaluation, not host UI integration.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "readable-card-front-assignment",
+      "prompt": "使用 team-qa execution-assignment，用繁體中文向我呈現下一則測試的執行方式問題，等待我的回答。已驗證：test planning 完成，必要 gate PASS，決策人是人類 QA Lead，沒有 standing authorization，也沒有 TC-003 的既有決定。TC-003 是 functional/feature，Proposed layer e2e；操作是開啟單字卡片正面；應看到單字、KK 音標、播放控制，不應看到釋義、例句。只規劃檢查可見內容，未規劃測試播放聲音或美觀。工具是否已建置未知。請模擬顯示在選項前的說明及 picker 的問題與四個選項，不要替我選。",
+      "expected_output": "Plain-language case brief separates action, visible and hidden content from a short choice question. Four choices explain tool, human, mixed and deferred execution. Jargon and unsolicited batch rules do not crowd the question.",
+      "assertions": [
+        "Provides a separate brief naming TC-003, opening the front face, visible word/KK/playback controls and hidden translation/examples; does not add audio playback or visual-quality acceptance criteria.",
+        "Keeps the picker question to one short execution-choice question and explains all four choices in ordinary language, without crowding it with e2e, planning-field jargon or instructions for assigning remaining cases.",
+        "Leaves TC-003 pending until an actual human answer, distinguishes assignment from execution, and does not promise an available tool, choose a mode or invent results."
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "explain-e2e-without-assigning-mode",
+      "prompt": "正在 team-qa execution-assignment，TC-003 的預期是卡片正面可見單字、KK 音標、播放控制，隱藏釋義和例句。人類 QA Lead 尚未選執行方式，Proposed layer 是 e2e。人類問：『e2e 不是代表自動測試嗎？我看不懂這裡到底要我選什麼。』請解釋目前需要判斷的事，不要把這句疑問記成決定。",
+      "expected_output": "Explains complete-user-flow testing in ordinary words and that the current decision is whether a tool, a person or both execute it. Keeps the same case pending.",
+      "assertions": [
+        "Explains e2e as checking the complete user operation/flow, which may be performed by tools or humans, rather than equating e2e with an automated assignment.",
+        "States plainly that the human is choosing how TC-003 will be checked, with enough case context to understand the choice, without adding a batch-rule question.",
+        "Records no execution choice from the clarification request, does not advance the queue, and does not start tests or claim results."
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "hybrid-followup-explains-missing-split",
+      "prompt": "team-qa execution-assignment 的 TC-003：卡片正面要看得到單字、KK 音標與播放控制，隱藏釋義和例句。人類 QA Lead 剛提交『工具加人工檢查』。既有確認資訊：工具用 Playwright，人工執行角色 QA；但尚未決定工具負責哪些項目、人負責哪些項目。沒有允許套用到其他 TC，也未授權執行測試。請記錄這個人的選擇，呈現本輪下一個需要回答的問題與預期狀態。",
+      "expected_output": "Records the human's hybrid choice and asks one concrete question about the missing split, reusing known tool and role, without expanding to other cases or executing.",
+      "assertions": [
+        "Records hybrid as the human QA Lead's TC-003 choice and reuses the known Playwright tool and QA role rather than asking for them again.",
+        "Asks one understandable question about which checks belong to the tool and which to the human; does not record an AI-invented split as agreed.",
+        "Does not apply hybrid to additional cases, restart the mode-selection question, execute tests or invent pass/fail evidence."
+      ],
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "ambiguous-bulk-rule-needs-scoped-clarification",
+      "prompt": "team-qa execution-assignment 中，TC-003 已經由人類選 hybrid 並確認工具只檢查卡片正面的顯示/隱藏，人工 QA 看同一組畫面內容。TC-004 的測試是 API 權限錯誤碼，TC-005 是高負載的 p95 延遲，兩則尚未分配。人類現在說『剩下也照剛才那樣處理』，但這兩則沒有卡片畫面，因此無法直接套用剛才的工具/人工分工；人類未提供其他規則。請呈現需要釐清的一個問題，不要替我分配或執行。",
+      "expected_output": "Separates the user's requested bulk-rule clarification from the prior card case; explains why its UI split cannot directly cover API/load cases and asks a scoped question before modifying them.",
+      "assertions": [
+        "Acknowledges the human's bulk request separately and identifies TC-004 API permissions and TC-005 p95 load checks as not covered by the prior card-visibility split.",
+        "Asks one focused, plain-language clarification of the intended hybrid rule/scope rather than silently selecting methods or offering an unrelated full lifecycle explanation.",
+        "Preserves TC-003 and leaves TC-004/TC-005 unassigned until the missing rule is supplied; does not infer actual execution permission or results."
+      ],
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "apply-clear-standing-rule-then-show-next-case",
+      "prompt": "使用 team-qa execution-assignment。人類 QA Lead 在當前對話已明確授權：TC-003 到 TC-005 都用 manual，由 QA 執行；請記下並繼續下一則。這三則都是手動 UI 測試，對應既有文件 docs/ux/cards/ui-acceptance.md，沒有其他缺資料。TC-006 尚未決定，是 functional/permission API 測試：匿名請求讀取私有卡片，預期 HTTP 401 且回應不含卡片資料；工具準備狀態未知。無其他 standing rule，也沒有實際執行授權。請呈現預期矩陣變更與下一則問題。",
+      "expected_output": "Uses explicit authorization for exactly TC-003 to TC-005, preserves the QA decision source and owner, and presents a clear separate TC-006 brief and short execution-choice question.",
+      "assertions": [
+        "Records manual, QA owner and the supplied UI evidence attachment for exactly TC-003 through TC-005 using the human QA Lead's explicit authorization as the decision source, without asking those choices again.",
+        "Presents TC-006 with a separate plain-language brief about anonymous private-card access, HTTP 401 and no card data, followed by a short execution-choice question.",
+        "Keeps TC-006 pending rather than extending the manual rule, promises no ready automation or result, and executes no tests."
+      ],
+      "files": []
+    }
+  ]
+}

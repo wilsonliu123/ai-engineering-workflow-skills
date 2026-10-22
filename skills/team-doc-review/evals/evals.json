@@ -1,0 +1,90 @@
+{
+  "skill_name": "team-doc-review",
+  "evaluation_instructions": "Treat fixture observations as verified. Evaluate the human-facing review response and intended session state without writing project files, stamping approval, or executing downstream work. Read prompt-only fixtures first, save responses, then score against these assertions without rewriting the responses. This evaluates review behavior, not host integration.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "clean-requirements-still-need-scope-acceptance",
+      "prompt": "請用 team-doc-review 開始審核 docs/requirements/cards.md。已驗證：artifact_status complete、validity current、review_status not-started、risk_level medium；QA testability pass，無上游阻塞。AC-03 明定每次最多 20 張，超過不能開始；§4 排除調整數量的設定，以縮短第一版交付時間。兩者內部一致，但都是 AI 提案，尚無人接受，也沒有其他重要待決事項。你是審核助理，先呈現本輪需要我判斷的內容，等待回答。",
+      "expected_output": "Shows one concrete question about accepting the fixed 20-card scope, with source, practical consequence, a recommendation and a meaningful alternative. Does not jump from QA pass to document approval.",
+      "assertions": [
+        "Asks a direct question about accepting the fixed 20-card limit and excluded setting, grounded in AC-03 and section 4; a generic scope-check question is insufficient.",
+        "Explains the consequence, recommends one course with its reason/cost, and identifies a scope-changing alternative as requiring requirements revision.",
+        "Shows one unresolved material decision now and waits; does not record acceptance or request final approval before that item is answered."
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "prioritize-one-design-decision-over-minor-issues",
+      "prompt": "用 team-doc-review 審核 docs/design/cards/sad.md，預設 one-at-a-time。已驗證文件 complete/current、risk_level high，上游 approved/current，所有必要 gate PASS。§5 提案卡片刪除後立即從正式資料庫永久刪除，沒有復原；需求沒有規定保留/復原政策，尚無人類決定。§7 另提案將同步輪詢間隔固定為 60 秒，使用者最多等 60 秒才看到另一裝置的修改，也尚未接受。另有 12 個標點/排版觀察，不影響含義。請開始人工審核，等待我的回答。",
+      "expected_output": "Reports two material decisions, asks only the irreversible deletion question first with context and trade-offs, and leaves the polling question queued and minor observations for recap.",
+      "assertions": [
+        "States that two material decisions remain and presents only the irreversible deletion decision first, citing section 5 and its lack of recovery.",
+        "Provides a concrete recommendation and alternatives with recovery/data-retention implications, and identifies changed design/requirements as needing owner revision rather than silently adding a retention policy.",
+        "Does not turn the 12 minor observations into human questions or ask the polling and final approval questions in the same default turn."
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "resume-saved-question-without-reopening-accepted-item",
+      "prompt": "繼續 team-doc-review。已驗證 docs/workflow/reviews/REQ-cards.review.md 與 docs/requirements/cards.md 的 baseline 相同且上游/文件狀態有效。session one-at-a-time，current_item REVQ-002，final_decision pending。REVQ-001 的固定 20 張已有人類接受紀錄。REVQ-002 未回答：AC-07 提案離線時只能讀取已下載卡片，不能編輯；來源 docs/requirements/cards.md AC-07。理由是避免第一版衝突合併成本，替代選項是允許離線編輯但需新增同步規則。請接著呈現我現在需要回答的問題。",
+      "expected_output": "Resumes REVQ-002 with a concrete offline editing question and usable context; does not repeat REVQ-001 or infer final approval.",
+      "assertions": [
+        "Presents REVQ-002 as a direct decision about read-only offline behavior, citing AC-07 and explaining its practical effect.",
+        "Includes a recommendation and the cost of the offline-editing alternative, and leaves the item unanswered until the human responds.",
+        "Does not reopen REVQ-001, create a new generic question, or advance to final document approval."
+      ],
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "no-extra-questions-when-material-decisions-covered",
+      "prompt": "用 team-doc-review 審核 docs/requirements/cards.md。已驗證 complete/current、risk_level medium、QA pass、必要 gate PASS。唯一有實質影響的範圍選擇是 AC-03 固定每次最多 20 張且沒有設定。docs/workflow/decisions/PM-01.md 有授權 PM 明確接受這兩點的紀錄，與當前內容完全相符。沒有新範圍、未決假設或風險；剩下兩個標點觀察不改含義。尚無這份文件的最終核准。請呈現人工審核下一輪。",
+      "expected_output": "Explains that no material item remains because the current choice is covered by PM-01, recaps checks/minor observations, and asks for explicit final document decision.",
+      "assertions": [
+        "Cites PM-01 as covering the current 20-card/no-setting choice and explains that no unresolved material questions remain.",
+        "Asks for an explicit final document-level decision without inventing new product-policy questions or promoting punctuation to a blocker.",
+        "Keeps final approval pending until the human answers; the item-level PM record is not treated as final document approval."
+      ],
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "show-all-means-concrete-questions-not-headings",
+      "prompt": "team-doc-review：請一次列出全部要我判斷的問題。docs/design/cards/sad.md complete/current、medium risk、所有必要 gate PASS。§5 提案新 API v2 上線當天移除 v1，已知仍有 2 個舊版客戶端使用 v1，沒有遷移承諾或人類接受紀錄。§8 提案背景同步每 60 秒執行，最慢 60 秒才看到跨裝置更新，目的是控制流量；需求允許延遲但未定秒數，沒有既有決定。只有這 2 個實質選擇。請先列出問題並等待，勿替我決定。",
+      "expected_output": "Lists both concrete questions with individual IDs, sources, consequences, recommendations and alternatives; leaves decisions pending.",
+      "assertions": [
+        "Shows both ranked, concrete decision questions about v1 removal timing and the 60-second sync delay, rather than only topic headings or the first question.",
+        "For each question supplies its section, actual proposal, practical consequence, recommended course and meaningful alternative; proposed changes require owner revision.",
+        "Records neither item acceptance nor final approval and waits for the human's choices."
+      ],
+      "files": []
+    },
+    {
+      "id": 6,
+      "name": "deterministic-failure-is-not-risk-acceptance-question",
+      "prompt": "team-doc-review，審核 docs/qa/cards/qa-report.md。已驗證 report complete/current，但 TC-009 顯示 pass，normalized 證據目錄內沒有任何 TC-009 結果；validate_qa.py 已因缺證據而 FAIL。另無可獨立處理的實質選擇。請說明本輪審核結果與需要處理的內容。不能將缺證據寫成 pass。",
+      "expected_output": "Reports the evidence failure and returns correction to the QA owner, with explicit missing evidence, rather than asking the human to waive the required gate or inventing results.",
+      "assertions": [
+        "Names TC-009 and the missing normalized execution evidence as a verified blocker, distinguishing the report's claimed pass from observed evidence.",
+        "Gives a concrete correction/evidence action to the owning QA workflow without fabricating a result or rewriting the substantive QA report during document review.",
+        "Does not offer human acceptance as a way to bypass the failed gate and does not request or record final approval."
+      ],
+      "files": []
+    },
+    {
+      "id": 7,
+      "name": "changed-baseline-reopens-only-affected-decision",
+      "prompt": "team-doc-review 續審。docs/requirements/cards.md complete/current、必要 gate PASS；review session 的 baseline 已落後，尚無 final approval。舊 session：REVQ-001 人類接受『AC-03 每次最多 20 張且不能調整』，REVQ-002 人類接受『AC-07 離線唯讀』。這次 diff 只把 AC-03 的 20 改成 200，AC-07 與其他內容完全不變；200 是 AI 改的，未經人接受。請重新呈現本輪需要判斷的問題，等待回答。",
+      "expected_output": "Marks the session stale, reopens acceptance of the actual changed 200-card threshold with its consequences, retains the unaffected offline decision, and waits.",
+      "assertions": [
+        "Identifies the changed baseline, marks the review session stale pending affected-item re-review, and asks a concrete question about accepting the new 200-card threshold rather than carrying the 20-card approval forward.",
+        "Explains the changed behavior and a grounded recommendation/alternative without inventing performance evidence or editing requirements during review.",
+        "Preserves the unaffected AC-07 decision and leaves the changed item and final document approval unresolved until explicit human decisions."
+      ],
+      "files": []
+    }
+  ]
+}

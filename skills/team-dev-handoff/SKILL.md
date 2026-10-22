@@ -14,6 +14,8 @@ Preflight requires `docs/dev-prep/<feature-slug>/index.md` with `artifact_status
 If the dev-prep gate fails, stop authoritative handoff creation. You may report the missing gate only.
 
 ## Output
+- Default output language: Write all delivery documentation and guides in Traditional Chinese (繁體中文) by default, preserving git SHAs, commands, and code references.
+
 Create/update:
 - `docs/dev-delivery/<feature-slug>/dev-delivery.md` (required)
 - `developer-guide.md` when developers/integrators need new operational knowledge

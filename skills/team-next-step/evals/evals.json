@@ -1,0 +1,312 @@
+{
+  "skill_name": "team-next-step",
+  "evaluation_instructions": "Run each prompt independently with SKILL.md. The supplied snapshots and gate results are verified fixture facts, not the evaluator's real checkout. Do not inspect another repository or execute the recommended work. Return the skill's normal recommendation, then assess the assertions. These cases check routing behavior; they do not establish integration with a host's skill loader.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "new-feature",
+      "prompt": "請用 team-next-step 判斷 email-alerts 接下來做什麼。目標是完成這個功能的工程流程。已確認專案與功能；目前只有產品想法，尚無 docs/requirements/email-alerts.md，也沒有任何下游文件。相關 team skills 可用。",
+      "expected_output": "Recommend team-requirements with a concrete requirements/AC drafting outcome.",
+      "assertions": [
+        "Selects team-requirements.",
+        "Does not ask the already identified feature or jump to design/coding."
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "testability-before-approval",
+      "prompt": "email-alerts 的需求寫好了，下一步？已驗證 docs/requirements/email-alerts.md 是 complete、not-started、current；docs/qa/email-alerts/requirements-testability.md 尚不存在。需求沒有其他已知未決事項，相關 skills 可用。",
+      "expected_output": "Recommend team-qa requirements-review before final human requirements approval.",
+      "assertions": [
+        "Selects team-qa requirements-review.",
+        "Does not recommend immediate requirements approval or design.",
+        "Completion distinguishes testability clearance from human requirements approval."
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "resume-review",
+      "prompt": "幫我看 email-alerts 下一步。已驗證需求 complete、in-progress、current；requirements-testability.md 結果無阻塞且基準一致。docs/workflow/reviews/REQ-email-alerts.review.md 與目前需求內容一致，記錄前兩題已決定、第三題尚未回答，沒有其他阻塞。",
+      "expected_output": "Resume the existing requirements review with team-doc-review at the unresolved item.",
+      "assertions": [
+        "Selects team-doc-review and cites the existing session.",
+        "Does not restart requirements drafting or invent approval.",
+        "Does not require separate approval for the testability result."
+      ],
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "design-changes-requested",
+      "prompt": "email-alerts 的設計被退回，現在先做什麼？已驗證需求與標準 gate PASS；docs/design/email-alerts/sad.md 是 complete、changes-requested、current。審核紀錄要求修改重試策略及對應介面說明，需求本身沒有變更。",
+      "expected_output": "Route substantive design edits to team-design, then re-enter review.",
+      "assertions": [
+        "Selects team-design for the content change.",
+        "Does not ask team-doc-review to rewrite design or proceed to coding."
+      ],
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "stale-test-plan",
+      "prompt": "email-alerts 下一步？設計變更已重新核准；需求、設計、標準目前都是 complete、approved、current 且本身 gate PASS。既有 docs/qa/email-alerts/test-spec.md、test-cases.md 與 dev-prep/index.md 原本已核准，但 gate 明確報告測試規劃仍記錄舊設計雜湊而 STALE，dev-prep 也依賴這份舊規劃。",
+      "expected_output": "Assess/update QA planning through team-qa test-planning before refreshing dependent dev-prep.",
+      "assertions": [
+        "Selects team-qa test-planning as the first affected owner.",
+        "Does not redraft the already current requirements/design or jump straight to coding.",
+        "Does not refresh hashes to conceal the stale plan."
+      ],
+      "files": []
+    },
+    {
+      "id": 6,
+      "name": "coding-with-qa-assignment-pending",
+      "prompt": "email-alerts 要繼續開發，下一步？需求、設計、QA Test Spec 與 docs/dev-prep/email-alerts/index.md 均核准且 gate PASS。TASK-001 沒有未完成依賴，尚未實作；入口檢查 PASS。execution-matrix.md 尚有人工分配未完成，但目前沒有要開始 QA 執行。",
+      "expected_output": "Recommend RD/Coding AI implementing TASK-001 from the approved dev-prep contract.",
+      "assertions": [
+        "Selects coding for TASK-001 rather than blocking on QA assignment.",
+        "Does not invent a team-coding skill or ask team-dev-prep to write product code.",
+        "May mention QA assignment only as parallel preparation."
+      ],
+      "files": []
+    },
+    {
+      "id": 7,
+      "name": "implementation-needs-handoff",
+      "prompt": "email-alerts 程式完成了，接下來？已核准且有效的 dev-prep 任務全部完成，實作版本 candidate-A 可辨識，真實 build/test 與逐任務證據均已提供，沒有未決設計偏離。docs/dev-delivery/email-alerts/dev-delivery.md 尚不存在。",
+      "expected_output": "Recommend team-dev-handoff before formal code review.",
+      "assertions": [
+        "Selects team-dev-handoff.",
+        "Requires a factual handoff and its approval gate before formal review."
+      ],
+      "files": []
+    },
+    {
+      "id": 8,
+      "name": "formal-code-review",
+      "prompt": "email-alerts 的交接文件已完成審核，現在做什麼？Requirements、Design、Dev Prep、Dev Handoff 與必要共用來源都核准且 current，gate PASS。實作與 handoff 都是 candidate-A；docs/review/email-alerts/code-review.md 尚不存在。",
+      "expected_output": "Recommend team-review against candidate-A and the approved upstream sources.",
+      "assertions": [
+        "Selects team-review for the exact implementation identity.",
+        "Does not treat the handoff's tests as a replacement for formal code review."
+      ],
+      "files": []
+    },
+    {
+      "id": 9,
+      "name": "resume-qa-assignment",
+      "prompt": "我要繼續 email-alerts 的 QA 執行分配，下一步？已核准且有效的 test-spec.md 與 test-cases.md 定義 TC-001 至 TC-003。execution-matrix.md 已記錄人類對 TC-001 的選擇，TC-002、TC-003 尚未決定；docs/workflow/reviews/email-alerts-qa-execution-assignment.md 記錄下一題是 TC-002。沒有代為選擇測試方式的授權。",
+      "expected_output": "Resume team-qa execution-assignment at TC-002, preserving human ownership of execution choices.",
+      "assertions": [
+        "Selects team-qa execution-assignment and the existing session.",
+        "Does not choose manual/automated execution or route the interview to generic document approval.",
+        "Explains that the next action records human execution choices, why TC-002 is next, and preserves the distinction from actual test execution."
+      ],
+      "files": []
+    },
+    {
+      "id": 10,
+      "name": "tests-not-executed",
+      "prompt": "email-alerts 現在該做什麼？QA execution-run.md 綁定 candidate-A/staging；計畫、分配、交接與 code review 所有必要 gate PASS。TC-001 指派 QA 用現有工具執行，尚未實際執行，也沒有任何原始結果或 normalized evidence。",
+      "expected_output": "Recommend actual assigned QA execution by the tester/toolchain.",
+      "assertions": [
+        "Selects real test execution outside team-qa and team-qa-evidence.",
+        "Does not import nonexistent results or infer pass.",
+        "Explains that planning and handoff are ready but actual observations are missing, and names the assigned tester/toolchain as the next executor."
+      ],
+      "files": []
+    },
+    {
+      "id": 11,
+      "name": "results-awaiting-import",
+      "prompt": "email-alerts 測完了，下一步？QA run 與所有必要 gate PASS。evidence/candidate-A/results.xml 是支援的 JUnit 格式，含 TC-001 與 TC-002 的真實結果，對應 candidate-A/staging，TC 對應明確；尚無 normalized evidence，qa-report.md 也不存在。",
+      "expected_output": "Recommend team-qa-evidence tool-import with the existing report and current requirements/test-plan baselines.",
+      "assertions": [
+        "Selects team-qa-evidence tool-import.",
+        "Does not rerun tests merely because normalized records are absent or jump directly to release.",
+        "Explains that actual results already exist and the missing step is normalization by team-qa-evidence, not a new test run or human approval."
+      ],
+      "files": []
+    },
+    {
+      "id": 12,
+      "name": "normalized-evidence-ready",
+      "prompt": "email-alerts 下一步？所有 final-assessment 必要上游 gate 都 PASS，沒有 AT-RISK。normalized evidence 已驗證為 current，覆蓋全部本次 TC，需求/測試規劃基準、candidate-A/staging 與執行來源一致。docs/qa/email-alerts/qa-report.md 尚未建立。",
+      "expected_output": "Recommend team-qa final-assessment, followed by the QA report's human review.",
+      "assertions": [
+        "Selects team-qa final-assessment.",
+        "Does not treat normalized evidence itself as QA approval or release readiness.",
+        "Explains that validated normalized results are ready for assessment and distinguishes the resulting QA report from its subsequent human approval."
+      ],
+      "files": []
+    },
+    {
+      "id": 13,
+      "name": "candidate-changed-after-qa",
+      "prompt": "準備交付 email-alerts，team-next-step？handoff、code review、QA report 皆核准並涵蓋 candidate-A。現在想交付 candidate-B，已確認產品程式有變更；尚無 B 的影響評估、review 或測試證據。文件仍標示 current，但候選版本明確不同。",
+      "expected_output": "Recommend assessing the implementation change and refreshing the affected handoff/review/test evidence before claiming delivery readiness.",
+      "assertions": [
+        "Identifies the A/B identity mismatch and an actionable owner for impact assessment/revalidation.",
+        "Does not reuse A's approval as proof for B or claim release-ready based on metadata."
+      ],
+      "files": []
+    },
+    {
+      "id": 14,
+      "name": "ambiguous-feature",
+      "prompt": "team-next-step，接下來該做什麼？這是新對話，沒有指定功能或文件。專案有 email-alerts 與 account-export，兩個功能都有未完成工作；email-alerts 檔案較新，但沒有證據表示它是本次目標。",
+      "expected_output": "Ask one concise question to identify the feature before choosing a stage.",
+      "assertions": [
+        "Asks which feature rather than choosing the newest file.",
+        "Does not invent a repository-wide priority or produce two competing main recommendations."
+      ],
+      "files": []
+    },
+    {
+      "id": 15,
+      "name": "handoff-goal-complete",
+      "prompt": "email-alerts 還有下一步嗎？這次目標只到內部交付文件完成審核，不包含部署。release-handoff.md 是 complete、approved、current；所有必要 gate PASS、版本一致、無未處理阻塞，內部文件交付紀錄也已提供。",
+      "expected_output": "State that no action remains for the stated internal handoff outcome, citing the release artifact and gates.",
+      "assertions": [
+        "Reports completion for the stated goal.",
+        "Does not recommend deployment, fabricate deployment evidence, or restart a finished stage."
+      ],
+      "files": []
+    },
+    {
+      "id": 16,
+      "name": "approved-report-with-blocking-defect",
+      "prompt": "email-alerts 的 QA report 已核准，下一步能準備交付嗎？已確認候選版本一致，所有文件治理 gate PASS；但 qa-report.md 記錄 TC-002 fail、DEF-001 為未解決 blocker，確認是產品實作缺陷，沒有風險接受或豁免，現有已核准任務範圍涵蓋修復。",
+      "expected_output": "Recommend implementation remediation by RD/Coding AI and affected revalidation before delivery.",
+      "assertions": [
+        "Prioritizes the known blocking implementation defect.",
+        "Does not treat approval of a report as a passing test result or recommend ordinary release progression."
+      ],
+      "files": []
+    },
+    {
+      "id": 17,
+      "name": "missing-engineering-standards",
+      "prompt": "email-alerts 設計卡住，team-next-step？需求已核准且 current；設計草稿已明確列出唯一阻塞是 docs/shared/engineering-standards.md 不存在，Tech Lead 尚未建立。專案沒有其他 canonical 標準來源，沒有可同步的既有核准決策。",
+      "expected_output": "Name the Tech Lead's standards-authoring action, followed by document review when the source is complete.",
+      "assertions": [
+        "Names the missing shared artifact and responsible role.",
+        "Does not invent standards, substitute a nonexistent skill, or approve an incomplete source."
+      ],
+      "files": []
+    },
+    {
+      "id": 18,
+      "name": "authorized-at-risk-coding",
+      "prompt": "我要依現有授權開始 email-alerts 的 TASK-001，team-next-step？Requirements、Design、Test Spec 與標準都核准且 gate PASS；dev-prep/index.md 是 complete、current、in-progress，帶有已核實的人類 proceed_at_risk 參照，明確允許核准前開始 coding。自身 gate 回 AT-RISK，task 的 upstream 入口檢查 PASS，沒有其他依賴或阻塞。",
+      "expected_output": "Recommend the authorized coding task while explicitly retaining the at-risk status and pending dev-prep approval.",
+      "assertions": [
+        "Allows the explicitly authorized coding path and labels it AT-RISK.",
+        "Does not relabel dev-prep approved or force a new permission round for the already authorized task.",
+        "Does not imply downstream approval can bypass the pending upstream approval."
+      ],
+      "files": []
+    },
+    {
+      "id": 19,
+      "name": "existing-standards-without-governance",
+      "prompt": "team-next-step，email-alerts 的需求完成後現在應該做什麼？需求是 complete、approved、current，需求 gate PASS。requirements-testability.md 是 current、pass-with-conditions、沒有阻塞，基準檢查 PASS。docs/design/email-alerts/ 尚不存在。docs/shared/engineering-standards.md 已存在，內容看似完整，但沒有治理 metadata 或核准紀錄，也沒有 proceed_at_risk 授權；設計結構驗證器只確認這個檔案存在，不能證明它已核准。我沒有要求先做設計草稿。 工程標準是我剛匯入的通用文件，其中工具路徑仍是 <path-or-TBD>。",
+      "expected_output": "Prioritize the Tech Lead establishing the existing standards artifact's content readiness and missing governance, followed by its human review. Treat formal design as blocked despite the file's existence and the requirements gate passing. Explain that Tech Lead is the responsible role and AI can help prepare the source without a dedicated team skill; supply a copyable preparation prompt that preserves human decisions and the subsequent review boundary.",
+      "assertions": [
+        "Names the existing engineering-standards.md and its missing governance/approval as the primary prerequisite to resolve.",
+        "Does not infer approved standards from file existence, structural validation, or the separate requirements PASS.",
+        "Next action, invocation prompt, and completion condition do not authorize ordinary team-design or a complete design package before the prerequisite clears.",
+        "Explains that requirement QA has already completed and does not rerun it merely to fill the gap.",
+        "Explains that Tech Lead is a responsible role, no dedicated team skill owns this preparation, and AI can assist with it.",
+        "Provides a copyable general AI prompt naming the existing standards path, checking repository applicability, filling verifiable content/governance, and listing human decisions; it stops at readiness assessment without inventing facts, self-approval, downstream execution, or handing source rewriting to team-doc-review."
+      ],
+      "files": []
+    },
+    {
+      "id": 20,
+      "name": "standards-ready-awaiting-approval",
+      "prompt": "email-alerts 下一步？需求已核准、QA 可測試性檢查 current 且無阻塞。docs/shared/engineering-standards.md 已有完整治理資料，artifact_status: complete、review_status: not-started、validity: current，內容沒有已知缺口；它的核准 gate 是 BLOCK，因為人類還沒有審核或授權提前推進。設計尚未開始。",
+      "expected_output": "Recommend team-doc-review for the existing engineering standards before formal design.",
+      "assertions": [
+        "Selects team-doc-review with engineering-standards.md as the review target.",
+        "Does not send complete standards back for unnecessary rewriting or select formal team-design.",
+        "Completion requires a real approval and a valid standards gate, not merely document existence."
+      ],
+      "files": []
+    },
+    {
+      "id": 21,
+      "name": "design-ready-after-qa-and-all-gates",
+      "prompt": "team-next-step，我只記得 email-alerts 的需求完成了，下一步不是 QA 嗎？目前已核對：需求 complete、approved、current；docs/qa/email-alerts/requirements-testability.md 對目前需求是 current、pass-with-conditions，沒有阻塞，所有條件均已明確判定不擋設計；工程標準已正式核准且 gate PASS，其他適用的設計前置項也全部 PASS。docs/design/email-alerts/ 尚不存在。",
+      "expected_output": "Recommend team-design and explain that requirements-review is already evidenced, so it does not need to run again.",
+      "assertions": [
+        "Selects team-design when all required inputs are usable.",
+        "Explicitly explains that requirements-review already completed based on the current testability result.",
+        "Does not turn non-blocking pass-with-conditions into an invented blocker or restart QA."
+      ],
+      "files": []
+    },
+    {
+      "id": 22,
+      "name": "explicit-draft-with-unapproved-standards",
+      "prompt": "email-alerts 的需求及 QA 可測試性都已完成。工程標準檔案雖存在，但還沒核准，沒有 proceed_at_risk。我知道正式設計被擋住；這次只想先用 team-design 做不具正式效力的方案草稿，下一步怎麼描述？不需要把它做成可送審的正式設計。",
+      "expected_output": "Respect the explicit draft-only request with team-design, retaining draft status and the unresolved standards approval prerequisite.",
+      "assertions": [
+        "Allows the explicitly requested non-authoritative team-design draft and names the unresolved standards prerequisite.",
+        "The ready-to-use prompt and done condition both retain draft-only scope without complete/review-ready/downstream-ready claims.",
+        "Does not invent AT-RISK authorization or require redoing the completed requirement QA."
+      ],
+      "files": []
+    },
+    {
+      "id": 23,
+      "name": "approved-requirements-without-qa-evidence",
+      "prompt": "email-alerts 的需求檔已標示 complete、approved、current，工程標準也通過 gate；現在可以去設計嗎？已確認 docs/qa/email-alerts/requirements-testability.md 不存在，其他來源也沒有可測試性檢查證據。只有需求核准紀錄，沒有 QA 檢查結果。",
+      "expected_output": "Recommend team-qa requirements-review to resolve the missing testability evidence before design, preserving the existing approval record.",
+      "assertions": [
+        "Selects team-qa requirements-review despite the requirements approval label.",
+        "Does not infer that requirement approval proves QA execution or recommend ordinary design.",
+        "Preserves existing human decisions and routes any resulting changes through their owning stage and required review."
+      ],
+      "files": []
+    },
+    {
+      "id": 24,
+      "name": "start-qa-assignment-during-development",
+      "prompt": "email-alerts 正在開發，我想先準備 QA，team-next-step？需求、設計、工程標準、test-spec.md、test-cases.md 與 dev-prep/index.md 都已核准且基準 current，相關 gate PASS。開發任務仍在進行。測試計畫定義 TC-001、TC-002，但 execution-matrix.md 與分配 session 尚不存在，人類還沒有選擇測試方式。我這次只問下一步，沒有要你開始訪談或執行測試。",
+      "expected_output": "Recommend starting team-qa execution-assignment as parallel QA preparation, explaining that test planning is complete but human execution choices are missing and development may continue.",
+      "assertions": [
+        "Selects team-qa execution-assignment and explains that human execution choices, not test planning, are missing.",
+        "Explicitly allows development to continue and does not require coding to wait for assignment or QA to wait for development completion.",
+        "Provides a prompt and completion condition for recording real human choices in execution-matrix.md without selecting methods, starting the interview, executing tests, or inventing decisions during this routing pass."
+      ],
+      "files": []
+    },
+    {
+      "id": 25,
+      "name": "reviewed-candidate-needs-execution-handoff",
+      "prompt": "email-alerts 的 code review 已完成並核准，接下來 QA 要做什麼？已驗證 candidate-A/staging 就緒，需求、設計、工程標準、test-spec.md、test-cases.md、dev-delivery.md 與 code-review.md 都是 complete、approved、current，基準和 candidate-A 一致，所有執行交接必要 gate PASS，沒有 AT-RISK 或未解決 finding。execution-matrix.md 已核准且 current，所有本次案例均有人類指定的方式與執行角色。execution-run.md 尚不存在；測試還沒開始，沒有原始結果或正規化證據。只提供下一步建議。",
+      "expected_output": "Recommend team-qa execution-handoff to bind candidate-A/staging to the current plan and assignment before actual QA execution; keep execution, evidence intake, and assessment distinct.",
+      "assertions": [
+        "Selects team-qa execution-handoff and explains that review and assignment are complete but a candidate-bound execution-run.md is missing.",
+        "The prompt and done condition bind candidate-A/staging and current plan/assignment baselines to execution-run.md; completing this document does not claim tests ran or passed.",
+        "Names assigned QA testers/toolchain as the subsequent execution owner, does not repeat completed assignment, import nonexistent results, jump to final-assessment/release, or execute downstream work during this recommendation."
+      ],
+      "files": []
+    },
+    {
+      "id": 26,
+      "name": "ui-feature-needs-ux-design",
+      "prompt": "email-alerts 包含前端介面（設定警報頻率與接收人列表），需求與測試度審核均已核准；docs/requirements/email-alerts.md 的 ux_reference 指向 docs/ux/email-alerts/，但該目錄尚未建立。下一步做什麼？",
+      "expected_output": "Recommend team-ux to establish the docs/ux/email-alerts/ package before downstream technical design and development preparation.",
+      "assertions": [
+        "Selects team-ux as the owning skill for the missing UX package.",
+        "Identifies docs/ux/email-alerts/ as the missing upstream dependency.",
+        "Does not skip UI/UX design to jump directly to coding or dev-prep."
+      ],
+      "files": []
+    }
+  ]
+}

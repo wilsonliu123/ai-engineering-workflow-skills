@@ -14,6 +14,7 @@ Read `references/common-artifact-governance.md`, `references/qa-method.md`, and 
 ## Hard boundaries
 
 - Do not execute product tests in this skill.
+- Default output language: Write test specifications, test cases, execution run details, and QA reports in Traditional Chinese (繁體中文) by default, preserving TC IDs, test code, assertion syntax, and technical keywords.
 - Do not decide whether a test case is automated, manual, hybrid, or deferred. A human QA/QA Lead makes that choice.
 - Do not claim pass/fail without normalized execution evidence tied to the test case and tested target.
 - Do not turn test existence, code inspection, or expected behavior into execution evidence.
@@ -95,7 +96,7 @@ Goal: record the human QA team's decision for every planned test case:
 - `hybrid`
 - `deferred`
 
-AI must not select the execution type. It may show the test case's `Proposed layer` (planning hint, not a decision). The human QA may decide case by case or give a standing authorization ("QA decides by layer"); record who decided in `decided_by` and the authorization in `decision_source` (validator enforced). Without a standing authorization, present one test case at a time with its objective, expected result, test class/subtype, and constraints, then ask the human QA/QA Lead to choose.
+AI must not select the execution type. The test case's `Proposed layer` is a planning hint, not a human execution decision. The human QA may decide case by case or give a standing authorization ("QA decides by layer"); record who decided in `decided_by` and the authorization in `decision_source` (validator enforced). For each undecided case without applicable standing authorization, use `references/execution-assignment-interaction.md`: explain the actual check in plain language before a short, separate execution-choice question. Preserve applicable existing decisions when resuming.
 
 For automated/hybrid cases, ask the human to record the intended tool/method if known. For deferred cases, require a human-provided reason/reference.
 
@@ -184,6 +185,7 @@ Emit best-effort events such as `qa_requirements_reviewed`, `qa_plan_completed`,
 - `references/test-spec-template.md`
 - `references/test-cases-template.md`
 - `references/execution-matrix-template.md`
+- `references/execution-assignment-interaction.md`
 - `references/execution-run-template.md`
 - `references/qa-report-template.md`
 - `references/ui-acceptance-template.md`

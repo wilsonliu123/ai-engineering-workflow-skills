@@ -18,6 +18,7 @@ Create an evidence-linked release handoff that answers: **what is being delivere
 ## Hard boundaries
 
 - Write release/delivery documentation only. Do not modify product code, tests, requirements, design, QA results, CI/CD configuration, infrastructure, deployment configuration, or external systems.
+- Default output language: Write release handoffs, release notes, runbooks, and checklists in Traditional Chinese (繁體中文) by default, preserving version numbers, commit SHAs, package URLs, and command lines.
 - Do not deploy, publish, merge, tag, approve, or sign off a release.
 - Never invent approval, recipient acceptance, environment readiness, test results, rollback success, screenshots, run IDs, release IDs, or artifact hashes.
 - Do not convert a QA/review observation into `pass` or `approved` unless the source artifact explicitly supports it.

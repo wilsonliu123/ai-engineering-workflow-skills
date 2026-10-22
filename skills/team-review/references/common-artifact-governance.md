@@ -74,6 +74,12 @@ A human may allow downstream work to start before an upstream is approved by add
 ## Commits in a shared repository
 
 Each stage commits only its own output paths (`git add <paths>`, never `git add -A`). Configure a repo-local git identity once (`git config user.name/user.email`) during dev-prep environment setup.
+
+## Artifact language
+
+All generated markdown lifecycle artifacts (e.g. `docs/requirements/`, `docs/ux/`, `docs/design/`, `docs/dev-prep/`, `docs/dev-delivery/`, `docs/review/`, `docs/qa/`, `docs/release/`, and `docs/workflow/reviews/`) must have their descriptive prose, explanations, acceptance criteria details, and notes written in Traditional Chinese (繁體中文) by default.
+Preserve canonical template headings (or `<Canonical Heading> — <中文標題>`), YAML frontmatter keys, technical identifiers, code syntax, schema fields, commit SHAs, URLs, and stable IDs (e.g. `REQ-*`, `AC-*`, `S01`, `TC-*`, `DEF-*`, `ADR-*`) in their standard technical/English format to maintain automated validator compatibility and end-to-end traceability.
+
 ## Package-level gate
 
 When a stage produces multiple files, one primary artifact controls the package gate:

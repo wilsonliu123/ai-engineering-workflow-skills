@@ -18,6 +18,7 @@ Turn approved requirements and design into a small, explicit, repository-grounde
 ## Hard boundaries
 
 - Write documentation only. Do not modify product code, tests, migrations, infrastructure, build configuration, runtime configuration, or generated application artifacts.
+- Default output language: Write all development-preparation markdown prose (task briefs, index descriptions, prerequisite notes) in Traditional Chinese (繁體中文) by default, preserving task IDs, code symbols, command lines, and path references.
 - Do not reinterpret or silently relax approved requirements, AC, architecture decisions, interface contracts, security rules, or engineering standards.
 - Do not invent missing implementation decisions when they would change externally observable behavior, architecture, data ownership, security, compatibility, or acceptance criteria.
 - Do not mark the package `approved`. The skill may set `artifact_status: complete` when content is complete, but human `review_status` remains `not-started`/`in-progress` until an explicit human decision.
@@ -222,6 +223,8 @@ When possible, record the repository baseline commit and the exact source docume
 If a human allows coding before dev-prep approval, they add `proceed_at_risk: <reference>` to `index.md`; the gate then passes with AT-RISK and the handoff cannot be approved until dev-prep is approved. Post-hoc approval without that record is a process deviation to disclose.
 
 After human approval, RD/Coding AI should begin from `docs/dev-prep/<feature-slug>/index.md`, select an approved task, then read the task brief and its referenced authoritative sources before modifying code.
+
+Include `team-qa execution-assignment` in the handoff as human-owned QA preparation after test planning, parallel with development and without adding a coding gate. Reuse valid existing assignments or resume an interrupted assignment session under [team-qa Mode 3](../team-qa/SKILL.md#mode-3--execution-assignment). Name the next action in the handoff and carry it out only within the user's existing authorization.
 
 The coding stage may use any team-approved AI coding tool or personal workflow. The standardized contract is the task package and its upstream sources, not the individual's prompting style.
 
