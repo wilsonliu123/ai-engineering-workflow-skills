@@ -743,8 +743,8 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertEqual(json.loads(verify_param.stdout)["qa_status"], "failed")
             self.assertEqual(json.loads(verify_param.stdout)["counts"]["fail"], 1)
 
-            # Malformed --result (missing '=') or unknown TC-999 must fail closed
-            bad_res_fmt = run_cli(root, "record-qa", "--key", "PROJ-200", "--mode", "verify", "--commit", "c3", "--result", "TC-001:pass")
+            # Malformed --result (missing '=' and ':') or unknown TC-999 must fail closed
+            bad_res_fmt = run_cli(root, "record-qa", "--key", "PROJ-200", "--mode", "verify", "--commit", "c3", "--result", "TC-001")
             self.assertNotEqual(bad_res_fmt.returncode, 0)
             unknown_tc = run_cli(root, "record-qa", "--key", "PROJ-200", "--mode", "verify", "--commit", "c3", "--result", "TC-999=pass")
             self.assertNotEqual(unknown_tc.returncode, 0)
@@ -1023,22 +1023,44 @@ class WorkflowTestSuite(unittest.TestCase):
             )
             self.assertEqual(r1.returncode, 0, r1.stderr)
 
-            # Round 2 adds 2 more material decisions and 2 more ACs (total 5 material decisions, 4 ACs) and approves
+            # Round 2 passes ONLY new AC-003, AC-004 (incremental Upsert!) and 2 more material decisions
             r2 = run_cli(
                 root, "sync-story",
                 "--key", "PROJ-500",
-                "--ac", "AC-001:Calculate tiered rebate",
-                "--ac", "AC-002:Tenant isolation on invoices",
                 "--ac", "AC-003:Idempotent webhook retry handling",
                 "--ac", "AC-004:Stripe sandbox compensation rollback",
                 "--material-decision", "D4: Idempotency key TTL = 72h",
                 "--material-decision", "D5: Dead-letter queue after 5 webhook failures",
+                "--auto-decision", "A1: Use standard exponential backoff",
                 "--status", "approved",
             )
             self.assertEqual(r2.returncode, 0, r2.stderr)
             story_500 = json.loads((root / ".ai-workflow/active/PROJ-500.json").read_text(encoding="utf-8"))
             self.assertEqual(len(story_500["material_decisions"]), 5)
+            self.assertEqual([ac["id"] for ac in story_500["acceptance_criteria"]], ["AC-001", "AC-002", "AC-003", "AC-004"])
+
+            # Spec Gap Escalation Loop while prior_status == 'approved': update AC-004 description + append D6 and A2 without losing AC-001..003 or D1..D5
+            r3_gap = run_cli(
+                root, "sync-story",
+                "--key", "PROJ-500",
+                "--ac", "AC-004:Stripe sandbox compensation rollback with PagerDuty alert",
+                "--material-decision", "D6: Alert PagerDuty on DLQ",
+                "--auto-decision", "A2: Log correlation_id on webhook retry",
+                "--status", "approved",
+            )
+            self.assertEqual(r3_gap.returncode, 0, r3_gap.stderr)
+            story_500 = json.loads((root / ".ai-workflow/active/PROJ-500.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(story_500["material_decisions"]), 6)
+            self.assertEqual(len(story_500["auto_decisions"]), 2)
             self.assertEqual(len(story_500["acceptance_criteria"]), 4)
+            self.assertIn("PagerDuty", story_500["acceptance_criteria"][3]["description"])
+
+            # Check status at Station 2: Dev Plan -> dev_fast_track_allowed must be False and hints must say disabled
+            st_dev_plan = json.loads(run_cli(root, "status", "--key", "PROJ-500").stdout)
+            self.assertEqual(st_dev_plan["current_station"], "Station 2: Dev Plan")
+            self.assertFalse(st_dev_plan["dev_fast_track_allowed"])
+            self.assertIn("Dev Fast-Track is disabled", st_dev_plan["parallel_hint"])
+            self.assertIn("Dev Fast-Track disabled", st_dev_plan["done_when"])
 
             # 2. Dev Fast-Track Complexity Guard: must REJECT Fast-Track when >3 ACs or risk_level is high/critical
             blocked_ft = run_cli(
@@ -1105,26 +1127,32 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertEqual(partial_out["pending_external_tcs"], ["TC-003"])
             self.assertEqual(partial_out["pending_manual_tcs"], ["TC-004"])
 
-            # Status router must report pending_external_tcs and pending_manual_tcs
+            # Status router must report pending_external_tcs and pending_manual_tcs and include them in reason/done_when
             st_qa = json.loads(run_cli(root, "status", "--key", "PROJ-500").stdout)
             self.assertEqual(st_qa["current_station"], "Station 3b: QA Verify")
             self.assertEqual(st_qa["pending_automated_tcs"], [])
             self.assertEqual(st_qa["pending_external_tcs"], ["TC-003"])
             self.assertEqual(st_qa["pending_manual_tcs"], ["TC-004"])
+            self.assertIn("external: TC-003", st_qa["reason"])
+            self.assertIn("manual: TC-004", st_qa["reason"])
+            self.assertIn("--result TC-003=pass --result TC-004=pass", st_qa["done_when"])
 
-            # Now provide explicit external and manual verification results -> qa_status becomes "passed"
+            # Now provide explicit external and manual verification results using both ':' and '=' plus optional notes and lowercase tc_id
             qa_verify_full = run_cli(
                 root, "record-qa",
                 "--key", "PROJ-500",
                 "--mode", "verify",
                 "--commit", "c500",
-                "--result", "TC-003=pass",
-                "--result", "TC-004=pass",
+                "--result", "tc-003:pass:Newman staging 12 assertions green",
+                "--result", "TC-004=pass:Verified Stripe refund in dashboard",
             )
             self.assertEqual(qa_verify_full.returncode, 0, qa_verify_full.stderr)
             full_out = json.loads(qa_verify_full.stdout)
             self.assertEqual(full_out["qa_status"], "passed")
             self.assertEqual(full_out["by_type"], {"automated": 2, "external": 1, "manual": 1})
+            story_500_qa = json.loads((root / ".ai-workflow/active/PROJ-500.json").read_text(encoding="utf-8"))["qa"]["test_cases"]
+            self.assertEqual(story_500_qa[2]["notes"], "Newman staging 12 assertions green")
+            self.assertEqual(story_500_qa[3]["notes"], "Verified Stripe refund in dashboard")
 
             # Close story and verify qa_breakdown is included
             close_500 = run_cli(root, "close-story", "--key", "PROJ-500", "--commit", "c500", "--version", "v2.0.0")

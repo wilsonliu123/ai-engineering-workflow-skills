@@ -1238,18 +1238,35 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
     # 3. Spec approved, but no development Sub-tasks planned yet
     if not tasks:
         owner = resolve_role_person(config, "developer")
+        ac_list = story.get("acceptance_criteria") or []
+        risk_level = (story.get("risk_level") or "medium").lower()
+        dev_fast_track_allowed = len(ac_list) <= 3 and risk_level in ("low", "medium")
+        if dev_fast_track_allowed:
+            parallel_hint = (
+                f"QA (`team-qa` in `plan` mode) may also draft test cases in parallel. "
+                f"For single-task stories, Dev Fast-Track allows `complete-task --key {jira_key} --task-id TASK-001` directly."
+            )
+            done_when = f"Tasks are decomposed and synced via `jira_sync.py create-subtasks --key {jira_key}` (or completed directly via Dev Fast-Track)."
+        else:
+            parallel_hint = (
+                f"QA (`team-qa` in `plan` mode) may also draft test cases in parallel. "
+                f"Dev Fast-Track is disabled for this story ({len(ac_list)} ACs, risk={risk_level}); run `create-subtasks --key {jira_key}` first."
+            )
+            done_when = (
+                f"Tasks are decomposed and synced via `jira_sync.py create-subtasks --key {jira_key}` "
+                f"(Dev Fast-Track disabled because story has >3 ACs or high/critical risk)."
+            )
         return {
             "jira_key": jira_key,
             "current_station": "Station 2: Dev Plan",
             "recommended_skill": "team-dev",
             "recommended_mode": "plan",
-            "parallel_hint": "QA (`team-qa` in `plan` mode) may also draft test cases in parallel. For single-task stories, Dev Fast-Track allows `complete-task --key "
-            + jira_key
-            + " --task-id TASK-001` directly.",
+            "dev_fast_track_allowed": dev_fast_track_allowed,
+            "parallel_hint": parallel_hint,
             "responsible_role": "developer",
             "responsible_person": owner["name"],
             "reason": f"Spec for {jira_key} is approved, but development Sub-tasks (TASK-001..N) have not been decomposed yet.",
-            "done_when": f"Tasks are decomposed and synced via `jira_sync.py create-subtasks --key {jira_key}` (or completed directly via Dev Fast-Track).",
+            "done_when": done_when,
         }
 
     # 4. Pending development Sub-tasks
@@ -1360,6 +1377,24 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             c["id"] for c in test_cases
             if c.get("result") != "pass" and c.get("execution_type") == "manual"
         ]
+        pending_details = []
+        if pending_automated:
+            pending_details.append(f"automated: {', '.join(pending_automated)}")
+        if pending_external:
+            pending_details.append(f"external: {', '.join(pending_external)}")
+        if pending_manual:
+            pending_details.append(f"manual: {', '.join(pending_manual)}")
+        pending_summary = f" (pending — {'; '.join(pending_details)})" if pending_details else ""
+
+        if pending_external or pending_manual:
+            explicit_flags = " ".join(f"--result {tc}=pass" for tc in (pending_external + pending_manual))
+            done_when = (
+                f"Remaining TCs ({'; '.join(pending_details)}) pass on commit {candidate_commit or 'HEAD'} via "
+                f"`jira_sync.py record-qa --key {jira_key} --mode verify {explicit_flags}` (or `--junit-xml` / `--results-json`)."
+            )
+        else:
+            done_when = f"All TCs pass on commit {candidate_commit or 'HEAD'} via `jira_sync.py record-qa --key {jira_key} --mode verify`."
+
         return {
             "jira_key": jira_key,
             "current_station": "Station 3b: QA Verify",
@@ -1370,8 +1405,8 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             "pending_automated_tcs": pending_automated,
             "pending_external_tcs": pending_external,
             "pending_manual_tcs": pending_manual,
-            "reason": f"QA test plan ({len(test_cases)} TCs) is ready; test execution verification is required{stale_note}.",
-            "done_when": f"All TCs pass on commit {candidate_commit or 'HEAD'} via `jira_sync.py record-qa --key {jira_key} --mode verify`.",
+            "reason": f"QA test plan ({len(test_cases)} TCs) is ready; test execution verification is required{pending_summary}{stale_note}.",
+            "done_when": done_when,
         }
 
     # 7. All gates passed -> Station 4: Release & Close
@@ -1573,6 +1608,7 @@ def cmd_sync_story(args) -> int:
     active_path = get_active_dir(repo_root) / f"{jira_key}.json"
     story = json.loads(active_path.read_text(encoding="utf-8")) if active_path.exists() else {"jira_key": jira_key}
     prior_status = story.get("spec_status")
+    prior_acs = [dict(ac) for ac in (story.get("acceptance_criteria") or []) if isinstance(ac, dict) and ac.get("id")]
     prior_material_decisions = list(story.get("material_decisions") or [])
     prior_auto_decisions = list(story.get("auto_decisions") or [])
 
@@ -1607,19 +1643,39 @@ def cmd_sync_story(args) -> int:
 
     if args.ac:
         acs = []
+        all_explicit_ids = True
         for idx, raw_ac in enumerate(args.ac, start=1):
-            if ":" in raw_ac and re.match(r"^AC-\d+", raw_ac.split(":", 1)[0].strip(), re.IGNORECASE):
+            if ":" in raw_ac and re.match(r"^AC-\d+$", raw_ac.split(":", 1)[0].strip(), re.IGNORECASE):
                 ac_id, desc = raw_ac.split(":", 1)
                 ac_id = ac_id.strip().upper()
                 desc = desc.strip()
             else:
+                all_explicit_ids = False
                 ac_id = f"AC-{idx:03d}"
                 desc = raw_ac.strip()
             if not desc:
                 print(f"ERROR: Acceptance criterion '{ac_id}' has an empty description.", file=sys.stderr)
                 return 1
             acs.append({"id": ac_id, "description": desc})
-        story["acceptance_criteria"] = acs
+
+        if (
+            prior_status in ("draft", "approved")
+            and prior_acs
+            and all_explicit_ids
+            and not getattr(args, "replace_acs", False)
+        ):
+            merged_acs = [dict(item) for item in prior_acs]
+            idx_by_id = {item["id"].upper(): i for i, item in enumerate(merged_acs)}
+            for item in acs:
+                norm_id = item["id"].upper()
+                if norm_id in idx_by_id:
+                    merged_acs[idx_by_id[norm_id]]["description"] = item["description"]
+                else:
+                    idx_by_id[norm_id] = len(merged_acs)
+                    merged_acs.append({"id": norm_id, "description": item["description"]})
+            story["acceptance_criteria"] = merged_acs
+        else:
+            story["acceptance_criteria"] = acs
 
     design = story.get("design") or {}
     if args.design_summary is not None:
@@ -1640,7 +1696,7 @@ def cmd_sync_story(args) -> int:
 
     if args.auto_decision:
         new_auto = [d.strip() for d in args.auto_decision if d.strip()]
-        if prior_status == "draft":
+        if prior_status in ("draft", "approved"):
             merged_auto = list(prior_auto_decisions)
             for item in new_auto:
                 if item not in merged_auto:
@@ -1652,7 +1708,7 @@ def cmd_sync_story(args) -> int:
     if args.material_decision:
         new_mat = [d.strip() for d in args.material_decision if d.strip()]
         # Single-pass direct approval on a fresh story enforces <= 3 material decisions ("抓大放小");
-        # Iterative draft rounds (status=='draft' or prior_status=='draft') allow up to 5 per round and accumulate across rounds.
+        # Iterative draft rounds or Spec Gap updates (prior_status in ('draft', 'approved')) allow up to 5 per round and accumulate across rounds.
         if status == "approved" and not prior_status and len(new_mat) > 3:
             print(
                 "ERROR: '抓大放小' rule violated — at most 3 material questions/decisions are allowed in single-pass approval (use --status draft rounds for complex features).",
@@ -1665,7 +1721,7 @@ def cmd_sync_story(args) -> int:
                 file=sys.stderr,
             )
             return 1
-        if prior_status == "draft":
+        if prior_status in ("draft", "approved"):
             merged_mat = list(prior_material_decisions)
             for item in new_mat:
                 if item not in merged_mat:
@@ -2331,8 +2387,11 @@ def cmd_record_qa(args) -> int:
         print(f"ERROR: No planned test cases or Story ACs exist in {jira_key}. Run record-qa --mode plan first.", file=sys.stderr)
         return 1
 
+    for c in test_cases:
+        c["id"] = str(c.get("id") or "").strip().upper()
     known_tc_ids = {c["id"] for c in test_cases}
     incoming_results = {}
+    incoming_notes = {}
     if args.junit_xml:
         xml_p = Path(args.junit_xml)
         if not xml_p.exists():
@@ -2344,7 +2403,7 @@ def cmd_record_qa(args) -> int:
         loaded = load_json_arg(args.results_json)
         if isinstance(loaded, dict):
             for k, v in loaded.items():
-                tc_id = str(k).strip()
+                tc_id = str(k).strip().upper()
                 if tc_id not in known_tc_ids:
                     print(f"ERROR: Unknown test case ID '{tc_id}' in --results-json (planned: {sorted(known_tc_ids)}).", file=sys.stderr)
                     return 1
@@ -2352,26 +2411,35 @@ def cmd_record_qa(args) -> int:
         elif isinstance(loaded, list):
             for item in loaded:
                 if isinstance(item, dict) and item.get("id"):
-                    tc_id = str(item["id"]).strip()
+                    tc_id = str(item["id"]).strip().upper()
                     if tc_id not in known_tc_ids:
                         print(f"ERROR: Unknown test case ID '{tc_id}' in --results-json (planned: {sorted(known_tc_ids)}).", file=sys.stderr)
                         return 1
                     incoming_results[tc_id] = str(item.get("result", "not-executed")).strip().lower()
+                    note_val = str(item.get("notes") or item.get("note") or "").strip()
+                    if note_val:
+                        incoming_notes[tc_id] = note_val
 
     if args.result:
         for r_item in args.result:
-            if "=" not in r_item:
+            # Accept both '=' and ':' as delimiter, plus optional ':note' suffix:
+            # e.g. TC-001=pass, TC-001:pass, TC-003=pass:Verified on staging, TC-003:pass:Newman green
+            m_res = re.match(r"^([^=:]+)[=:]([^=:]+?)(?::(.*))?$", r_item.strip())
+            if not m_res:
                 print(
-                    f"ERROR: Invalid --result format '{r_item}'. Expected 'TC-ID=pass|fail|blocked|not-executed'.",
+                    f"ERROR: Invalid --result format '{r_item}'. Expected 'TC-ID=pass|fail|blocked|not-executed[:note]' (or 'TC-ID:pass[:note]').",
                     file=sys.stderr,
                 )
                 return 1
-            tc_id, val = r_item.split("=", 1)
-            tc_id = tc_id.strip()
+            tc_id = m_res.group(1).strip().upper()
+            val = m_res.group(2).strip().lower()
+            note_val = (m_res.group(3) or "").strip()
             if tc_id not in known_tc_ids:
                 print(f"ERROR: Unknown test case ID '{tc_id}' in --result (planned: {sorted(known_tc_ids)}).", file=sys.stderr)
                 return 1
-            incoming_results[tc_id] = val.strip().lower()
+            incoming_results[tc_id] = val
+            if note_val:
+                incoming_notes[tc_id] = note_val
 
     # Anti-False-Pass Guardrail: --all-pass ONLY marks execution_type == 'automated' test cases as 'pass'.
     # Test cases with execution_type in ('external', 'manual') require explicit results via --junit-xml, --results-json, or --result.
@@ -2388,6 +2456,8 @@ def cmd_record_qa(args) -> int:
                 print(f"ERROR: Invalid test result '{val}' for {c['id']}. Allowed: {sorted(allowed_results)}", file=sys.stderr)
                 return 1
             c["result"] = val
+        if c["id"] in incoming_notes:
+            c["notes"] = incoming_notes[c["id"]]
 
     counts = {"pass": 0, "fail": 0, "blocked": 0, "not-executed": 0}
     by_type = {"automated": 0, "external": 0, "manual": 0}
@@ -2693,7 +2763,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--has-data", action="store_true", help="Mark feature as having data/schema changes")
     p_sync.add_argument("--no-data", action="store_true", help="Mark feature as having no data/schema changes")
     p_sync.add_argument("--risk-level", choices=["low", "medium", "high", "critical"], help="Risk level")
-    p_sync.add_argument("--ac", action="append", help="Acceptance criterion (e.g. 'AC-001:User can export CSV')")
+    p_sync.add_argument("--ac", action="append", help="Acceptance criterion (e.g. 'AC-001:User can export CSV'; upserts by ID on existing draft/approved stories)")
+    p_sync.add_argument("--replace-acs", action="store_true", help="Replace the entire acceptance_criteria list instead of upserting by AC ID")
     p_sync.add_argument("--design-summary", help="Technical design summary")
     p_sync.add_argument("--ui-spec", help="UI states, wireframe, and copy (only stored when --has-ui is true)")
     p_sync.add_argument("--api-spec", help="API contract specification (only stored when --has-api is true)")
@@ -2742,7 +2813,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_qa.add_argument("--tc", action="append", help="Test case 'TC-001:AC-001:automated|external|manual:Title'")
     p_qa.add_argument("--junit-xml", help="Path to JUnit XML report for verify mode")
     p_qa.add_argument("--results-json", help="JSON string or file with TC results for verify mode")
-    p_qa.add_argument("--result", action="append", help="Single TC result 'TC-001=pass|fail|blocked'")
+    p_qa.add_argument("--result", action="append", help="Single TC result 'TC-001=pass|fail|blocked[:note]' (also accepts 'TC-001:pass[:note]')")
     p_qa.add_argument("--all-pass", action="store_true", help="Mark all un-overridden 'automated' test cases as pass in verify mode (external/manual TCs require explicit result)")
     p_qa.add_argument("--commit", help="Tested git commit SHA")
     p_qa.set_defaults(func=cmd_record_qa)
