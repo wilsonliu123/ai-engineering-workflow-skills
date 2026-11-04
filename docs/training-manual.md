@@ -262,11 +262,11 @@ python3 skills/team-spec/scripts/jira_sync.py \
 | `--has-api` / `--no-api` | 選填（布林旗標） | 標記是否包含跨邊界 API 或事件契約變更 | 當 `has_api` 為 `false` 時，自動清除 `design.api_spec` |
 | `--has-data` / `--no-data` | 選填（布林旗標） | 標記是否包含資料表、索引、Migration 或快取格式變更 | 記錄於 `change_surface.has_data` |
 | `--risk-level` | 選填（列舉） | 風險等級：`low`、`medium`、`high`、`critical` | 預設為 `medium`，顯示於 Jira Story 規格標頭 |
-| `--ac` | 可重複指定 | 可測試驗收條件，格式為 `AC-001:<description>`（即 `AC-001:` 加 **條件描述**，省略前綴則自動編號） | **空白描述攔截**：若描述為空字串立即報錯退出；核准時至少須有 1 條 AC |
+| `--ac` | 可重複指定 | 可測試驗收條件，格式為 `AC-001:<description>`（即 `AC-001:` 加 **條件描述**，省略前綴則自動編號） | **增量 Upsert 與空白攔截**：於既有 `draft`/`approved` Story 上依 ID 增量更新或附加（不覆蓋舊 AC；若需整批重設可加 `--replace-acs`）；描述為空立即報錯 |
 | `--design-summary` | 選填（字串） | 技術架構、影響模組、資料相容性與資安控制點摘要 | 寫入 `design.summary` |
 | `--ui-spec` / `--api-spec` | 選填（字串） | 條件式 UI 狀態規格與 API 介面契約 | 僅在對應之 `--has-ui` / `--has-api` 為真時儲存與渲染 |
-| `--auto-decision` | 可重複指定 | 「放小」：AI 依專案慣例自動決定的常規技術或 UX 細節 | 彙整於 Jira 描述第 4 節 **AI 預設細節清單** |
-| `--material-decision` | 可重複指定 | 「抓大」：經人類確認之關鍵架構或業務決策 | **大小需求雙軌防呆**：全新 Story 單趟直接 `approved` 上限 3 筆；大型複雜需求透過 `--status draft` 多輪深挖時，每輪上限 5 筆且跨輪次可無上限累加 |
+| `--auto-decision` | 可重複指定 | 「放小」：AI 依專案慣例自動決定的常規技術或 UX 細節 | 彙整於 Jira 描述第 4 節 **AI 預設細節清單**（跨輪次自動去重累加） |
+| `--material-decision` | 可重複指定 | 「抓大」：經人類確認之關鍵架構或業務決策 | **大小需求雙軌防呆**：全新 Story 單趟直接 `approved` 上限 3 筆；多輪 `draft` 或 Station 2 Spec-Gap 補齊時每輪上限 5 筆且跨輪次自動無損累加 |
 | `--spec-json` | 選填（JSON 字串或檔案） | 以整包 JSON 載入規格欄位 | 可與個別 CLI 旗標搭配使用（個別旗標優先覆寫） |
 | `--status` | 選填（`draft` / `approved`） | 規格狀態；使用者確認後設為 `approved` | **未定 AC 禁止核准**：若設為 `approved` 但無任何 `AC-*`，立即報錯拒絕；核准後自動觸發 `pm -> developer` 交接 |
 | `--approved-by` | 選填（字串） | 核准人姓名或角色 | 預設自動帶入 `team-config.json` 中之 `pm.name` |
@@ -532,7 +532,7 @@ python3 skills/team-qa/scripts/jira_sync.py \
 | `--cases-json` | `plan` | 選填（JSON 字串或檔案） | 批次載入測試案例陣列（支援多重 AC 覆蓋 `ac_ids` 與 `notes`） | 自動標記 `"recommended_by_ai": true` 與初始結果 `"not-executed"` |
 | `--junit-xml` | `verify` | 選填（檔案路徑） | 解析 JUnit XML 報告中 `classname` 或 `name` 含 `TC-\d{3,}` 之 `<testcase>` | 採**最差結果優先律**（`fail > blocked > not-executed > pass`），確保參數化測試任一失敗即標為 `fail` |
 | `--results-json` | `verify` | 選填（JSON 字串或檔案） | 傳入 `{"TC-001": "pass"}` 字典或 `[{"id": "TC-001", "result": "pass"}]` 陣列 | **未知 TC 攔截**：若包含未規劃於 `qa.test_cases` 的 TC ID，立即報錯拒絕 |
-| `--result` | `verify` | 可重複指定 | 單項結果格式：`TC-001=<status>`（`<status>` 支援 `pass`、`fail`、`blocked` 或 `not-executed`） | 若傳入非上述 4 種合法狀態值，立即報錯攔截 |
+| `--result` | `verify` | 可重複指定 | 單項結果格式：`TC-001=<status>[:<note>]` 或 `TC-001:<status>[:<note>]`（同時相容 `=` 與 `:` 分隔符及驗證備註，`<status>` 支援 `pass`、`fail`、`blocked`、`not-executed`） | 自動正規化 TC ID 大寫並將選用備註寫入 `notes`；若傳入非上述 4 種合法狀態值，立即報錯攔截 |
 | `--all-pass` | `verify` | 選填（布林旗標） | **防假通過守衛（Anti-False-Pass）**：僅將尚未覆寫且 `execution_type == "automated"` 之本機自動化測試案例標記為 `pass` | `external`（外部工具/Staging）與 `manual`（人工測試）案例**絕不會**被 `--all-pass` 自動標為通過，必須透過 `--junit-xml`、`--results-json` 或 `--result` 提供真實結果，否則維持 `not-executed`（`qa_status: "incomplete"`） |
 | `--commit` | `verify` | 選填（字串） | 本次測試驗證對應之 Git Commit SHA（預設讀取 `candidate_commit` 或 Git `HEAD`） | 記錄於 `qa.tested_commit`，作為 Station 4 發佈閘門對帳依據 |
 
@@ -729,12 +729,12 @@ python3 skills/team-next-step/scripts/jira_sync.py \
 | **Priority 0** | `.ai-workflow/team-config.json` 不存在 (`initialized: false`) | `team-init` | `null` | `tech_lead` / `pm` |
 | **Priority 1** | 尚無 Active Story，或 `spec_status != "approved"` | `team-spec` | `null` | `pm` |
 | **Priority 2** | 存在任何未關閉之缺陷（`bugs` 中 `status not in ("completed", "closed")`） | `team-dev` | `implement` | `developer` |
-| **Priority 3** | `spec_status == "approved"`，但 `tasks` 為空陣列 `[]` | `team-dev`（附註 `team-qa` `plan` 可平行） | `plan` | `developer` |
+| **Priority 3** | `spec_status == "approved"`，但 `tasks` 為空陣列 `[]` | `team-dev`（附註 `team-qa` `plan` 可平行；自動輸出 `dev_fast_track_allowed` 標示是否允許快車道） | `plan` | `developer` |
 | **Priority 4** | 存在未完成之子任務（`tasks` 中 `status != "completed"`） | `team-dev`（自動選出依賴已滿足之首個 `next_task_id`） | `implement` | `developer` |
 | **Priority 5** | `review.status == "changes-requested"`（且有阻斷問題或尚未提交新 Commit） | `team-dev` | `implement` | `developer` |
 | **Priority 6** | 子任務全完成，但 `review.status != "approved"` 或 `reviewed_commit != candidate_commit` | `team-review` | `null` | `reviewer` / `independent_reviewer` |
 | **Priority 7** | Review 已通過，但 `qa.test_cases` 為空或有未覆蓋之 `AC-*` | `team-qa` | `plan` | `qa` |
-| **Priority 8** | Review 已通過且 TC 已規劃，但 `qa.status != "passed"` 或 `tested_commit != candidate_commit` | `team-qa` | `verify` | `qa` |
+| **Priority 8** | Review 已通過且 TC 已規劃，但 `qa.status != "passed"` 或 `tested_commit != candidate_commit` | `team-qa`（自動輸出 `pending_automated_tcs`、`pending_external_tcs`、`pending_manual_tcs` 待驗清單） | `verify` | `qa` |
 | **Priority 9** | 五大閘門全數滿足、0 Open Bugs 且三個 Commit SHA 完全對齊 | `team-release` | `null` | `release_manager` |
 | **Priority 10** | Jira Story 已轉為 `Done` 且本地 Active JSON 已刪除 | 無後續動作（已完成結案） | — | — |
 

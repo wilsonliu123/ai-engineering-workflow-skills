@@ -854,7 +854,7 @@
 <td><code class="inline-code">--ac</code></td>
 <td>可重複指定</td>
 <td>可測試驗收條件，格式為 <code class="inline-code">AC-001:&lt;description&gt;</code>（即 <code class="inline-code">AC-001:</code> 加 <strong>條件描述</strong>，省略前綴則自動編號）</td>
-<td><strong>空白描述攔截</strong>：若描述為空字串立即報錯退出；核准時至少須有 1 條 AC</td>
+<td><strong>增量 Upsert 與空白攔截</strong>：於既有 <code class="inline-code">draft</code>/<code class="inline-code">approved</code> Story 上依 ID 增量更新或附加（不覆蓋舊 AC；若需整批重設可加 <code class="inline-code">--replace-acs</code>）；描述為空立即報錯</td>
 </tr>
 <tr>
 <td><code class="inline-code">--design-summary</code></td>
@@ -872,13 +872,13 @@
 <td><code class="inline-code">--auto-decision</code></td>
 <td>可重複指定</td>
 <td>「放小」：AI 依專案慣例自動決定的常規技術或 UX 細節</td>
-<td>彙整於 Jira 描述第 4 節 <strong>AI 預設細節清單</strong></td>
+<td>彙整於 Jira 描述第 4 節 <strong>AI 預設細節清單</strong>（跨輪次自動去重累加）</td>
 </tr>
 <tr>
 <td><code class="inline-code">--material-decision</code></td>
 <td>可重複指定</td>
 <td>「抓大」：經人類確認之關鍵架構或業務決策</td>
-<td><strong>大小需求雙軌防呆</strong>：全新 Story 單趟直接 <code class="inline-code">approved</code> 上限 3 筆；大型複雜需求透過 <code class="inline-code">--status draft</code> 多輪深挖時，每輪上限 5 筆且跨輪次可無上限累加</td>
+<td><strong>大小需求雙軌防呆</strong>：全新 Story 單趟直接 <code class="inline-code">approved</code> 上限 3 筆；多輪 <code class="inline-code">draft</code> 或 Station 2 Spec-Gap 補齊時每輪上限 5 筆且跨輪次自動無損累加</td>
 </tr>
 <tr>
 <td><code class="inline-code">--spec-json</code></td>
@@ -1345,8 +1345,8 @@
 <td><code class="inline-code">--result</code></td>
 <td><code class="inline-code">verify</code></td>
 <td>可重複指定</td>
-<td>單項結果格式：<code class="inline-code">TC-001=&lt;status&gt;</code>（<code class="inline-code">&lt;status&gt;</code> 支援 <code class="inline-code">pass</code>、<code class="inline-code">fail</code>、<code class="inline-code">blocked</code> 或 <code class="inline-code">not-executed</code>）</td>
-<td>若傳入非上述 4 種合法狀態值，立即報錯攔截</td>
+<td>單項結果格式：<code class="inline-code">TC-001=&lt;status&gt;[:&lt;note&gt;]</code> 或 <code class="inline-code">TC-001:&lt;status&gt;[:&lt;note&gt;]</code>（同時相容 <code class="inline-code">=</code> 與 <code class="inline-code">:</code> 分隔符及驗證備註，<code class="inline-code">&lt;status&gt;</code> 支援 <code class="inline-code">pass</code>、<code class="inline-code">fail</code>、<code class="inline-code">blocked</code>、<code class="inline-code">not-executed</code>）</td>
+<td>自動正規化 TC ID 大寫並將選用備註寫入 <code class="inline-code">notes</code>；若傳入非上述 4 種合法狀態值，立即報錯攔截</td>
 </tr>
 <tr>
 <td><code class="inline-code">--all-pass</code></td>
@@ -1698,7 +1698,7 @@ python3 skills/team-next-step/scripts/jira_sync.py \
 <tr>
 <td><strong>Priority 3</strong></td>
 <td><code class="inline-code">spec_status == &quot;approved&quot;</code>，但 <code class="inline-code">tasks</code> 為空陣列 <code class="inline-code">[]</code></td>
-<td><code class="inline-code">team-dev</code>（附註 <code class="inline-code">team-qa</code> <code class="inline-code">plan</code> 可平行）</td>
+<td><code class="inline-code">team-dev</code>（附註 <code class="inline-code">team-qa</code> <code class="inline-code">plan</code> 可平行；自動輸出 <code class="inline-code">dev_fast_track_allowed</code> 標示是否允許快車道）</td>
 <td><code class="inline-code">plan</code></td>
 <td><code class="inline-code">developer</code></td>
 </tr>
@@ -1733,7 +1733,7 @@ python3 skills/team-next-step/scripts/jira_sync.py \
 <tr>
 <td><strong>Priority 8</strong></td>
 <td>Review 已通過且 TC 已規劃，但 <code class="inline-code">qa.status != &quot;passed&quot;</code> 或 <code class="inline-code">tested_commit != candidate_commit</code></td>
-<td><code class="inline-code">team-qa</code></td>
+<td><code class="inline-code">team-qa</code>（自動輸出 <code class="inline-code">pending_automated_tcs</code>、<code class="inline-code">pending_external_tcs</code>、<code class="inline-code">pending_manual_tcs</code> 待驗清單）</td>
 <td><code class="inline-code">verify</code></td>
 <td><code class="inline-code">qa</code></td>
 </tr>
