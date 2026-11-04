@@ -11,17 +11,18 @@ Station 3b of the 4-station Jira-centered workflow. Merges test planning, execut
 
 Read `references/common-workflow-governance.md` and `references/qa-method.md` before running.
 
-## Explicit Modes
+## Explicit Modes & QA Fast-Track
 
 | Mode | When to Run | Key Action |
 |---|---|---|
 | **`plan`** | Anytime after `team-spec` is `approved` (**can run in parallel with `team-dev`**) | Generate `TC-001..N` mapped to `AC-*` with AI pre-filled `automated`/`manual` execution types for 1-step human confirmation; sync via `jira_sync.py record-qa --mode plan` |
-| **`verify`** | After `team-review` approves the candidate commit | Import JUnit XML / JSON results or record manual execution outcomes via `jira_sync.py record-qa --mode verify`; if any TC fails, file linked Jira `Bug` tickets via `jira_sync.py create-bug` |
+| **`verify`** | After `team-review` approves the candidate commit | Import JUnit XML / JSON results, pass `--all-pass` after suite verification, or record manual outcomes via `jira_sync.py record-qa --mode verify`; if any TC fails, file linked Jira `Bug` tickets via `jira_sync.py create-bug` |
+| **QA Fast-Track** | In `verify` mode when `qa.test_cases` is empty | `record-qa --mode verify` automatically derives `TC-001..N` 1:1 from Story `AC-001..N` without requiring a separate `--mode plan` pass first |
 
 ## Hard Boundaries
 
 - **No Per-Feature Markdown Files in Git:** Never create `docs/qa/` files or commit `.ai-workflow/evidence/` files. Test plans, verification tables, and Bug tickets live in Jira and `.ai-workflow/active/<JIRA-KEY>.json`.
-- **Never Invent Test Execution:** Missing evidence is recorded as `not-executed`, never `pass`.
+- **Never Invent Test Execution:** Missing evidence is recorded as `not-executed`, never `pass`. Only use `--all-pass` when the automated/manual test suite covering the Story's ACs has actually been executed and verified to pass.
 - **AI Pre-Fills, Human Confirms ("抓大放小"):** In `plan` mode, AI pre-fills the recommended `automated` vs. `manual` execution type for every `TC-*` in one summary table instead of interviewing the human case-by-case. The human can confirm the whole table in one step or override specific rows.
 
 ## Mode 1: `plan` — Parallel Test Case Checklist (`TC-001..N`)
@@ -35,31 +36,33 @@ Read `references/common-workflow-governance.md` and `references/qa-method.md` be
      - `automated` for API contracts, business logic, data validation, permissions, and deterministic UI flows.
      - `manual` only for visual layout inspection, external hardware/third-party sandbox flows, or exploratory UX checks.
 3. **Present Table for Quick Confirmation & Sync:**
-   Show the `TC-001..N` table in Traditional Chinese (繁體中文) for quick human confirmation (or override), then run:
+   Show the `TC-001..N` table in Traditional Chinese (繁體中文) for quick human confirmation (or override), then run (prefer `.ai-workflow/bin/jira_sync.py` or fall back to `<skill-dir>/scripts/jira_sync.py`):
 
    ```bash
-   python3 <skill-dir>/scripts/jira_sync.py --repo-root . record-qa \
+   python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa \
      --key "<JIRA-KEY>" \
      --mode plan \
      --tc "TC-001:AC-001:automated:<Title and expected outcome>" \
      --tc "TC-002:AC-002:manual:<Title and expected outcome>"
    ```
-   *(Or pass `--cases-json '<JSON array>'`.)*
+   *(Colons inside `<Title and expected outcome>` are preserved automatically. Or pass `--cases-json '<JSON array>'`.)*
 
-## Mode 2: `verify` — Result Intake, Bug Loop & Release Handoff
+## Mode 2: `verify` — Result Intake, QA Fast-Track, Bug Loop & Release Handoff
 
 1. **Collect Real Execution Outcomes:**
-   - **Automated tests:** Ingest JUnit XML (`--junit-xml <path>`) or JSON results (`--results-json <path>`) containing `TC-###` IDs, or run the test suite and capture the report.
+   - **Automated tests:** Ingest JUnit XML (`--junit-xml <path>`) or JSON results (`--results-json <path>`) containing `TC-###` IDs, or run the test suite and pass `--all-pass` once all tests pass.
    - **Manual tests:** Present any remaining `manual` `TC-*` items concisely and record the human QA tester's actual `pass` / `fail` / `blocked` observation.
+   - **QA Fast-Track:** If `qa.test_cases` is empty when `verify` runs, `jira_sync.py` automatically generates `TC-001..N` 1:1 from `AC-001..N` before applying results.
 2. **Record Verification Table on Jira (`record-qa --mode verify`):**
 
    ```bash
-   python3 <skill-dir>/scripts/jira_sync.py --repo-root . record-qa \
+   python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa \
      --key "<JIRA-KEY>" \
      --mode verify \
-     --commit "<tested-commit-sha>" \
+     [--commit "<tested-commit-sha>"] \
      [--junit-xml "<path/to/junit.xml>"] \
-     [--result "TC-001=pass" --result "TC-002=pass"]
+     [--result "TC-001=pass" --result "TC-002=pass"] \
+     [--all-pass]
    ```
 
 3. **Branch on Verification Outcome:**
@@ -67,7 +70,7 @@ Read `references/common-workflow-governance.md` and `references/qa-method.md` be
      Immediately create a linked Jira `Bug` ticket for each failure using `jira_sync.py create-bug`:
 
      ```bash
-     python3 <skill-dir>/scripts/jira_sync.py --repo-root . create-bug \
+     python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
        --key "<JIRA-KEY>" \
        --tc-id "<TC-002>" \
        --ac-id "<AC-001>" \
@@ -76,11 +79,11 @@ Read `references/common-workflow-governance.md` and `references/qa-method.md` be
        --steps "<Reproduction steps>" \
        --expected "<Expected behavior>" \
        --actual "<Actual observed behavior>" \
-       --commit "<tested-commit-sha>"
+       [--commit "<tested-commit-sha>"]
      ```
      `create-bug` automatically links the Bug to `<JIRA-KEY>`, transitions the Story back to `In Progress`, and notifies/reassigns the `developer` role from `team-config.json` with `@mention` so `$team-dev` (`implement` mode) can fix it.
    - **If All Tests Pass (`qa_status: "passed"` and 0 open Bugs):**
-     `record-qa --mode verify` automatically posts the passing AC/TC Verification Table to Jira and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if the same person). Recommend `$team-release` (Station 4) as the next step.
+     `record-qa --mode verify` automatically posts the passing AC/TC Verification Table to Jira and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if `same_person: true`, where AI can proactively auto-chain into `$team-release`).
 
 ## Red Flags — STOP
 

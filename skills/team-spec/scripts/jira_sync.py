@@ -25,6 +25,8 @@ import datetime
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -32,6 +34,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+
+STATE_SNAPSHOT_MARKER = "[ai-workflow-state]"
 
 DEFAULT_TEAM_CONFIG = {
     "version": "1.0",
@@ -54,6 +58,11 @@ DEFAULT_TEAM_CONFIG = {
         "in_qa": "In QA",
         "ready_for_release": "Ready for Release",
         "done": "Done",
+    },
+    "issue_type_mapping": {
+        "story": "Story",
+        "subtask": "Sub-task",
+        "bug": "Bug",
     },
 }
 
@@ -120,16 +129,95 @@ def get_config_path(repo_root: Path) -> Path:
 def load_team_config(repo_root: Path) -> dict:
     cfg_path = get_config_path(repo_root)
     if not cfg_path.exists():
-        return dict(DEFAULT_TEAM_CONFIG)
+        return json.loads(json.dumps(DEFAULT_TEAM_CONFIG))
     try:
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
-        merged = dict(DEFAULT_TEAM_CONFIG)
+        merged = json.loads(json.dumps(DEFAULT_TEAM_CONFIG))
         merged.update(data)
         merged["roles"] = {**DEFAULT_TEAM_CONFIG["roles"], **data.get("roles", {})}
         merged["status_mapping"] = {**DEFAULT_TEAM_CONFIG["status_mapping"], **data.get("status_mapping", {})}
+        merged["issue_type_mapping"] = {
+            **DEFAULT_TEAM_CONFIG["issue_type_mapping"],
+            **data.get("issue_type_mapping", {}),
+        }
         return merged
     except Exception as exc:
         raise ValueError(f"Invalid team-config.json at {cfg_path}: {exc}") from exc
+
+
+def _detect_git_head_commit(repo_root: Path) -> str:
+    """Auto-detect current short Git HEAD commit SHA in repo_root."""
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _detect_git_changed_files(repo_root: Path, commit_sha: str = "") -> list:
+    """Auto-detect changed files from the given commit SHA or working tree diff."""
+    if commit_sha and commit_sha not in ("HEAD", "unknown"):
+        try:
+            res = subprocess.run(
+                ["git", "show", "--name-only", "--pretty=format:", commit_sha],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                files = [f.strip() for f in res.stdout.splitlines() if f.strip()]
+                if files:
+                    return files
+        except Exception:
+            pass
+    for cmd in (
+        ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
+        ["git", "diff", "--name-only", "HEAD"],
+        ["git", "diff", "--name-only", "--cached"],
+    ):
+        try:
+            res = subprocess.run(cmd, cwd=str(repo_root), capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout.strip():
+                files = [f.strip() for f in res.stdout.splitlines() if f.strip()]
+                if files:
+                    return files
+        except Exception:
+            pass
+    return []
+
+
+def _resolve_main_worktree_root(repo_root: Path):
+    """If repo_root is a secondary Git worktree, return the main repository root Path."""
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            common_dir = Path(res.stdout.strip())
+            if not common_dir.is_absolute():
+                common_dir = (repo_root / common_dir).resolve()
+            else:
+                common_dir = common_dir.resolve()
+            if common_dir.name == ".git":
+                main_root = common_dir.parent.resolve()
+                if main_root != repo_root.resolve() and main_root.exists():
+                    return main_root
+    except Exception:
+        pass
+    return None
 
 
 def resolve_role_person(config: dict, role: str) -> dict:
@@ -239,7 +327,7 @@ class JiraClient:
 
     @staticmethod
     def text_to_adf(text: str, mention_account_id: str = "", mention_name: str = "") -> dict:
-        """Convert Markdown/plain text into Atlassian Document Format (ADF) v1."""
+        """Convert Markdown/plain text into Atlassian Document Format (ADF) v1 with heading, bulletList, and table support."""
         content_nodes = []
         if mention_account_id:
             content_nodes.append({
@@ -261,14 +349,117 @@ class JiraClient:
                 "content": [{"type": "text", "text": f"@{mention_name} 請接手下一階段工作："}],
             })
 
-        for block in (text or "").strip().split("\n\n"):
-            block_text = block.strip()
-            if not block_text:
+        lines = (text or "").strip().splitlines()
+        i = 0
+        n = len(lines)
+        heading_re = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+        bullet_re = re.compile(r"^\s*[-*]\s+(.+?)\s*$")
+        table_sep_re = re.compile(r"^\|\s*[-:]+[-|\s:]*\|$")
+
+        def _is_table_line(ln: str) -> bool:
+            s = ln.strip()
+            return len(s) >= 2 and s.startswith("|") and s.endswith("|")
+
+        while i < n:
+            raw_line = lines[i]
+            stripped = raw_line.strip()
+            if not stripped:
+                i += 1
                 continue
-            content_nodes.append({
-                "type": "paragraph",
-                "content": [{"type": "text", "text": block_text}],
-            })
+
+            # 1. Markdown Heading (# .. ######)
+            hm = heading_re.match(stripped)
+            if hm:
+                level = min(max(len(hm.group(1)), 1), 6)
+                content_nodes.append({
+                    "type": "heading",
+                    "attrs": {"level": level},
+                    "content": [{"type": "text", "text": hm.group(2).strip()}],
+                })
+                i += 1
+                continue
+
+            # 2. Markdown Bullet List (- item / * item)
+            bm = bullet_re.match(raw_line)
+            if bm:
+                items = []
+                while i < n:
+                    m_item = bullet_re.match(lines[i])
+                    if not m_item:
+                        break
+                    items.append(m_item.group(1).strip())
+                    i += 1
+                content_nodes.append({
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [{"type": "text", "text": item_text}],
+                                }
+                            ],
+                        }
+                        for item_text in items
+                    ],
+                })
+                continue
+
+            # 3. Markdown Table (| col1 | col2 |)
+            if _is_table_line(stripped):
+                raw_table_lines = []
+                while i < n and _is_table_line(lines[i]):
+                    raw_table_lines.append(lines[i].strip())
+                    i += 1
+                rows = []
+                for t_line in raw_table_lines:
+                    if table_sep_re.match(t_line):
+                        continue
+                    cells = [c.strip() for c in t_line[1:-1].split("|")]
+                    rows.append(cells)
+                if rows:
+                    table_rows = []
+                    for r_idx, r_cells in enumerate(rows):
+                        cell_type = "tableHeader" if r_idx == 0 else "tableCell"
+                        table_rows.append({
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": cell_type,
+                                    "attrs": {},
+                                    "content": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": [{"type": "text", "text": c_text or " "}],
+                                        }
+                                    ],
+                                }
+                                for c_text in r_cells
+                            ],
+                        })
+                    content_nodes.append({
+                        "type": "table",
+                        "attrs": {"isNumberColumnEnabled": False, "layout": "default"},
+                        "content": table_rows,
+                    })
+                continue
+
+            # 4. Regular paragraph (collect contiguous non-special lines)
+            para_lines = []
+            while i < n:
+                cur = lines[i]
+                cur_s = cur.strip()
+                if not cur_s or heading_re.match(cur_s) or bullet_re.match(cur) or _is_table_line(cur_s):
+                    break
+                para_lines.append(cur_s)
+                i += 1
+            if para_lines:
+                content_nodes.append({
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "\n".join(para_lines)}],
+                })
+
         if not content_nodes:
             content_nodes.append({"type": "paragraph", "content": [{"type": "text", "text": "Updated by ai-engineering-workflow"}]})
         return {"type": "doc", "version": 1, "content": content_nodes}
@@ -277,48 +468,74 @@ class JiraClient:
         adf = self.text_to_adf(description_md)
         if not self.is_live:
             return {"mode": "offline", "jira_key": jira_key, "action": "sync-story", "summary": title}
-        if create:
-            proj_key = self.config.get("project_key") or jira_key.split("-")[0]
-            payload = {
-                "fields": {
-                    "project": {"key": proj_key},
-                    "summary": title,
-                    "description": adf,
-                    "issuetype": {"name": "Story"},
-                }
+        story_type = (self.config.get("issue_type_mapping") or {}).get("story") or "Story"
+        proj_key = self.config.get("project_key") or jira_key.split("-")[0]
+        create_payload = {
+            "fields": {
+                "project": {"key": proj_key},
+                "summary": title,
+                "description": adf,
+                "issuetype": {"name": story_type},
             }
-            res = self._request("POST", "/rest/api/3/issue", payload)
+        }
+        if create:
+            res = self._request("POST", "/rest/api/3/issue", create_payload)
             return {"mode": "live", "jira_key": res.get("key", jira_key), "action": "create-story"}
         payload = {"fields": {"summary": title, "description": adf}}
-        self._request("PUT", f"/rest/api/3/issue/{urllib.parse.quote(jira_key)}", payload)
-        return {"mode": "live", "jira_key": jira_key, "action": "update-story"}
+        try:
+            self._request("PUT", f"/rest/api/3/issue/{urllib.parse.quote(jira_key)}", payload)
+            return {"mode": "live", "jira_key": jira_key, "action": "update-story"}
+        except RuntimeError as exc:
+            if "HTTP 404" in str(exc):
+                res = self._request("POST", "/rest/api/3/issue", create_payload)
+                return {"mode": "live", "jira_key": res.get("key", jira_key), "action": "create-story"}
+            raise
 
     def create_subtask(self, parent_key: str, summary: str, description_md: str, index: int) -> str:
         if not self.is_live:
             return f"{parent_key}-SUB-{index}"
         proj_key = self.config.get("project_key") or parent_key.split("-")[0]
-        payload = {
-            "fields": {
-                "project": {"key": proj_key},
-                "parent": {"key": parent_key},
-                "summary": summary,
-                "description": self.text_to_adf(description_md),
-                "issuetype": {"name": "Sub-task"},
+        configured_type = (self.config.get("issue_type_mapping") or {}).get("subtask") or "Sub-task"
+        candidates = []
+        for itype in (configured_type, "Sub-task", "Subtask", "子任務"):
+            if itype and itype not in candidates:
+                candidates.append(itype)
+
+        adf_desc = self.text_to_adf(description_md)
+        last_exc = None
+        for idx_c, itype in enumerate(candidates):
+            payload = {
+                "fields": {
+                    "project": {"key": proj_key},
+                    "parent": {"key": parent_key},
+                    "summary": summary,
+                    "description": adf_desc,
+                    "issuetype": {"name": itype},
+                }
             }
-        }
-        res = self._request("POST", "/rest/api/3/issue", payload)
-        return res.get("key") or f"{parent_key}-SUB-{index}"
+            try:
+                res = self._request("POST", "/rest/api/3/issue", payload)
+                return res.get("key") or f"{parent_key}-SUB-{index}"
+            except RuntimeError as exc:
+                last_exc = exc
+                if "HTTP 400" in str(exc) and idx_c + 1 < len(candidates):
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        return f"{parent_key}-SUB-{index}"
 
     def create_bug(self, parent_key: str, summary: str, description_md: str, index: int) -> str:
         if not self.is_live:
             return f"{parent_key}-BUG-{index}"
         proj_key = self.config.get("project_key") or parent_key.split("-")[0]
+        bug_type = (self.config.get("issue_type_mapping") or {}).get("bug") or "Bug"
         payload = {
             "fields": {
                 "project": {"key": proj_key},
                 "summary": summary,
                 "description": self.text_to_adf(description_md),
-                "issuetype": {"name": "Bug"},
+                "issuetype": {"name": bug_type},
             }
         }
         res = self._request("POST", "/rest/api/3/issue", payload)
@@ -378,22 +595,267 @@ class JiraClient:
             return {}
         return self._request("GET", f"/rest/api/3/issue/{urllib.parse.quote(issue_key)}")
 
+    def sync_state_snapshot(self, jira_key: str, story: dict) -> None:
+        if not self.is_live:
+            return
+        try:
+            desc_md = format_story_description(story)
+            adf = self.text_to_adf(desc_md)
+            payload = {"fields": {"summary": story.get("title") or jira_key, "description": adf}}
+            self._request("PUT", f"/rest/api/3/issue/{urllib.parse.quote(jira_key)}", payload)
+        except Exception:
+            pass
 
-def load_active_story(repo_root: Path, jira_key: str) -> dict:
+
+def _adf_to_plain_text(node) -> str:
+    """Recursively extract plain text from an ADF JSON object or string."""
+    if node is None:
+        return ""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list):
+        return "\n".join(filter(None, (_adf_to_plain_text(item) for item in node)))
+    if isinstance(node, dict):
+        ntype = node.get("type")
+        if ntype == "text":
+            return str(node.get("text") or "")
+        if ntype == "mention":
+            return str((node.get("attrs") or {}).get("text") or "")
+        content = node.get("content") or []
+        if ntype in ("paragraph", "heading"):
+            return "".join(_adf_to_plain_text(c) for c in content)
+        return "\n".join(filter(None, (_adf_to_plain_text(c) for c in content)))
+    return str(node)
+
+
+def _extract_state_snapshot_from_text(text: str):
+    """Extract the most recent [ai-workflow-state] JSON snapshot embedded in text."""
+    if not text or STATE_SNAPSHOT_MARKER not in text:
+        return None
+    matches = []
+    for line in text.splitlines():
+        idx = line.find(STATE_SNAPSHOT_MARKER)
+        if idx != -1:
+            raw_json = line[idx + len(STATE_SNAPSHOT_MARKER):].strip()
+            if raw_json.startswith("{") and raw_json.endswith("}"):
+                matches.append(raw_json)
+    for candidate in reversed(matches):
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict) and parsed.get("jira_key"):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _hydrate_story_from_worktree(repo_root: Path, clean_key: str):
+    """If running in a secondary Git worktree, copy active <KEY>.json from the main worktree if present."""
+    main_root = _resolve_main_worktree_root(repo_root)
+    if not main_root:
+        return None
+    src_file = get_active_dir(main_root) / f"{clean_key}.json"
+    if not src_file.exists():
+        return None
+    try:
+        data = json.loads(src_file.read_text(encoding="utf-8"))
+        dst_dir = get_active_dir(repo_root)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst_file = dst_dir / f"{clean_key}.json"
+        dst_file.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return data
+    except Exception:
+        return None
+
+
+def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str):
+    """
+    Auto-hydrate .ai-workflow/active/<KEY>.json from remote Jira issue when local file is missing.
+    Supports both 100% lossless [ai-workflow-state] snapshot extraction and structural reconstruction
+    from standard Jira fields (summary, description AC-###, subtasks, issuelinks, status).
+    """
+    if not client or not client.is_live:
+        return None
+    clean_key = validate_jira_key(jira_key)
+    try:
+        issue = client.get_issue(clean_key)
+    except Exception:
+        return None
+    if not issue or not isinstance(issue, dict) or ("fields" not in issue and "key" not in issue):
+        return None
+
+    fields = issue.get("fields") or {}
+    if not fields and issue.get("key") != clean_key:
+        return None
+
+    # 1. Check comments (newest first) and description for lossless [ai-workflow-state] JSON snapshot
+    snapshot = None
+    comments_list = ((fields.get("comment") or {}).get("comments")) or []
+    for c_item in reversed(comments_list):
+        c_text = _adf_to_plain_text(c_item.get("body"))
+        snapshot = _extract_state_snapshot_from_text(c_text)
+        if snapshot:
+            break
+    if not snapshot:
+        desc_text = _adf_to_plain_text(fields.get("description"))
+        snapshot = _extract_state_snapshot_from_text(desc_text)
+    else:
+        desc_text = _adf_to_plain_text(fields.get("description"))
+
+    if snapshot:
+        story = dict(snapshot)
+        story["jira_key"] = clean_key
+    else:
+        # 2. Structural reconstruction from Jira fields
+        summary = (fields.get("summary") or clean_key).strip()
+        status_name = ((fields.get("status") or {}).get("name") or "").strip()
+        acs = []
+        for m in re.finditer(r"(AC-\d+)\s*\*{0,2}\s*:\s*(.+)", desc_text or ""):
+            ac_id = m.group(1).strip().upper()
+            ac_desc = m.group(2).strip()
+            if ac_desc and not any(a["id"] == ac_id for a in acs):
+                acs.append({"id": ac_id, "description": ac_desc})
+        if not acs and status_name.lower() not in ("", "to do", "todo"):
+            acs = [{"id": "AC-001", "description": summary}]
+
+        spec_status = "approved" if (acs or status_name.lower() not in ("", "to do", "todo")) else "draft"
+        tasks = []
+        for idx, sub in enumerate(fields.get("subtasks") or [], start=1):
+            sub_key = sub.get("key") or f"{clean_key}-SUB-{idx}"
+            sub_fields = sub.get("fields") or {}
+            sub_sum = (sub_fields.get("summary") or f"TASK-{idx:03d}").strip()
+            sub_st_name = ((sub_fields.get("status") or {}).get("name") or "").strip().lower()
+            tm = re.search(r"(TASK-\d+)", sub_sum, re.IGNORECASE)
+            t_id = tm.group(1).upper() if tm else f"TASK-{idx:03d}"
+            clean_title = re.sub(r"^\[?TASK-\d+\]?\s*:?\s*", "", sub_sum, flags=re.IGNORECASE).strip() or sub_sum
+            is_done = sub_st_name in ("done", "closed", "resolved", "completed")
+            tasks.append({
+                "id": t_id,
+                "jira_subtask_key": sub_key,
+                "title": clean_title,
+                "ac_coverage": [a["id"] for a in acs] if acs else ["AC-001"],
+                "depends_on": [],
+                "files": [],
+                "verification": "Run automated tests",
+                "status": "completed" if is_done else "pending",
+                "commit": "HEAD" if is_done else None,
+                "changed_files": [],
+                "test_result": "Hydrated from Jira" if is_done else None,
+                "completed_at": now_iso() if is_done else None,
+            })
+
+        bugs = []
+        for idx, link in enumerate(fields.get("issuelinks") or [], start=1):
+            linked = link.get("inwardIssue") or link.get("outwardIssue") or {}
+            l_fields = linked.get("fields") or {}
+            l_type = ((l_fields.get("issuetype") or {}).get("name") or "").lower()
+            if l_type == "bug" or "BUG" in (linked.get("key") or ""):
+                b_key = linked.get("key") or f"{clean_key}-BUG-{idx}"
+                b_st = ((l_fields.get("status") or {}).get("name") or "").lower()
+                bugs.append({
+                    "bug_key": b_key,
+                    "tc_id": "TC-001",
+                    "ac_id": "AC-001",
+                    "title": l_fields.get("summary") or b_key,
+                    "severity": "major",
+                    "steps": "Hydrated from Jira issueLink",
+                    "expected": "Pass",
+                    "actual": "Fail",
+                    "reported_commit": "HEAD",
+                    "status": "completed" if b_st in ("done", "closed", "resolved", "completed") else "open",
+                    "created_at": now_iso(),
+                })
+
+        story = {
+            "jira_key": clean_key,
+            "title": summary,
+            "scope_in": summary,
+            "scope_out": "N/A",
+            "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+            "risk_level": "medium",
+            "acceptance_criteria": acs,
+            "design": {"summary": "Hydrated from remote Jira issue."},
+            "spec_status": spec_status,
+            "jira_status": status_name or "In Progress",
+            "tasks": tasks,
+            "bugs": bugs,
+        }
+        if status_name.lower() in ("in qa", "ready for release", "done"):
+            story["review"] = {"status": "approved", "reviewed_commit": "HEAD", "findings": []}
+        if status_name.lower() in ("ready for release", "done"):
+            story["qa"] = {
+                "status": "passed",
+                "tested_commit": "HEAD",
+                "test_cases": [
+                    {
+                        "id": f"TC-{idx:03d}",
+                        "ac_id": ac["id"],
+                        "title": ac["description"],
+                        "execution_type": "automated",
+                        "recommended_by_ai": True,
+                        "result": "pass",
+                    }
+                    for idx, ac in enumerate(acs, start=1)
+                ],
+            }
+
+    save_active_story(repo_root, clean_key, story, client=None, sync_remote=False)
+    return story
+
+
+def load_active_story(repo_root: Path, jira_key: str, client: JiraClient = None) -> dict:
     clean_key = validate_jira_key(jira_key)
     p = get_active_dir(repo_root) / f"{clean_key}.json"
-    if not p.exists():
-        raise FileNotFoundError(f"Active story state not found: {p}")
-    return json.loads(p.read_text(encoding="utf-8"))
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    # 1. Try hydrating from main Git worktree if in a secondary worktree
+    wt_story = _hydrate_story_from_worktree(repo_root, clean_key)
+    if wt_story is not None:
+        return wt_story
+
+    # 2. Try auto-hydrating from remote Jira when client is in live mode
+    eff_client = client
+    if eff_client is None:
+        try:
+            eff_client = JiraClient(load_team_config(repo_root))
+        except Exception:
+            eff_client = None
+    if eff_client is not None and eff_client.is_live:
+        rem_story = hydrate_story_from_remote(eff_client, repo_root, clean_key)
+        if rem_story is not None:
+            return rem_story
+
+    raise FileNotFoundError(f"Active story state not found: {p}")
 
 
-def save_active_story(repo_root: Path, jira_key: str, data: dict) -> Path:
+def save_active_story(
+    repo_root: Path,
+    jira_key: str,
+    data: dict,
+    client: JiraClient = None,
+    sync_remote: bool = True,
+) -> Path:
     clean_key = validate_jira_key(jira_key)
     active_dir = get_active_dir(repo_root)
     active_dir.mkdir(parents=True, exist_ok=True)
     data["updated_at"] = now_iso()
+    serialized = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     p = active_dir / f"{clean_key}.json"
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    p.write_text(serialized, encoding="utf-8")
+
+    # Mirror to main worktree if inside a secondary Git worktree
+    main_root = _resolve_main_worktree_root(repo_root)
+    if main_root:
+        try:
+            main_active = get_active_dir(main_root)
+            main_active.mkdir(parents=True, exist_ok=True)
+            (main_active / f"{clean_key}.json").write_text(serialized, encoding="utf-8")
+        except Exception:
+            pass
+
+    if sync_remote and client is not None and client.is_live:
+        client.sync_state_snapshot(clean_key, data)
     return p
 
 
@@ -647,6 +1109,15 @@ def cmd_init(args) -> int:
     cfg_path = get_config_path(repo_root)
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    # Install unified CLI wrapper at .ai-workflow/bin/jira_sync.py
+    bin_dir = wf_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    cli_dst = bin_dir / "jira_sync.py"
+    src_script = Path(__file__).resolve()
+    if src_script != cli_dst.resolve():
+        shutil.copy2(src_script, cli_dst)
+    cli_dst.chmod(0o755)
+
     # Ensure .gitignore ignores .ai-workflow/active/
     gitignore_path = repo_root / ".gitignore"
     ignore_entry = ".ai-workflow/active/"
@@ -675,6 +1146,7 @@ def cmd_init(args) -> int:
         "ok": True,
         "action": "init",
         "config_path": str(cfg_path.relative_to(repo_root)),
+        "cli_path": ".ai-workflow/bin/jira_sync.py",
         "project_key": cfg["project_key"],
         "gitignore_updated": gitignore_updated,
         "standards": standards_result,
@@ -767,11 +1239,13 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             "current_station": "Station 2: Dev Plan",
             "recommended_skill": "team-dev",
             "recommended_mode": "plan",
-            "parallel_hint": "QA (`team-qa` in `plan` mode) may also draft test cases in parallel.",
+            "parallel_hint": "QA (`team-qa` in `plan` mode) may also draft test cases in parallel. For single-task stories, Dev Fast-Track allows `complete-task --key "
+            + jira_key
+            + " --task-id TASK-001` directly.",
             "responsible_role": "developer",
             "responsible_person": owner["name"],
             "reason": f"Spec for {jira_key} is approved, but development Sub-tasks (TASK-001..N) have not been decomposed yet.",
-            "done_when": f"Tasks are decomposed and synced via `jira_sync.py create-subtasks --key {jira_key}`.",
+            "done_when": f"Tasks are decomposed and synced via `jira_sync.py create-subtasks --key {jira_key}` (or completed directly via Dev Fast-Track).",
         }
 
     # 4. Pending development Sub-tasks
@@ -807,15 +1281,21 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
         open_blocking_findings or not candidate_commit or candidate_commit == reviewed_commit
     ):
         owner = resolve_role_person(config, "developer")
+        open_finding_ids = [f.get("id") for f in open_blocking_findings if f.get("id")]
+        finding_ids_str = ",".join(open_finding_ids) if open_finding_ids else "REV-001"
         return {
             "jira_key": jira_key,
             "current_station": "Station 2: Dev Remediation (Review Changes Requested)",
             "recommended_skill": "team-dev",
             "recommended_mode": "implement",
+            "open_finding_ids": open_finding_ids,
             "responsible_role": "developer",
             "responsible_person": owner["name"],
             "reason": f"Code review on {jira_key} requested changes ({review.get('summary', 'see findings')}).",
-            "done_when": "Review findings are fixed with updated commit/tests and re-submitted to `team-review`.",
+            "done_when": (
+                f"Review findings ({finding_ids_str}) are fixed with updated commit/tests, marked completed via "
+                f"`jira_sync.py complete-task --key {jira_key} --task-id {finding_ids_str}`, and re-submitted to `team-review`."
+            ),
         }
 
     if review_status != "approved" or (candidate_commit and reviewed_commit and reviewed_commit != candidate_commit):
@@ -854,7 +1334,7 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             "responsible_role": "qa",
             "responsible_person": owner["name"],
             "reason": f"Code review is approved, but QA test cases (TC-001..N) need planning for {jira_key}{gap_note}.",
-            "done_when": f"Test cases covering all Story ACs are planned and recorded via `jira_sync.py record-qa --key {jira_key} --mode plan`.",
+            "done_when": f"Test cases covering all Story ACs are planned via `jira_sync.py record-qa --key {jira_key} --mode plan` (or verified directly via QA Fast-Track `--mode verify --all-pass`).",
         }
 
     if qa_status != "passed" or (candidate_commit and tested_commit and tested_commit != candidate_commit):
@@ -909,19 +1389,29 @@ def cmd_status(args) -> int:
 
     config = load_team_config(repo_root)
     active_dir = get_active_dir(repo_root)
-    active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+    client = JiraClient(config, offline=args.offline)
 
     if args.key:
         jira_key = validate_jira_key(args.key)
         target_file = active_dir / f"{jira_key}.json"
+        hydrated_source = None
         remote_issue = None
-        if getattr(args, "fetch_remote", False):
-            client = JiraClient(config, offline=args.offline)
-            if client.is_live:
-                try:
-                    remote_issue = client.get_issue(jira_key)
-                except Exception as exc:
-                    remote_issue = {"error": str(exc)}
+
+        if getattr(args, "fetch_remote", False) and client.is_live:
+            try:
+                remote_issue = client.get_issue(jira_key)
+            except Exception as exc:
+                remote_issue = {"error": str(exc)}
+
+        if not target_file.exists():
+            wt_story = _hydrate_story_from_worktree(repo_root, jira_key)
+            if wt_story is not None:
+                hydrated_source = "worktree"
+            elif client.is_live:
+                rem_story = hydrate_story_from_remote(client, repo_root, jira_key)
+                if rem_story is not None:
+                    hydrated_source = "jira"
+
         if not target_file.exists():
             owner = resolve_role_person(config, "pm")
             out = {
@@ -939,15 +1429,26 @@ def cmd_status(args) -> int:
             }
             print(json.dumps(out, ensure_ascii=False, indent=2))
             return 0
-        story = load_active_story(repo_root, jira_key)
+
+        story = load_active_story(repo_root, jira_key, client=client)
         rec = evaluate_story_next_step(story, config, standards_exists)
         rec["initialized"] = True
         rec["standards_exists"] = standards_exists
         rec["story_found"] = True
+        if hydrated_source:
+            rec["hydrated_from"] = hydrated_source
         if remote_issue is not None:
             rec["remote_issue"] = remote_issue
         print(json.dumps(rec, ensure_ascii=False, indent=2))
         return 0
+
+    active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+    if not active_files:
+        main_root = _resolve_main_worktree_root(repo_root)
+        if main_root and get_active_dir(main_root).exists():
+            for mf in sorted(get_active_dir(main_root).glob("*.json")):
+                _hydrate_story_from_worktree(repo_root, mf.stem)
+            active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
 
     if not active_files:
         owner = resolve_role_person(config, "pm")
@@ -1037,6 +1538,9 @@ def format_story_description(story: dict) -> str:
         for item in material_decisions:
             lines.append(f"- {item}")
         lines.append("")
+
+    snapshot_str = json.dumps(story, ensure_ascii=False, separators=(",", ":"))
+    lines.append(f"{STATE_SNAPSHOT_MARKER} {snapshot_str}")
 
     return "\n".join(lines).strip()
 
@@ -1154,7 +1658,7 @@ def cmd_sync_story(args) -> int:
             comment_md=f"[Station 1: Spec Approved] 規格與設計已確認核准（共 {len(story.get('acceptance_criteria', []))} 項 AC），請進入 Station 2 (`team-dev`) 拆解與實作。",
         )
 
-    saved_path = save_active_story(repo_root, jira_key, story)
+    saved_path = save_active_story(repo_root, jira_key, story, client=client, sync_remote=bool(handoff_info))
     if active_path.exists() and active_path != saved_path:
         active_path.unlink()
     out = {
@@ -1201,7 +1705,7 @@ def cmd_create_subtasks(args) -> int:
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline)
     jira_key = validate_jira_key(args.key)
-    story = load_active_story(repo_root, jira_key)
+    story = load_active_story(repo_root, jira_key, client=client)
 
     if story.get("spec_status") != "approved" and not args.proceed_at_risk:
         print(f"ERROR: Story {jira_key} spec_status is '{story.get('spec_status')}'. Approve spec first or pass --proceed-at-risk.", file=sys.stderr)
@@ -1215,12 +1719,30 @@ def cmd_create_subtasks(args) -> int:
         elif isinstance(loaded, list):
             raw_tasks = loaded
     if args.task:
+        ac_split_re = re.compile(
+            r"^(.*?):\s*((?:AC-\d+(?:\s*,\s*AC-\d+)*)|Enabling work)\s*:(.*)$",
+            re.IGNORECASE,
+        )
         for idx, t_str in enumerate(args.task, start=len(raw_tasks) + 1):
-            parts = [p.strip() for p in t_str.split(":")]
-            t_id = parts[0] if (parts and re.match(r"^TASK-\d+", parts[0])) else f"TASK-{idx:03d}"
-            title = parts[1] if len(parts) > 1 else parts[0]
-            ac_cov = [x.strip() for x in parts[2].split(",") if x.strip()] if len(parts) > 2 else []
-            verif = parts[3] if len(parts) > 3 else "Run unit/integration tests"
+            first_tok = t_str.split(":", 1)[0].strip()
+            if re.match(r"^TASK-\d+$", first_tok, re.IGNORECASE):
+                t_id = first_tok.upper()
+                rest = t_str.split(":", 1)[1].strip() if ":" in t_str else ""
+            else:
+                t_id = f"TASK-{idx:03d}"
+                rest = t_str.strip()
+
+            m_ac = ac_split_re.match(rest)
+            if m_ac:
+                title = m_ac.group(1).strip() or t_id
+                ac_cov = [x.strip().upper() if re.match(r"^ac-\d+$", x.strip(), re.I) else x.strip() for x in m_ac.group(2).split(",") if x.strip()]
+                verif = m_ac.group(3).strip() or "Run unit/integration tests"
+            else:
+                parts = [p.strip() for p in rest.split(":", 2)]
+                title = parts[0] if parts and parts[0] else t_id
+                ac_cov = [x.strip() for x in parts[1].split(",") if x.strip()] if len(parts) > 1 else []
+                verif = parts[2] if len(parts) > 2 and parts[2] else "Run unit/integration tests"
+
             raw_tasks.append({
                 "id": t_id,
                 "title": title,
@@ -1289,7 +1811,7 @@ def cmd_create_subtasks(args) -> int:
 
     story["tasks"] = normalized_tasks
     story["station"] = "dev"
-    saved_path = save_active_story(repo_root, jira_key, story)
+    saved_path = save_active_story(repo_root, jira_key, story, client=client)
     out = {
         "ok": True,
         "action": "create-subtasks",
@@ -1311,57 +1833,126 @@ def cmd_complete_task(args) -> int:
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline)
     jira_key = validate_jira_key(args.key)
-    story = load_active_story(repo_root, jira_key)
+    story = load_active_story(repo_root, jira_key, client=client)
 
-    target_id = args.task_id.strip()
-    commit_sha = args.commit.strip()
+    raw_task_id = (args.task_id or "TASK-001").strip()
+    target_ids = [tid.strip() for tid in raw_task_id.split(",") if tid.strip()]
+    if not target_ids:
+        target_ids = ["TASK-001"]
+
+    commit_sha = (args.commit or "").strip() or _detect_git_head_commit(repo_root) or story.get("candidate_commit") or ""
     changed_files = [f.strip() for f in (args.files or "").split(",") if f.strip()]
-    test_result = args.test_result.strip()
+    if not changed_files:
+        changed_files = _detect_git_changed_files(repo_root, commit_sha)
+    test_result = (args.test_result or "").strip()
 
     if not commit_sha or not test_result:
-        print("ERROR: --commit and --test-result are required to complete a task.", file=sys.stderr)
+        print(
+            "ERROR: --test-result and a valid --commit (or Git HEAD commit in repository) are required to complete a task.",
+            file=sys.stderr,
+        )
         return 1
 
-    matched_item = None
-    item_kind = "task"
-    for t in story.get("tasks") or []:
-        if t["id"] == target_id or t.get("jira_subtask_key") == target_id:
-            matched_item = t
-            break
+    # Dev Fast-Track: if no tasks are planned yet and spec is approved, auto-create TASK-001 covering all Story ACs
+    fast_tracked = False
+    if not (story.get("tasks") or []) and story.get("spec_status") == "approved":
+        task_like_ids = [tid for tid in target_ids if re.match(r"^TASK-\d+$", tid, re.IGNORECASE)]
+        if task_like_ids:
+            all_ac_ids = [ac.get("id") for ac in (story.get("acceptance_criteria") or []) if ac.get("id")] or ["AC-001"]
+            auto_tasks = []
+            for idx, tid in enumerate(task_like_ids, start=1):
+                norm_tid = tid.upper()
+                title = story.get("title") or "Implement Story"
+                desc_md = (
+                    f"Task ID: {norm_tid}\n"
+                    f"Covers AC: {', '.join(all_ac_ids)}\n"
+                    f"Depends on: None\n"
+                    f"Verification: {test_result}"
+                )
+                sub_key = client.create_subtask(jira_key, f"[{norm_tid}] {title}", desc_md, idx)
+                auto_tasks.append({
+                    "id": norm_tid,
+                    "jira_subtask_key": sub_key,
+                    "title": title,
+                    "ac_coverage": all_ac_ids,
+                    "depends_on": [],
+                    "files": changed_files,
+                    "verification": test_result,
+                    "status": "pending",
+                    "commit": None,
+                    "changed_files": [],
+                    "test_result": None,
+                    "completed_at": None,
+                })
+            story["tasks"] = auto_tasks
+            story["station"] = "dev"
+            fast_tracked = True
 
-    if matched_item is None:
-        for b in story.get("bugs") or []:
-            if b.get("bug_key") == target_id or b.get("id") == target_id:
-                matched_item = b
-                item_kind = "bug"
+    resolved_targets = []
+    for target_id in target_ids:
+        matched_item = None
+        item_kind = "task"
+        for t in story.get("tasks") or []:
+            if t["id"] == target_id or t.get("jira_subtask_key") == target_id:
+                matched_item = t
                 break
 
-    if matched_item is None:
-        for f in (story.get("review") or {}).get("findings") or []:
-            if isinstance(f, dict) and f.get("id") == target_id:
-                matched_item = f
-                item_kind = "review-finding"
-                break
+        if matched_item is None:
+            for b in story.get("bugs") or []:
+                if b.get("bug_key") == target_id or b.get("id") == target_id:
+                    matched_item = b
+                    item_kind = "bug"
+                    break
 
-    if matched_item is None:
-        print(f"ERROR: Task, Bug, or Review Finding '{target_id}' not found in {jira_key}.", file=sys.stderr)
-        return 1
+        if matched_item is None:
+            for f in (story.get("review") or {}).get("findings") or []:
+                if isinstance(f, dict) and f.get("id") == target_id:
+                    matched_item = f
+                    item_kind = "review-finding"
+                    break
 
-    if item_kind == "task":
-        completed_ids = {t["id"] for t in (story.get("tasks") or []) if t.get("status") == "completed"}
-        unmet_deps = [d for d in (matched_item.get("depends_on") or []) if d not in completed_ids]
-        if unmet_deps:
-            print(
-                f"ERROR: Cannot complete task '{matched_item['id']}' before its dependencies are completed: {', '.join(unmet_deps)}.",
-                file=sys.stderr,
-            )
+        if matched_item is None:
+            print(f"ERROR: Task, Bug, or Review Finding '{target_id}' not found in {jira_key}.", file=sys.stderr)
             return 1
+        resolved_targets.append((target_id, matched_item, item_kind))
 
-    matched_item["status"] = "completed"
-    matched_item["commit"] = commit_sha
-    matched_item["changed_files"] = changed_files
-    matched_item["test_result"] = test_result
-    matched_item["completed_at"] = now_iso()
+    done_status = config.get("status_mapping", {}).get("done", "Done")
+    completed_ids = []
+    primary_kind = resolved_targets[0][2]
+
+    for target_id, matched_item, item_kind in resolved_targets:
+        if item_kind == "task":
+            done_task_ids = {t["id"] for t in (story.get("tasks") or []) if t.get("status") == "completed"}
+            unmet_deps = [d for d in (matched_item.get("depends_on") or []) if d not in done_task_ids]
+            if unmet_deps:
+                print(
+                    f"ERROR: Cannot complete task '{matched_item['id']}' before its dependencies are completed: {', '.join(unmet_deps)}.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        matched_item["status"] = "completed"
+        matched_item["commit"] = commit_sha
+        matched_item["changed_files"] = changed_files
+        matched_item["test_result"] = test_result
+        matched_item["completed_at"] = now_iso()
+        completed_ids.append(target_id)
+
+        jira_issue_key = (
+            matched_item.get("jira_subtask_key")
+            if item_kind == "task"
+            else (matched_item.get("bug_key") if item_kind == "bug" else None)
+        )
+        comment_md = (
+            f"[Task Completed: {target_id}]\n"
+            f"- Commit: `{commit_sha}`\n"
+            f"- Changed Files: {', '.join(changed_files) if changed_files else 'N/A'}\n"
+            f"- Verification Evidence: {test_result}"
+        )
+        if jira_issue_key:
+            client.add_comment(jira_issue_key, comment_md)
+            client.transition_issue(jira_issue_key, done_status)
+
     story["candidate_commit"] = commit_sha
 
     review = story.get("review")
@@ -1373,33 +1964,20 @@ def cmd_complete_task(args) -> int:
         if not open_blocking:
             review["status"] = "remediated"
 
-    jira_issue_key = (
-        matched_item.get("jira_subtask_key")
-        if item_kind == "task"
-        else (matched_item.get("bug_key") if item_kind == "bug" else None)
-    )
-    done_status = config.get("status_mapping", {}).get("done", "Done")
-    comment_md = (
-        f"[Task Completed: {target_id}]\n"
-        f"- Commit: `{commit_sha}`\n"
-        f"- Changed Files: {', '.join(changed_files) if changed_files else 'N/A'}\n"
-        f"- Verification Evidence: {test_result}"
-    )
-    if jira_issue_key:
-        client.add_comment(jira_issue_key, comment_md)
-        client.transition_issue(jira_issue_key, done_status)
-
     remaining_tasks = [t["id"] for t in (story.get("tasks") or []) if t.get("status") != "completed"]
     remaining_bugs = [b.get("bug_key") for b in (story.get("bugs") or []) if b.get("status") not in ("completed", "closed")]
 
-    saved_path = save_active_story(repo_root, jira_key, story)
+    saved_path = save_active_story(repo_root, jira_key, story, client=client)
     out = {
         "ok": True,
         "action": "complete-task",
         "jira_key": jira_key,
-        "completed_id": target_id,
-        "kind": item_kind,
+        "completed_id": completed_ids[0] if len(completed_ids) == 1 else ",".join(completed_ids),
+        "completed_ids": completed_ids,
+        "kind": primary_kind,
+        "fast_track": fast_tracked,
         "commit": commit_sha,
+        "changed_files": changed_files,
         "remaining_tasks": remaining_tasks,
         "remaining_bugs": remaining_bugs,
         "ready_for_review": len(remaining_tasks) == 0 and len(remaining_bugs) == 0,
@@ -1418,7 +1996,7 @@ def cmd_handoff(args) -> int:
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline)
     jira_key = validate_jira_key(args.key)
-    story = load_active_story(repo_root, jira_key)
+    story = load_active_story(repo_root, jira_key, client=client)
 
     effective_rev_role, _, self_reviewed = resolve_effective_reviewer(config)
     from_role = args.from_role.strip() if args.from_role else effective_rev_role
@@ -1426,9 +2004,10 @@ def cmd_handoff(args) -> int:
         from_role = "independent_reviewer"
     to_role = args.to_role.strip()
     review_status = args.review_status or "approved"
-    commit_sha = (args.commit or story.get("candidate_commit") or "unknown").strip()
+    commit_sha = (args.commit or story.get("candidate_commit") or _detect_git_head_commit(repo_root) or "unknown").strip()
     summary = (args.summary or "").strip()
-    findings = load_json_arg(args.findings_json) if args.findings_json else []
+    raw_findings = load_json_arg(args.findings_json) if args.findings_json else []
+    findings = raw_findings if isinstance(raw_findings, list) else []
 
     if review_status == "approved":
         if story.get("spec_status") != "approved":
@@ -1448,14 +2027,25 @@ def cmd_handoff(args) -> int:
             return 1
 
     # Check if any blocker/major findings exist when claiming approved
-    if isinstance(findings, list):
-        blocking = [
-            f for f in findings
-            if f.get("severity") in ("blocker", "major") and f.get("status", "open") == "open"
-        ]
-        if blocking and review_status == "approved":
-            print("ERROR: Cannot set --review-status approved while open blocker/major findings exist.", file=sys.stderr)
-            return 1
+    blocking = [
+        f for f in findings
+        if isinstance(f, dict) and f.get("severity") in ("blocker", "major") and f.get("status", "open") == "open"
+    ]
+    if blocking and review_status == "approved":
+        print("ERROR: Cannot set --review-status approved while open blocker/major findings exist.", file=sys.stderr)
+        return 1
+
+    # Auto-create default REV-001 finding when changes-requested is passed without an open blocking finding
+    if review_status == "changes-requested" and not blocking:
+        findings.append({
+            "id": "REV-001",
+            "severity": "major",
+            "axis": "review",
+            "location": "repo",
+            "ac_id": "",
+            "observation": summary or "Changes requested during code review",
+            "status": "open",
+        })
 
     if from_role != "reviewer":
         dev_person = resolve_role_person(config, "developer")
@@ -1466,7 +2056,7 @@ def cmd_handoff(args) -> int:
         "status": review_status,
         "reviewed_commit": commit_sha,
         "summary": summary,
-        "findings": findings if isinstance(findings, list) else [],
+        "findings": findings,
         "self_reviewed_with_ai": self_reviewed,
         "reviewer_role": from_role,
         "reviewed_at": now_iso(),
@@ -1499,13 +2089,14 @@ def cmd_handoff(args) -> int:
         comment_md="\n".join(comment_lines),
     )
 
-    saved_path = save_active_story(repo_root, jira_key, story)
+    saved_path = save_active_story(repo_root, jira_key, story, client=client)
     out = {
         "ok": True,
         "action": "handoff",
         "jira_key": jira_key,
         "review_status": review_status,
         "reviewed_commit": commit_sha,
+        "findings_count": len(findings),
         "handoff": handoff_record,
         "active_file": str(saved_path.relative_to(repo_root)),
     }
@@ -1550,7 +2141,7 @@ def cmd_record_qa(args) -> int:
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline)
     jira_key = validate_jira_key(args.key)
-    story = load_active_story(repo_root, jira_key)
+    story = load_active_story(repo_root, jira_key, client=client)
 
     qa = story.get("qa") or {"status": "planned", "test_cases": []}
 
@@ -1564,12 +2155,34 @@ def cmd_record_qa(args) -> int:
                 raw_cases = loaded
         if args.tc:
             for idx, tc_str in enumerate(args.tc, start=len(raw_cases) + 1):
-                # Format: TC-001:AC-001:automated:Title/expected
-                parts = [p.strip() for p in tc_str.split(":")]
-                tc_id = parts[0] if (parts and re.match(r"^TC-\d+", parts[0])) else f"TC-{idx:03d}"
-                ac_id = parts[1] if len(parts) > 1 else "AC-001"
-                exec_type = parts[2].lower() if len(parts) > 2 and parts[2].lower() in ("automated", "manual") else "automated"
-                title = parts[3] if len(parts) > 3 else tc_str
+                # Format: TC-001:AC-001:automated:Title/expected (or AC-001:automated:Title)
+                first_tok = tc_str.split(":", 1)[0].strip()
+                if re.match(r"^TC-\d+$", first_tok, re.IGNORECASE):
+                    parts = [p.strip() for p in tc_str.split(":", 3)]
+                    tc_id = parts[0].upper()
+                    ac_id = parts[1].upper() if len(parts) > 1 and parts[1] else "AC-001"
+                    exec_type = (
+                        parts[2].lower()
+                        if len(parts) > 2 and parts[2].lower() in ("automated", "manual")
+                        else "automated"
+                    )
+                    title = parts[3] if len(parts) > 3 else tc_str
+                elif re.match(r"^AC-\d+$", first_tok, re.IGNORECASE):
+                    parts = [p.strip() for p in tc_str.split(":", 2)]
+                    tc_id = f"TC-{idx:03d}"
+                    ac_id = parts[0].upper()
+                    exec_type = (
+                        parts[1].lower()
+                        if len(parts) > 1 and parts[1].lower() in ("automated", "manual")
+                        else "automated"
+                    )
+                    title = parts[2] if len(parts) > 2 else tc_str
+                else:
+                    parts = [p.strip() for p in tc_str.split(":", 3)]
+                    tc_id = f"TC-{idx:03d}"
+                    ac_id = parts[0].upper() if parts and re.match(r"^AC-\d+$", parts[0], re.IGNORECASE) else "AC-001"
+                    exec_type = "automated"
+                    title = tc_str.strip()
                 raw_cases.append({
                     "id": tc_id,
                     "ac_id": ac_id,
@@ -1617,7 +2230,7 @@ def cmd_record_qa(args) -> int:
             table_lines.append(f"| {c['id']} | {c['ac_id']} | {c['execution_type']} | {c['title']} |")
         client.add_comment(jira_key, "\n".join(table_lines))
 
-        saved_path = save_active_story(repo_root, jira_key, story)
+        saved_path = save_active_story(repo_root, jira_key, story, client=client)
         print(json.dumps({
             "ok": True,
             "action": "record-qa",
@@ -1628,10 +2241,28 @@ def cmd_record_qa(args) -> int:
         }, ensure_ascii=False, indent=2))
         return 0
 
-    # verify mode
+    # verify mode (supports QA Fast-Track auto-deriving TC-001..N from AC-001..N when test_cases is empty)
     test_cases = qa.get("test_cases") or []
+    fast_tracked_qa = False
+    if not test_cases and (story.get("acceptance_criteria") or []):
+        test_cases = [
+            {
+                "id": f"TC-{idx:03d}",
+                "ac_id": ac["id"],
+                "title": ac.get("description") or ac["id"],
+                "execution_type": "automated",
+                "recommended_by_ai": True,
+                "result": "not-executed",
+                "notes": "Auto-derived from Story ACs via QA Fast-Track",
+            }
+            for idx, ac in enumerate(story.get("acceptance_criteria") or [], start=1)
+        ]
+        qa["test_cases"] = test_cases
+        qa["planned_at"] = qa.get("planned_at") or now_iso()
+        fast_tracked_qa = True
+
     if not test_cases:
-        print(f"ERROR: No planned test cases exist in {jira_key}. Run record-qa --mode plan first.", file=sys.stderr)
+        print(f"ERROR: No planned test cases or Story ACs exist in {jira_key}. Run record-qa --mode plan first.", file=sys.stderr)
         return 1
 
     known_tc_ids = {c["id"] for c in test_cases}
@@ -1676,6 +2307,11 @@ def cmd_record_qa(args) -> int:
                 return 1
             incoming_results[tc_id] = val.strip().lower()
 
+    if getattr(args, "all_pass", False):
+        for c in test_cases:
+            if c["id"] not in incoming_results:
+                incoming_results[c["id"]] = "pass"
+
     allowed_results = {"pass", "fail", "blocked", "not-executed"}
     for c in test_cases:
         if c["id"] in incoming_results:
@@ -1690,7 +2326,7 @@ def cmd_record_qa(args) -> int:
         st = c.get("result", "not-executed")
         counts[st] = counts.get(st, 0) + 1
 
-    tested_commit = (args.commit or story.get("candidate_commit") or "unknown").strip()
+    tested_commit = (args.commit or story.get("candidate_commit") or _detect_git_head_commit(repo_root) or "unknown").strip()
     open_bugs = [b for b in (story.get("bugs") or []) if b.get("status") not in ("completed", "closed")]
     uncovered_acs = find_uncovered_story_acs(story, test_cases)
 
@@ -1734,13 +2370,14 @@ def cmd_record_qa(args) -> int:
     else:
         client.add_comment(jira_key, "\n".join(table_lines))
 
-    saved_path = save_active_story(repo_root, jira_key, story)
+    saved_path = save_active_story(repo_root, jira_key, story, client=client)
     print(json.dumps({
         "ok": True,
         "action": "record-qa",
         "mode": "verify",
         "jira_key": jira_key,
         "qa_status": qa_status,
+        "fast_track": fast_tracked_qa,
         "tested_commit": tested_commit,
         "counts": counts,
         "handoff": handoff_info,
@@ -1758,7 +2395,7 @@ def cmd_create_bug(args) -> int:
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline)
     jira_key = validate_jira_key(args.key)
-    story = load_active_story(repo_root, jira_key)
+    story = load_active_story(repo_root, jira_key, client=client)
 
     bugs = story.setdefault("bugs", [])
     bug_idx = len(bugs) + 1
@@ -1805,7 +2442,7 @@ def cmd_create_bug(args) -> int:
         comment_md=f"[Bug Created: {bug_key}] 測試案例 `{args.tc_id}` 失敗（Severity: `{args.severity}`）：{args.title}。請修復並執行 `complete-task --task-id {bug_key}`。",
     )
 
-    saved_path = save_active_story(repo_root, jira_key, story)
+    saved_path = save_active_story(repo_root, jira_key, story, client=client)
     print(json.dumps({
         "ok": True,
         "action": "create-bug",
@@ -1827,10 +2464,10 @@ def cmd_close_story(args) -> int:
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline)
     jira_key = validate_jira_key(args.key)
-    story = load_active_story(repo_root, jira_key)
+    story = load_active_story(repo_root, jira_key, client=client)
 
-    commit_sha = args.commit.strip()
-    version = args.version.strip()
+    commit_sha = (args.commit or story.get("candidate_commit") or _detect_git_head_commit(repo_root) or "").strip()
+    version = (args.version or "v1.0.0").strip()
     unmet_gates = []
 
     if story.get("spec_status") != "approved":
@@ -1902,6 +2539,14 @@ def cmd_close_story(args) -> int:
     active_file = get_active_dir(repo_root) / f"{jira_key}.json"
     if active_file.exists():
         active_file.unlink()
+    main_root = _resolve_main_worktree_root(repo_root)
+    if main_root:
+        main_active_file = get_active_dir(main_root) / f"{jira_key}.json"
+        if main_active_file.exists():
+            try:
+                main_active_file.unlink()
+            except Exception:
+                pass
 
     print(json.dumps({
         "ok": True,
@@ -1980,11 +2625,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_subtasks.set_defaults(func=cmd_create_subtasks)
 
     # 5. complete-task
-    p_comp = sub.add_parser("complete-task", help="Mark a TASK-###, BUG-*, or REV-### completed with commit and test evidence")
+    p_comp = sub.add_parser("complete-task", help="Mark one or more TASK-###, BUG-*, or REV-### completed with commit and test evidence")
     p_comp.add_argument("--key", required=True, help="Jira Story key")
-    p_comp.add_argument("--task-id", required=True, help="Task ID (TASK-001), Bug key (PROJ-101-BUG-1), or Finding ID (REV-001)")
-    p_comp.add_argument("--commit", required=True, help="Git commit SHA implementing the task/fix")
-    p_comp.add_argument("--files", required=True, help="Comma-separated list of changed file paths")
+    p_comp.add_argument("--task-id", default="TASK-001", help="Comma-separated IDs: Task ID (TASK-001), Bug key (PROJ-101-BUG-1), or Finding ID (REV-001,REV-002)")
+    p_comp.add_argument("--commit", default=None, help="Git commit SHA implementing the task/fix (auto-detected from git HEAD if omitted)")
+    p_comp.add_argument("--files", default=None, help="Comma-separated list of changed file paths (auto-detected from git if omitted)")
     p_comp.add_argument("--test-result", required=True, help="Executed test command and pass summary")
     p_comp.set_defaults(func=cmd_complete_task)
 
@@ -2009,6 +2654,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_qa.add_argument("--junit-xml", help="Path to JUnit XML report for verify mode")
     p_qa.add_argument("--results-json", help="JSON string or file with TC results for verify mode")
     p_qa.add_argument("--result", action="append", help="Single TC result 'TC-001=pass|fail|blocked'")
+    p_qa.add_argument("--all-pass", action="store_true", help="Mark all un-overridden test cases as pass in verify mode (QA Fast-Track)")
     p_qa.add_argument("--commit", help="Tested git commit SHA")
     p_qa.set_defaults(func=cmd_record_qa)
 
@@ -2028,8 +2674,8 @@ def build_parser() -> argparse.ArgumentParser:
     # 9. close-story
     p_close = sub.add_parser("close-story", help="Verify all gates, transition Story to Done, and delete active JSON")
     p_close.add_argument("--key", required=True, help="Jira Story key")
-    p_close.add_argument("--version", required=True, help="Release version or tag (e.g. v1.2.0)")
-    p_close.add_argument("--commit", required=True, help="Release candidate git commit SHA")
+    p_close.add_argument("--version", default=None, help="Release version or tag (defaults to v1.0.0 if omitted)")
+    p_close.add_argument("--commit", default=None, help="Release candidate git commit SHA (defaults to candidate_commit or git HEAD if omitted)")
     p_close.add_argument("--notes", default="", help="Release summary notes")
     p_close.set_defaults(func=cmd_close_story)
 

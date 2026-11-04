@@ -25,10 +25,17 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 
 | Output / Target | Purpose | Committed to Git? |
 |---|---|---|
-| `.ai-workflow/team-config.json` | Project key, Jira base URL, status mapping, and role-to-person mapping | Yes |
+| `.ai-workflow/team-config.json` | Project key, Jira base URL, status/issue-type mapping, and role-to-person mapping | Yes |
+| `.ai-workflow/bin/jira_sync.py` | Project-local unified CLI wrapper (works even when skills are installed globally) | Yes |
 | `.gitignore` | Ignores `.ai-workflow/active/` temporary per-feature JSON scaffolding | Yes |
 | `docs/shared/engineering-standards.md` | Canonical repository-wide engineering, testing, and security standards | Yes |
 | `AGENTS.md` | Trimmed of duplicated standards; links to `docs/shared/engineering-standards.md` | Yes |
+
+## Zero-CLI Burden & Single-Command Principle
+
+- **Humans Never Need to Type CLI Flags:** Always assemble and execute `jira_sync.py` commands automatically in the background based on the user's natural language answers.
+- **Unified Project CLI Path:** Once `init` runs, `.ai-workflow/bin/jira_sync.py` is installed directly in the repository so subsequent stations can run `python3 .ai-workflow/bin/jira_sync.py ...` (or fall back to `python3 <skill-dir>/scripts/jira_sync.py ...`).
+- **Only One Command to Remember (`$team-next-step`):** Remind the user that after initialization, they only ever need `$team-next-step` (or natural language `"下一步"`) to navigate the entire 4-station lifecycle.
 
 ## Workflow
 
@@ -39,7 +46,7 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
    - Ask the user **at most 3 concise setup questions** (or 1 combined question) if not already provided:
      1. **Jira Project Key & Base URL** (e.g., `PROJ`, `https://your-org.atlassian.net`; default `PROJ` if offline/local).
      2. **Role-to-Person Mapping**: Who holds `pm`, `tech_lead`, `developer`, `reviewer`, `qa`, and `release_manager`? Explicitly note that **one person can hold multiple roles** (when adjacent stations belong to the same person, the workflow auto-consolidates handoffs without redundant notifications or self-approval ceremonies).
-     3. **Custom Jira Status Names** (only if different from standard `To Do`, `In Progress`, `In Review`, `In QA`, `Ready for Release`, `Done`).
+     3. **Custom Jira Status / Issue Type Names** (only if different from standard `To Do`, `In Progress`, `In Review`, `In QA`, `Ready for Release`, `Done` and `Story`, `Sub-task`, `Bug`).
 
 ### 2. Run deterministic initialization
 Execute the bundled `scripts/jira_sync.py init` command from the repository root:
@@ -53,6 +60,7 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
 
 What `jira_sync.py init` enforces automatically:
 - Creates or updates `.ai-workflow/team-config.json` (template: `references/team-config-template.json`).
+- Installs `.ai-workflow/bin/jira_sync.py` (`chmod 0755`) and returns `"cli_path": ".ai-workflow/bin/jira_sync.py"`.
 - Appends `.ai-workflow/active/` to `.gitignore` if not already present.
 - Extracts engineering/coding/testing/security sections from `AGENTS.md` into `docs/shared/engineering-standards.md` (or creates a starter from `references/engineering-standards-template.md` if `AGENTS.md` has none) and **replaces the duplicated sections in `AGENTS.md` with a reference link** to `docs/shared/engineering-standards.md`.
 

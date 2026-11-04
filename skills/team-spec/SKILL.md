@@ -54,10 +54,10 @@ Present the structured specification in Traditional Chinese (繁體中文):
 - **Case B (0 Material Questions exist):** Show the Spec Summary + **AI 預設細節清單** and ask for one-step confirmation to approve and sync to Jira.
 
 ### 4. Sync approved spec to Jira & `.ai-workflow/active/<JIRA-KEY>.json`
-Once the user confirms approval (and answers any material questions), run `scripts/jira_sync.py sync-story`:
+Once the user confirms approval in natural language (e.g., `"確認"`, `"核准"`), run `jira_sync.py sync-story` automatically in the background (**Zero-CLI Burden** — never ask the human to type CLI flags). Prefer `.ai-workflow/bin/jira_sync.py` (or fall back to `<skill-dir>/scripts/jira_sync.py`):
 
 ```bash
-python3 <skill-dir>/scripts/jira_sync.py --repo-root . sync-story \
+python3 .ai-workflow/bin/jira_sync.py --repo-root . sync-story \
   --key "<JIRA-KEY>" \
   --title "<Story Title>" \
   --scope-in "<In-Scope Summary>" \
@@ -74,9 +74,9 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . sync-story \
   --status approved
 ```
 
-### 5. Role-aware handoff to Station 2 (`team-dev`)
-`jira_sync.py sync-story --status approved` automatically checks `.ai-workflow/team-config.json`:
-- **Same person (`pm` == `developer`):** Auto-consolidates the transition without notification spam; immediately offer to run `$team-dev` (`plan` mode).
+### 5. Role-aware handoff & Auto-Chaining to Station 2 (`team-dev`)
+`jira_sync.py sync-story --status approved` automatically embeds the `[ai-workflow-state]` snapshot for cross-machine hydration and checks `.ai-workflow/team-config.json`:
+- **Same person (`pm` == `developer`, `same_person: true`):** Auto-consolidates the transition without notification spam; **proactively auto-chain** into `$team-dev` (`plan` mode, or Dev Fast-Track for single-task stories) or ask in one line: `"下一站（Station 2 任務拆解與開發）同由您負責，是否直接繼續執行？"`.
 - **Different person (`pm` != `developer`):** Transitions the Jira Story to `In Progress`, reassigns it to the Developer, and posts an `@mention` comment on Jira. Note that `$team-qa` (`plan` mode) can also run in parallel.
 
 ## Red Flags — STOP

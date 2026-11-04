@@ -30,13 +30,13 @@ Read `references/common-workflow-governance.md` and `references/release-method.m
 3. Check whether any **System-Wide Living Assets** (`AGENTS.md`, `docs/shared/engineering-standards.md`, `docs/shared/glossary.md`, `docs/shared/adr/`) were updated during this feature and ensure they are clean and committed.
 
 ### 2. Run `close-story` to finalize Jira & clean up active state
-Execute `scripts/jira_sync.py close-story` from the repository root:
+Execute `jira_sync.py close-story` from the repository root (prefer `.ai-workflow/bin/jira_sync.py` or fall back to `<skill-dir>/scripts/jira_sync.py`; `--commit` defaults to `candidate_commit` or Git `HEAD` and `--version` defaults to `v1.0.0` when omitted):
 
 ```bash
-python3 <skill-dir>/scripts/jira_sync.py --repo-root . close-story \
+python3 .ai-workflow/bin/jira_sync.py --repo-root . close-story \
   --key "<JIRA-KEY>" \
-  --version "<version-or-tag>" \
-  --commit "<candidate-commit-sha>" \
+  [--version "<version-or-tag>"] \
+  [--commit "<candidate-commit-sha>"] \
   --notes "<Release summary: delivered scope, migration/rollback notes, residual risks>"
 ```
 
@@ -44,7 +44,7 @@ What `jira_sync.py close-story` does deterministically:
 1. Validates all 5 release readiness gates (exits non-zero with `unmet_gates` if any check fails).
 2. Posts the final Release Summary comment (version, verified commit SHA, AC/Sub-task/TC coverage counts, and release notes) to the Jira `User Story`.
 3. Transitions the Jira `User Story` to `Done` (`status_mapping.done`).
-4. **Deletes `.ai-workflow/active/<JIRA-KEY>.json`** so no temporary per-feature scaffolding remains on disk.
+4. **Deletes `.ai-workflow/active/<JIRA-KEY>.json`** (including any main worktree mirror) so no temporary per-feature scaffolding remains on disk.
 
 ### 3. Present final delivery report
 Summarize the completed release in Traditional Chinese (繁體中文):

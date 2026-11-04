@@ -13,17 +13,19 @@ Read `references/common-workflow-governance.md` for the authoritative 4-station 
 
 ## Scope & Hard Boundaries
 
-- **Read-only inspection:** Do not modify `.ai-workflow/active/<JIRA-KEY>.json`, Jira issues, or repository source code during routing.
-- If the user's prompt explicitly authorizes executing the next step, present the routing recommendation first, then invoke the selected skill within that authorization. Otherwise stop after the recommendation.
+- **Single Entry Point (`$team-next-step`):** Team members never need to memorize the 7 skill names or `jira_sync.py` CLI flags. `$team-next-step` is the universal compass for the entire workflow.
+- **Zero-CLI Burden & Auto-Hydration:** Execute `jira_sync.py status` automatically in the background. When `.ai-workflow/active/<JIRA-KEY>.json` is missing on a teammate's machine or secondary Git worktree, `jira_sync.py status --key <JIRA-KEY>` automatically hydrates the local state from the main Git worktree or remote Jira issue before routing.
+- **Read-only inspection (except automatic state hydration):** Do not modify repository source code or transition Jira statuses during routing.
+- If the user's prompt explicitly authorizes executing the next step (or if `same_person: true` auto-chaining is authorized), present the routing recommendation first, then invoke the selected skill within that authorization. Otherwise stop after the recommendation.
 - Never guess which Jira Story to route by file modification time when multiple active stories exist in `.ai-workflow/active/` and the user did not specify one.
 
 ## Workflow
 
-### 1. Check project initialization
-Run the bundled status inspector from the repository root:
+### 1. Check project initialization & auto-hydrate state
+Run the status inspector from the repository root (prefer `.ai-workflow/bin/jira_sync.py`, or fall back to `<skill-dir>/scripts/jira_sync.py`):
 
 ```bash
-python3 <skill-dir>/scripts/jira_sync.py --repo-root . status [--key <JIRA-KEY>]
+python3 .ai-workflow/bin/jira_sync.py --repo-root . status [--key <JIRA-KEY>] [--fetch-remote]
 ```
 
 - If `.ai-workflow/team-config.json` does not exist (`initialized: false`), immediately recommend `$team-init`.

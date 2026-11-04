@@ -213,6 +213,7 @@
     <a class="nav-main" href="#1-文件目的-適用角色與訓練導覽">1. 文件目的、適用角色與訓練導覽</a>
 <a class="nav-sub" href="#1-1-為什麼需要-四站七技能-jira-核心工作流">1.1 為什麼需要「四站七技能 Jira 核心工作流」？</a>
 <a class="nav-sub" href="#1-2-六大核心角色職責與建議訓練路徑">1.2 六大核心角色職責與建議訓練路徑</a>
+<a class="nav-sub" href="#1-3-三分鐘極速上手卡-零記憶門檻-cheat-sheet">1.3 三分鐘極速上手卡（零記憶門檻 Cheat Sheet）</a>
 <a class="nav-main" href="#2-全系統架構總覽與三層源碼功能盤點對帳表">2. 全系統架構總覽與三層源碼功能盤點對帳表</a>
 <a class="nav-sub" href="#2-1-四站七技能架構與第一性原理資產邊界">2.1 四站七技能架構與第一性原理資產邊界</a>
 <a class="nav-sub" href="#2-2-jira-狀態轉換機與多角色智慧交接機制">2.2 Jira 狀態轉換機與多角色智慧交接機制</a>
@@ -333,6 +334,55 @@
 <td>執行五大發佈閘門與 Commit SHA 對齊檢查、發佈最終摘要、將 Jira Story 轉為 <code class="inline-code">Done</code> 並清除本地暫存鷹架</td>
 <td>第 9 章（情境 6）、第 11 章（情境 8）</td>
 <td><code class="inline-code">team-release</code>, <code class="inline-code">team-next-step</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="1-3-三分鐘極速上手卡-零記憶門檻-cheat-sheet">1.3 三分鐘極速上手卡（零記憶門檻 Cheat Sheet）</h3>
+<p><strong>重要觀念：你完全不需要背誦任何 <code class="inline-code">jira_sync.py</code> CLI 指令或旗標！</strong></p>
+<p>本手冊後半部列出的 CLI 語法與參數表，是供 AI 代理在背景自動組裝執行與架構師查閱的底層規格。在日常開發中，<strong>所有 CLI 指令皆由 AI 在背景自動執行（Zero-CLI Burden）</strong>，甚至當你一人兼任前後兩站角色（<code class="inline-code">same_person: true</code>）時，AI 會自動連貫推進。你只需要記住唯一萬用導航指令 <strong><code class="inline-code">$team-next-step</code></strong>，或直接對 AI 說出下表中的自然語言白話指令：</p>
+<table>
+<thead>
+<tr>
+<th>階段與情境</th>
+<th>你只需要對 AI 說這 1 句話（人類零 CLI 負擔）</th>
+<th>AI 在背景自動幫你完成的事（無須手敲指令）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>隨時迷路 / 接手工作</strong></td>
+<td><strong>「執行 <code class="inline-code">$team-next-step</code>（或：下一步要做什麼？）」</strong></td>
+<td>自動檢查本地與遠端 Jira（若換電腦或開新 Git Worktree 缺少本地檔案，自動從 Jira 無損回填 <code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code>），並給出唯一具體行動。</td>
+</tr>
+<tr>
+<td><strong>初次設定專案</strong></td>
+<td><strong>「請用 <code class="inline-code">$team-init</code> 初始化專案，代號 <code class="inline-code">TEAM</code>，PM 與審查是 Alice，開發是 Bob，QA 是 Carol。」</strong></td>
+<td>自動產生 <code class="inline-code">.ai-workflow/team-config.json</code>、安裝統一短指令 <code class="inline-code">.ai-workflow/bin/jira_sync.py</code>、設定 <code class="inline-code">.gitignore</code>，並從 <code class="inline-code">AGENTS.md</code> 萃取去重工程標準。</td>
+</tr>
+<tr>
+<td><strong>Station 1 定規格</strong></td>
+<td><strong>「請用 <code class="inline-code">$team-spec</code> 規劃 <code class="inline-code">PROJ-101</code> 訂單 CSV 匯出，確認沒問題請同步 Jira。」</strong></td>
+<td>一回合產出可測試 <code class="inline-code">AC-001..N</code>、條件式 UI/API 設計與<strong>AI 預設細節清單</strong>（最多只問 3 題關鍵問題），確認後自動同步 Jira 並交接開發。</td>
+</tr>
+<tr>
+<td><strong>Station 2 寫程式</strong></td>
+<td><strong>「請用 <code class="inline-code">$team-dev</code> 實作 <code class="inline-code">PROJ-101</code> 並跑過測試打卡。」</strong></td>
+<td>自動拆解子任務（若為小型單任務功能則啟動 <strong>Dev Fast-Track</strong> 免拆單直接打卡），寫完程式與測試後自動從 Git 偵測 <code class="inline-code">--commit</code> 與 <code class="inline-code">--files</code> 完成打卡。</td>
+</tr>
+<tr>
+<td><strong>Station 3a 審程式</strong></td>
+<td><strong>「請用 <code class="inline-code">$team-review</code> 審查 <code class="inline-code">PROJ-101</code> 並交接給 QA。」</strong></td>
+<td>自動比對 Git Diff 與三軸標準；若通過則轉為 <code class="inline-code">In QA</code> 並 <code class="inline-code">@mention</code> 通知 QA；若退回重修則自動建立 <code class="inline-code">REV-001</code> 追蹤項交回開發修復。</td>
+</tr>
+<tr>
+<td><strong>Station 3b 跑測試</strong></td>
+<td><strong>「請用 <code class="inline-code">$team-qa</code> 驗證 <code class="inline-code">PROJ-101</code>。」</strong></td>
+<td>自動執行測試（支援 <strong>QA Fast-Track</strong> 直接由 <code class="inline-code">AC-*</code> 自動衍生 <code class="inline-code">TC-*</code> 並以 <code class="inline-code">--all-pass</code> 一鍵通過）；若有失敗則自動開立 Jira <code class="inline-code">Bug</code> 單退回開發。</td>
+</tr>
+<tr>
+<td><strong>Station 4 上線結案</strong></td>
+<td><strong>「請用 <code class="inline-code">$team-release</code> 將 <code class="inline-code">PROJ-101</code> 結案發佈。」</strong></td>
+<td>自動帶入候選 Commit 與預設版本號 <code class="inline-code">v1.0.0</code>，驗證五大發佈閘門後將 Jira Story 轉為 <code class="inline-code">Done</code>，並自動清除本地 <code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code>。</td>
 </tr>
 </tbody>
 </table>
@@ -609,7 +659,7 @@
   <li value="3"><strong>步驟三：檢視產出檔案與提交 Git 版控</strong></li>
 </ol>
 <ul>
-  <li>確認 <code class="inline-code">.ai-workflow/team-config.json</code>、<code class="inline-code">.gitignore</code>、<code class="inline-code">docs/shared/engineering-standards.md</code> 與精簡後的 <code class="inline-code">AGENTS.md</code> 皆已正確生成，即可提交至 Git。</li>
+  <li>確認 <code class="inline-code">.ai-workflow/team-config.json</code>、統一短指令入口 <code class="inline-code">.ai-workflow/bin/jira_sync.py</code>（自動設為可執行 <code class="inline-code">0755</code>，即使團隊將 Skills 安裝於全域目錄也能直接在業務專案內呼叫 <code class="inline-code">python3 .ai-workflow/bin/jira_sync.py ...</code>）、<code class="inline-code">.gitignore</code>、<code class="inline-code">docs/shared/engineering-standards.md</code> 與精簡後的 <code class="inline-code">AGENTS.md</code> 皆已正確生成，即可提交至 Git。</li>
 </ul>
 <h3 id="3-3-jira_sync-py-init-參數與產出檔案規格表">3.3 <code class="inline-code">jira_sync.py init</code> 參數與產出檔案規格表</h3>
 <table>
@@ -669,8 +719,15 @@
 <td><strong>產出檔案</strong></td>
 <td><code class="inline-code">.ai-workflow/team-config.json</code></td>
 <td>自動建立（進 Git）</td>
-<td>儲存專案代號、角色人員映射與狀態表</td>
+<td>儲存專案代號、角色人員映射、狀態表與 <code class="inline-code">issue_type_mapping</code></td>
 <td><strong>嚴禁寫入 <code class="inline-code">JIRA_API_TOKEN</code> 或密碼</strong></td>
+</tr>
+<tr>
+<td><strong>產出檔案</strong></td>
+<td><code class="inline-code">.ai-workflow/bin/jira_sync.py</code></td>
+<td>自動建立（進 Git）</td>
+<td>業務專案本地統一 CLI 入口（權限 <code class="inline-code">0755</code>）</td>
+<td>解決全域安裝 Skill 時業務專案無 <code class="inline-code">skills/</code> 目錄之路徑問題</td>
 </tr>
 <tr>
 <td><strong>產出檔案</strong></td>
@@ -957,17 +1014,18 @@
 <figure class="manual-figure"><img src="file:///Users/wilsonliu/ai-proj/team-skills/ai-engineering-workflow-skills/docs/screenshots/06-scenario2-team-dev-implement.png" alt="情境 2B（team-dev implement 模式）：極簡上下文編碼與 complete-task 完工打卡"><figcaption>圖 5-2：情境 2B 執行 <code class="inline-code">team-dev</code>（<code class="inline-code">implement</code> 模式 / <code class="inline-code">jira_sync.py complete-task</code>）之極簡上下文載入、測試驗證與完工打卡實況圖。用途：示範 AI 如何依優先序選取下一個待辦項目、僅載入必要的極簡上下文撰寫程式與測試，並透過 <code class="inline-code">complete-task</code> 同步完成狀態。視覺焦點：請依序查看標註序號 ① 左側任務選取優先序（Open Bugs &gt; Pending Tasks &gt; Review Findings）與極簡上下文白名單/黑名單；② 右上角執行真實測試並呼叫 <code class="inline-code">complete-task</code> 綁定 <code class="inline-code">--commit</code>、<code class="inline-code">--files</code>、<code class="inline-code">--test-result</code>；③ 右下角完成最後一個任務時 <code class="inline-code">ready_for_review</code> 自動轉為 <code class="inline-code">true</code> 並推進至 Station 3a。狀態變化：目標任務 <code class="inline-code">status</code> 轉為 <code class="inline-code">completed</code>、對應 Jira Sub-task 轉為 <code class="inline-code">Done</code>、Story 的 <code class="inline-code">candidate_commit</code> 更新為最新 Commit SHA。</figcaption></figure>
 <p><code class="inline-code">implement</code> 模式的標準執行循環如下：</p>
 <ol>
-  <li><strong>步驟一：依嚴格優先序選取下一個可執行項目</strong></li>
+  <li><strong>步驟一：依嚴格三層優先序選取下一個可執行項目</strong></li>
 </ol>
 <ul>
-  <li><strong>第一優先（Open Bugs）</strong>：若 <code class="inline-code">bugs</code> 陣列中有 <code class="inline-code">status == &quot;open&quot;</code> 的缺陷，優先修復。</li>
-  <li><strong>第二優先（Pending Tasks）</strong>：選取第一個 <code class="inline-code">status == &quot;pending&quot;</code> 且其 <code class="inline-code">depends_on</code> 內所有前置任務皆已 <code class="inline-code">completed</code> 的 <code class="inline-code">TASK-###</code>。</li>
+  <li><strong>第一優先（Open Bugs <code class="inline-code">BUG-*</code>）</strong>：若 <code class="inline-code">bugs</code> 陣列中有 <code class="inline-code">status == &quot;open&quot;</code> 的缺陷，優先修復。</li>
+  <li><strong>第二優先（Pending Tasks <code class="inline-code">TASK-###</code> / 單任務快車道 Dev Fast-Track）</strong>：選取第一個 <code class="inline-code">status == &quot;pending&quot;</code> 且其 <code class="inline-code">depends_on</code> 內所有前置任務皆已 <code class="inline-code">completed</code> 的 <code class="inline-code">TASK-###</code>。若為小型單任務 Story 且尚未跑 <code class="inline-code">create-subtasks</code>（<code class="inline-code">tasks</code> 為空且 <code class="inline-code">spec_status == &quot;approved&quot;</code>），可直接執行 <code class="inline-code">complete-task --key &lt;KEY&gt; --task-id TASK-001</code>，系統將自動建立涵蓋全部 <code class="inline-code">AC-*</code> 的 <code class="inline-code">TASK-001</code> 並一次完成打卡！</li>
+  <li><strong>第三優先（Open Review Findings <code class="inline-code">REV-###</code>）</strong>：當 <code class="inline-code">review.status == &quot;changes-requested&quot;</code> 時，優先修復所有 <code class="inline-code">status == &quot;open&quot;</code> 之 <code class="inline-code">REV-###</code> 審查阻斷項。</li>
 </ul>
 <ol>
   <li value="2"><strong>步驟二：極簡上下文載入（Minimal Context Loading）</strong></li>
 </ol>
 <ul>
-  <li>僅讀取：(1) <code class="inline-code">AGENTS.md</code> 與 <code class="inline-code">docs/shared/engineering-standards.md</code>；(2) <code class="inline-code">.ai-workflow/active/PROJ-101.json</code> 中該任務關聯的 <code class="inline-code">AC-*</code> 與設計摘要；(3) 該任務 <code class="inline-code">files</code> 指定的目標源碼與測試檔。</li>
+  <li>僅讀取：(1) <code class="inline-code">AGENTS.md</code> 與 <code class="inline-code">docs/shared/engineering-standards.md</code>；(2) <code class="inline-code">.ai-workflow/active/PROJ-101.json</code> 中該任務關聯的 <code class="inline-code">AC-*</code> 與設計摘要（若跨機或跨 Git Worktree 本地無此檔案，系統會自動從主 Worktree 或遠端 Jira 無損回填）；(3) 該任務 <code class="inline-code">files</code> 指定的目標源碼與測試檔。</li>
 </ul>
 <ol>
   <li value="3"><strong>步驟三：撰寫程式與自動化測試（含 <code class="inline-code">TC-###</code> 命名對齊）</strong></li>
@@ -976,17 +1034,15 @@
   <li>若 QA 已平行完成 <code class="inline-code">team-qa</code>（<code class="inline-code">plan</code> 模式），在撰寫自動化測試案例時直接將 <code class="inline-code">TC-001</code>、<code class="inline-code">TC-002</code>（注意保留連字號 <code class="inline-code">TC-\d{3,}</code> 格式）寫入 JUnit XML 的 <code class="inline-code">name</code> 或 <code class="inline-code">classname</code>（例如 <code class="inline-code">test_export_csv_TC-001</code> 或 <code class="inline-code">TestExport/TC-001_valid</code>），以便後續 <code class="inline-code">record-qa --mode verify --junit-xml</code> 自動解析對應！</li>
 </ul>
 <ol>
-  <li value="4"><strong>步驟四：執行驗證測試並呼叫 <code class="inline-code">complete-task</code> 完工打卡</strong></li>
+  <li value="4"><strong>步驟四：執行驗證測試並呼叫 <code class="inline-code">complete-task</code> 完工打卡（支援免填 <code class="inline-code">--commit</code> / <code class="inline-code">--files</code> 自動偵測與多 ID 批次打卡）</strong></li>
 </ol>
-<pre><code>python3 skills/team-dev/scripts/jira_sync.py \
+<pre><code>python3 .ai-workflow/bin/jira_sync.py \
   --repo-root . complete-task \
   --key &quot;PROJ-101&quot; \
   --task-id &quot;TASK-001&quot; \
-  --commit &quot;a1b2c3d&quot; \
-  --files &quot;src/export/csv.py,tests/test_csv.py&quot; \
   --test-result &quot;pytest tests/test_csv.py (4 passed in 0.18s)&quot;</code></pre>
 <ol>
-  <li value="5"><strong>步驟五：依序完成 <code class="inline-code">TASK-002</code> 與 <code class="inline-code">TASK-003</code> 直至 <code class="inline-code">ready_for_review: true</code></strong></li>
+  <li value="5"><strong>步驟五：依序完成 <code class="inline-code">TASK-002</code> 與 <code class="inline-code">TASK-003</code>（或一次傳入 <code class="inline-code">--task-id TASK-002,TASK-003</code>）直至 <code class="inline-code">ready_for_review: true</code></strong></li>
 </ol>
 <ul>
   <li>當輸出顯示 <code class="inline-code">&quot;remaining_tasks&quot;: []</code>、<code class="inline-code">&quot;remaining_bugs&quot;: []</code> 且 <code class="inline-code">&quot;ready_for_review&quot;: true</code> 時，代表 Station 2 全部完成，立即引導進入 <strong>Station 3a（<code class="inline-code">$team-review</code>）</strong>。</li>
@@ -1006,25 +1062,25 @@
 <td><code class="inline-code">--key</code></td>
 <td><strong>必填</strong>（字串）</td>
 <td>Jira Story 代號（如 <code class="inline-code">PROJ-101</code>）</td>
-<td>更新對應之 <code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code></td>
+<td>更新對應之 <code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code>（缺失時自動從 Worktree 或 Jira 回填）</td>
 </tr>
 <tr>
 <td><code class="inline-code">--task-id</code></td>
-<td><strong>必填</strong>（字串）</td>
-<td>支援三種目標識別碼：(1) 子任務 <code class="inline-code">TASK-001</code>（或 <code class="inline-code">PROJ-101-SUB-1</code>）；(2) 缺陷單 <code class="inline-code">PROJ-101-BUG-1</code>；(3) 審查問題 <code class="inline-code">REV-001</code></td>
-<td>若目標 ID 不存在於 <code class="inline-code">tasks</code>、<code class="inline-code">bugs</code> 或 <code class="inline-code">review.findings</code>，立即報錯攔截</td>
+<td>選填（預設 <code class="inline-code">TASK-001</code>，支援逗號多選）</td>
+<td>支援單一或逗號分隔之多個目標 ID：(1) 子任務 <code class="inline-code">TASK-001,TASK-002</code>；(2) 缺陷單 <code class="inline-code">PROJ-101-BUG-1</code>；(3) 審查問題 <code class="inline-code">REV-001,REV-002</code></td>
+<td><strong>Dev Fast-Track</strong>：當 <code class="inline-code">tasks</code> 為空且 <code class="inline-code">spec_status == &quot;approved&quot;</code> 時，傳入 <code class="inline-code">TASK-001</code> 會自動建立子任務並打卡完成</td>
 </tr>
 <tr>
 <td><code class="inline-code">--commit</code></td>
-<td><strong>必填</strong>（字串）</td>
+<td>選填（自動從 Git HEAD 偵測）</td>
 <td>實作該任務或修復該缺陷之 Git Commit SHA（如 <code class="inline-code">a1b2c3d</code>）</td>
-<td>自動將 Story 頂層之 <code class="inline-code">candidate_commit</code> 更新為此 SHA；若為空字串直接拒絕</td>
+<td>未傳時自動執行 <code class="inline-code">git rev-parse --short HEAD</code> 取得，並更新 Story 之 <code class="inline-code">candidate_commit</code></td>
 </tr>
 <tr>
 <td><code class="inline-code">--files</code></td>
-<td><strong>必填</strong>（字串）</td>
+<td>選填（自動從 Git Diff 偵測）</td>
 <td>以逗號分隔之實際修改檔案路徑清單</td>
-<td>解析為 <code class="inline-code">changed_files</code> 字串陣列供後續 <code class="inline-code">team-review</code> 比對 Git Diff</td>
+<td>未傳時自動執行 <code class="inline-code">git show --name-only</code> / <code class="inline-code">git diff --name-only</code> 取得修改檔案清單</td>
 </tr>
 <tr>
 <td><code class="inline-code">--test-result</code></td>
@@ -1158,7 +1214,7 @@
 <td><code class="inline-code">--findings-json</code></td>
 <td>選填（JSON 字串或檔案）</td>
 <td>結構化審查問題陣列（含 <code class="inline-code">id</code>、<code class="inline-code">severity</code>、<code class="inline-code">axis</code>、<code class="inline-code">location</code>、<code class="inline-code">ac_id</code>、<code class="inline-code">observation</code>、<code class="inline-code">status</code>）</td>
-<td>若含 <code class="inline-code">status: &quot;open&quot;</code> 之 <code class="inline-code">blocker</code>/<code class="inline-code">major</code> 問題，可由開發者後續以 <code class="inline-code">complete-task --task-id REV-001</code> 標記完成</td>
+<td><strong>自動產生 <code class="inline-code">REV-001</code> 防卡死</strong>：若 <code class="inline-code">--review-status changes-requested</code> 未傳入阻斷項，系統自動依 <code class="inline-code">summary</code> 建立 <code class="inline-code">REV-001</code> 供開發者後續以 <code class="inline-code">complete-task --task-id REV-001</code> 標記完成</td>
 </tr>
 <tr>
 <td><code class="inline-code">--target-status</code></td>
@@ -1248,13 +1304,13 @@
 <td><code class="inline-code">plan</code> &amp; <code class="inline-code">verify</code></td>
 <td><strong>必填</strong>（列舉）</td>
 <td>指定執行模式：<code class="inline-code">plan</code> 或 <code class="inline-code">verify</code></td>
-<td><code class="inline-code">verify</code> 模式下若尚未執行過 <code class="inline-code">plan</code>（<code class="inline-code">test_cases</code> 為空），立即報錯攔截</td>
+<td><strong>QA Fast-Track</strong>：<code class="inline-code">verify</code> 模式下若尚未執行過 <code class="inline-code">plan</code>（<code class="inline-code">test_cases</code> 為空），自動由 <code class="inline-code">AC-001..N</code> 1:1 衍生預設之 <code class="inline-code">TC-001..N</code></td>
 </tr>
 <tr>
 <td><code class="inline-code">--tc</code></td>
 <td><code class="inline-code">plan</code></td>
 <td>可重複指定</td>
-<td>單行測試案例格式：<code class="inline-code">TC-001:AC-001:&lt;type&gt;:&lt;Title&gt;</code>（<code class="inline-code">&lt;type&gt;</code> 為 <code class="inline-code">automated</code> 或 <code class="inline-code">manual</code>，<code class="inline-code">&lt;Title&gt;</code> 為<strong>標題與預期結果</strong>）</td>
+<td>單行測試案例格式：<code class="inline-code">TC-001:AC-001:&lt;type&gt;:&lt;Title&gt;</code>（<code class="inline-code">&lt;type&gt;</code> 為 <code class="inline-code">automated</code> 或 <code class="inline-code">manual</code>，<code class="inline-code">&lt;Title&gt;</code> 為<strong>標題與預期結果</strong>，完整保留標題內所有冒號）</td>
 <td><strong>100% AC 覆蓋防呆</strong>：若規劃的所有 <code class="inline-code">TC-*</code> 未完整覆蓋 Story 的每一條 <code class="inline-code">AC-*</code>，立即報錯退出</td>
 </tr>
 <tr>
@@ -1286,10 +1342,17 @@
 <td>若傳入非上述 4 種合法狀態值，立即報錯攔截</td>
 </tr>
 <tr>
+<td><code class="inline-code">--all-pass</code></td>
+<td><code class="inline-code">verify</code></td>
+<td>選填（布林旗標）</td>
+<td>將所有未被 <code class="inline-code">--junit-xml</code> / <code class="inline-code">--results-json</code> / <code class="inline-code">--result</code> 覆寫之 <code class="inline-code">TC-*</code> 標記為 <code class="inline-code">pass</code></td>
+<td>搭配 <strong>QA Fast-Track</strong> 可在測試全數通過後以 <code class="inline-code">record-qa --mode verify --all-pass</code> 一鍵完成驗證與發佈交接</td>
+</tr>
+<tr>
 <td><code class="inline-code">--commit</code></td>
 <td><code class="inline-code">verify</code></td>
 <td>選填（字串）</td>
-<td>本次測試驗證對應之 Git Commit SHA（預設讀取 <code class="inline-code">candidate_commit</code>）</td>
+<td>本次測試驗證對應之 Git Commit SHA（預設讀取 <code class="inline-code">candidate_commit</code> 或 Git <code class="inline-code">HEAD</code>）</td>
 <td>記錄於 <code class="inline-code">qa.tested_commit</code>，作為 Station 4 發佈閘門對帳依據</td>
 </tr>
 </tbody>
@@ -1489,13 +1552,13 @@
 <tr>
 <td><strong>CLI 旗標</strong></td>
 <td><code class="inline-code">--version</code></td>
-<td><strong>必填</strong>（字串）</td>
-<td>發佈版本號或 Git Tag（如 <code class="inline-code">v1.2.0</code>）</td>
+<td>選填（預設 <code class="inline-code">v1.0.0</code>）</td>
+<td>發佈版本號或 Git Tag（如 <code class="inline-code">v1.2.0</code>；未傳時自動預設為 <code class="inline-code">v1.0.0</code>）</td>
 </tr>
 <tr>
 <td><strong>CLI 旗標</strong></td>
 <td><code class="inline-code">--commit</code></td>
-<td><strong>必填</strong>（字串）</td>
+<td>選填（自動讀取 <code class="inline-code">candidate_commit</code> 或 Git <code class="inline-code">HEAD</code>）</td>
 <td>預計發佈之候選 Git Commit SHA（如 <code class="inline-code">999beef</code>）</td>
 </tr>
 <tr>
@@ -1585,14 +1648,14 @@ python3 skills/team-next-step/scripts/jira_sync.py \
 <tbody>
 <tr>
 <td><strong><code class="inline-code">--key</code></strong></td>
-<td>（選填參數）指定要查詢之 Jira Story 代號</td>
+<td>（選填參數）指定要查詢之 Jira Story 代號；若本地無 <code class="inline-code">&lt;KEY&gt;.json</code>，自動嘗試從主 Git Worktree 或遠端 Jira Issue 無損回填（Auto-Hydrate）</td>
 <td>依該 Story 狀態決定</td>
 <td>依該 Story 狀態決定</td>
 <td>依該 Story 狀態決定</td>
 </tr>
 <tr>
 <td><strong><code class="inline-code">--fetch-remote</code></strong></td>
-<td>（選填旗標）在 Live 模式下呼叫 <code class="inline-code">GET /rest/api/3/issue/{key}</code> 取得遠端狀態</td>
+<td>（選填旗標）在 Live 模式下呼叫 <code class="inline-code">GET /rest/api/3/issue/{key}</code> 取得遠端狀態並支援跨機自動回填</td>
 <td>附加於 <code class="inline-code">remote_issue</code> 欄位</td>
 <td>—</td>
 <td>—</td>
@@ -1724,14 +1787,14 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><strong>Jira API</strong></td>
 <td><code class="inline-code">/rest/api/3/issue</code></td>
 <td><code class="inline-code">POST</code></td>
-<td><code class="inline-code">sync-story --create</code>（建立 <code class="inline-code">Story</code>）、<code class="inline-code">create-subtasks</code>（建立 <code class="inline-code">Sub-task</code>）、<code class="inline-code">create-bug</code>（建立 <code class="inline-code">Bug</code>）</td>
-<td>HTTP Basic Auth (<code class="inline-code">base64(email:token)</code>)；ADF v1 描述格式</td>
+<td><code class="inline-code">sync-story</code>（建立 <code class="inline-code">Story</code> 或 <code class="inline-code">PUT</code> 404 時自動 Fallback 建立）、<code class="inline-code">create-subtasks</code>（建立 <code class="inline-code">Sub-task</code>，400 時自動重試 <code class="inline-code">Subtask</code> / <strong>子任務</strong>）、<code class="inline-code">create-bug</code>（建立 <code class="inline-code">Bug</code>）</td>
+<td>HTTP Basic Auth (<code class="inline-code">base64(email:token)</code>)；支援 ADF v1 <code class="inline-code">heading</code>、<code class="inline-code">bulletList</code>、<code class="inline-code">table</code> 富文本轉換</td>
 </tr>
 <tr>
 <td><strong>Jira API</strong></td>
 <td><code class="inline-code">/rest/api/3/issue/{key}</code></td>
 <td><code class="inline-code">PUT</code> / <code class="inline-code">GET</code></td>
-<td><code class="inline-code">sync-story</code>（更新 Story 標題與描述）、<code class="inline-code">status --fetch-remote</code>（讀取遠端 Issue 狀態）</td>
+<td><code class="inline-code">sync-story</code>（更新 Story 標題與描述及 <code class="inline-code">[ai-workflow-state]</code> 狀態快照）、<code class="inline-code">status</code> 與跨機 <code class="inline-code">hydrate_story_from_remote</code> 自動回填</td>
 <td>URL Path 自動經 <code class="inline-code">urllib.parse.quote</code> 編碼</td>
 </tr>
 <tr>
@@ -1774,7 +1837,7 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><code class="inline-code">tools/test_workflow.py</code></td>
 <td><code class="inline-code">python3 tools/test_workflow.py</code></td>
 <td>執行端到端四站生命週期測試與本地 Mock Jira REST API v3 伺服器整合測試</td>
-<td>涵蓋初始化、抓大放小防呆、循環依賴、Bug 閉環、Commit 漂移與 Live API 驗證</td>
+<td>涵蓋初始化、抓大放小防呆、循環依賴、Bug 閉環、Commit 漂移、跨機自動回填、快車道與 Live API 驗證</td>
 </tr>
 </tbody>
 </table>
@@ -1874,14 +1937,14 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><code class="inline-code">team-init</code> (Init)</td>
 <td><code class="inline-code">--project-key</code>, <code class="inline-code">--jira-url</code>, <code class="inline-code">--roles-json</code>, <code class="inline-code">--status-mapping-json</code>, <code class="inline-code">--agents-md</code>, <code class="inline-code">--standards-md</code></td>
 <td>既有 <code class="inline-code">AGENTS.md</code>、既有 <code class="inline-code">.gitignore</code> 與 <code class="inline-code">team-config.json</code></td>
-<td><code class="inline-code">.ai-workflow/team-config.json</code>、<code class="inline-code">.gitignore</code>、<code class="inline-code">docs/shared/engineering-standards.md</code>、<code class="inline-code">AGENTS.md</code></td>
+<td><code class="inline-code">.ai-workflow/team-config.json</code>、<code class="inline-code">.ai-workflow/bin/jira_sync.py</code>、<code class="inline-code">.gitignore</code>、<code class="inline-code">docs/shared/engineering-standards.md</code>、<code class="inline-code">AGENTS.md</code></td>
 </tr>
 <tr>
 <td><code class="inline-code">status</code></td>
 <td><code class="inline-code">team-next-step</code> (Router)</td>
 <td><code class="inline-code">--key</code>, <code class="inline-code">--fetch-remote</code></td>
 <td><code class="inline-code">team-config.json</code>, <code class="inline-code">.ai-workflow/active/*.json</code>, <code class="inline-code">engineering-standards.md</code></td>
-<td><strong>純唯讀</strong>（不修改任何檔案，輸出 JSON 路由建議）</td>
+<td><strong>唯讀導航</strong>（若本地無 <code class="inline-code">&lt;KEY&gt;.json</code> 則自動從主 Git Worktree 或遠端 Jira 回填）</td>
 </tr>
 <tr>
 <td><code class="inline-code">sync-story</code></td>
@@ -1902,21 +1965,21 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><code class="inline-code">team-dev</code> (<code class="inline-code">implement</code>, Station 2)</td>
 <td><code class="inline-code">--key</code>, <code class="inline-code">--task-id</code>, <code class="inline-code">--commit</code>, <code class="inline-code">--files</code>, <code class="inline-code">--test-result</code></td>
 <td><code class="inline-code">team-config.json</code>, <code class="inline-code">active/&lt;KEY&gt;.json</code></td>
-<td><code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code> (<code class="inline-code">tasks</code>/<code class="inline-code">bugs</code>/<code class="inline-code">review.findings</code>, <code class="inline-code">candidate_commit</code>), Jira <code class="inline-code">Sub-task</code>/<code class="inline-code">Bug</code> 轉 <code class="inline-code">Done</code></td>
+<td><code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code>（支援多 ID、Dev Fast-Track、Git 自動偵測 Commit/Files）, Jira <code class="inline-code">Sub-task</code>/<code class="inline-code">Bug</code> 轉 <code class="inline-code">Done</code></td>
 </tr>
 <tr>
 <td><code class="inline-code">handoff</code></td>
 <td><code class="inline-code">team-review</code> (Station 3a)</td>
 <td><code class="inline-code">--key</code>, <code class="inline-code">--from-role</code>, <code class="inline-code">--to-role</code>, <code class="inline-code">--review-status</code>, <code class="inline-code">--commit</code>, <code class="inline-code">--summary</code>, <code class="inline-code">--findings-json</code>, <code class="inline-code">--target-status</code></td>
 <td><code class="inline-code">team-config.json</code>, <code class="inline-code">active/&lt;KEY&gt;.json</code></td>
-<td><code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code> (<code class="inline-code">review</code>, <code class="inline-code">handoffs</code>), Jira 狀態轉換、Assignee 指派與 <code class="inline-code">@mention</code> 評論</td>
+<td><code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code> (<code class="inline-code">review</code>, <code class="inline-code">handoffs</code>；<code class="inline-code">changes-requested</code> 自動補 <code class="inline-code">REV-001</code>), Jira 狀態轉換、Assignee 指派與 <code class="inline-code">@mention</code> 評論</td>
 </tr>
 <tr>
 <td><code class="inline-code">record-qa</code></td>
 <td><code class="inline-code">team-qa</code> (<code class="inline-code">plan</code>/<code class="inline-code">verify</code>, Station 3b)</td>
-<td><code class="inline-code">--key</code>, <code class="inline-code">--mode</code>, <code class="inline-code">--cases-json</code>, <code class="inline-code">--tc</code>, <code class="inline-code">--junit-xml</code>, <code class="inline-code">--results-json</code>, <code class="inline-code">--result</code>, <code class="inline-code">--commit</code></td>
+<td><code class="inline-code">--key</code>, <code class="inline-code">--mode</code>, <code class="inline-code">--cases-json</code>, <code class="inline-code">--tc</code>, <code class="inline-code">--junit-xml</code>, <code class="inline-code">--results-json</code>, <code class="inline-code">--result</code>, <code class="inline-code">--all-pass</code>, <code class="inline-code">--commit</code></td>
 <td><code class="inline-code">team-config.json</code>, <code class="inline-code">active/&lt;KEY&gt;.json</code>, JUnit XML / JSON 報告</td>
-<td><code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code> (<code class="inline-code">qa</code>, <code class="inline-code">handoffs</code>), Jira 測試計畫評論 / 驗證報表與 <code class="inline-code">Ready for Release</code> 交接</td>
+<td><code class="inline-code">.ai-workflow/active/&lt;KEY&gt;.json</code> (<code class="inline-code">qa</code>, <code class="inline-code">handoffs</code>；支援 QA Fast-Track 自動推導 TC), Jira 測試計畫評論 / 驗證報表與 <code class="inline-code">Ready for Release</code> 交接</td>
 </tr>
 <tr>
 <td><code class="inline-code">create-bug</code></td>

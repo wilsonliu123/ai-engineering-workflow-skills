@@ -52,6 +52,9 @@ def run_cli(repo_root: Path, *args, env_override: dict = None) -> subprocess.Com
 
 class MockJiraHandler(BaseHTTPRequestHandler):
     requests_log = []
+    stored_issues = {}
+    simulate_put_404_keys = set()
+    reject_subtask_types = set()
 
     def log_message(self, format, *args):
         pass
@@ -80,6 +83,12 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                     {"id": "41", "name": "Done", "to": {"name": "Done"}},
                 ]
             })
+        elif self.path.startswith("/rest/api/3/issue/"):
+            key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
+            if key in self.stored_issues:
+                self._send_json(200, self.stored_issues[key])
+            else:
+                self._send_json(200, {"key": key, "fields": {"summary": key, "status": {"name": "In Progress"}}})
         else:
             self._send_json(200, {"key": "PROJ-101", "fields": {"status": {"name": "In Progress"}}})
 
@@ -87,19 +96,42 @@ class MockJiraHandler(BaseHTTPRequestHandler):
         data = self._read_json()
         self.requests_log.append(("POST", self.path, data, dict(self.headers)))
         if self.path == "/rest/api/3/issue":
-            itype = ((data.get("fields") or {}).get("issuetype") or {}).get("name", "")
-            if itype == "Sub-task":
+            fields = data.get("fields") or {}
+            itype = (fields.get("issuetype") or {}).get("name", "")
+            if itype in self.reject_subtask_types:
+                self._send_json(400, {"errorMessages": [f"Issue type '{itype}' invalid"]})
+                return
+            if itype in ("Sub-task", "Subtask", "子任務"):
                 self._send_json(201, {"key": "PROJ-102"})
             elif itype == "Bug":
                 self._send_json(201, {"key": "PROJ-999"})
             else:
-                self._send_json(201, {"key": "PROJ-101"})
+                key = "PROJ-404" if "404" in (fields.get("summary") or "") else "PROJ-101"
+                self.stored_issues[key] = {
+                    "key": key,
+                    "fields": {
+                        "summary": fields.get("summary") or key,
+                        "description": fields.get("description"),
+                        "status": {"name": "In Progress"},
+                    },
+                }
+                self._send_json(201, {"key": key})
         else:
             self._send_json(200, {"ok": True})
 
     def do_PUT(self):
         data = self._read_json()
         self.requests_log.append(("PUT", self.path, data, dict(self.headers)))
+        if self.path.startswith("/rest/api/3/issue/") and not self.path.endswith("/assignee"):
+            key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
+            if key in self.simulate_put_404_keys:
+                self.simulate_put_404_keys.discard(key)
+                self._send_json(404, {"errorMessages": ["Issue Does Not Exist"]})
+                return
+            fields = data.get("fields") or {}
+            existing = self.stored_issues.get(key) or {"key": key, "fields": {"status": {"name": "In Progress"}}}
+            existing["fields"].update(fields)
+            self.stored_issues[key] = existing
         self._send_json(204, {})
 
 
@@ -716,6 +748,260 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertNotEqual(bad_res_fmt.returncode, 0)
             unknown_tc = run_cli(root, "record-qa", "--key", "PROJ-200", "--mode", "verify", "--commit", "c3", "--result", "TC-999=pass")
             self.assertNotEqual(unknown_tc.returncode, 0)
+
+    def test_07_fast_track_git_autodetect_colon_split_and_multi_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Initialize a real Git repo so git rev-parse / git show / git worktree work
+            subprocess.run(["git", "init"], cwd=str(root), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "dev@team.io"], cwd=str(root), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Dev"], cwd=str(root), check=True, capture_output=True)
+
+            init_res = run_cli(root, "init", "--project-key", "PROJ")
+            self.assertEqual(init_res.returncode, 0, init_res.stderr)
+            init_out = json.loads(init_res.stdout)
+            # Verify .ai-workflow/bin/jira_sync.py is generated and executable
+            self.assertEqual(init_out.get("cli_path"), ".ai-workflow/bin/jira_sync.py")
+            local_cli = root / ".ai-workflow" / "bin" / "jira_sync.py"
+            self.assertTrue(local_cli.exists())
+            self.assertTrue(os.access(local_cli, os.X_OK))
+
+            # Commit initial files and a feature file in Git
+            (root / "src").mkdir(parents=True, exist_ok=True)
+            (root / "src" / "export.py").write_text("def export_csv(): return 'a,b'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=str(root), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "feat: add export_csv"], cwd=str(root), check=True, capture_output=True)
+
+            # 1. Test colon split preservation in --task and --tc
+            run_cli(
+                root, "sync-story",
+                "--key", "PROJ-300",
+                "--title", "Colon Split Story",
+                "--ac", "AC-001:First AC: with colon",
+                "--ac", "AC-002:Second AC: with colon",
+                "--status", "approved",
+            )
+            sub_res = run_cli(
+                root, "create-subtasks",
+                "--key", "PROJ-300",
+                "--task", "TASK-001:Implement API: Login:AC-001:pytest tests/test_a.py::test_login -k 'http:200'",
+                "--task", " Auto-ID Task:AC-002:npm run test:unit -- --grep 'a:b'",
+            )
+            self.assertEqual(sub_res.returncode, 0, sub_res.stderr)
+            story_300 = json.loads((root / ".ai-workflow/active/PROJ-300.json").read_text(encoding="utf-8"))
+            self.assertEqual(story_300["tasks"][0]["id"], "TASK-001")
+            self.assertEqual(story_300["tasks"][0]["verification"], "pytest tests/test_a.py::test_login -k 'http:200'")
+            self.assertEqual(story_300["tasks"][1]["id"], "TASK-002")
+            self.assertEqual(story_300["tasks"][1]["verification"], "npm run test:unit -- --grep 'a:b'")
+
+            qa_colon = run_cli(
+                root, "record-qa",
+                "--key", "PROJ-300",
+                "--mode", "plan",
+                "--tc", "TC-001:AC-001:automated:Verify endpoint: returns HTTP 200: JSON",
+                "--tc", "AC-002:manual:Verify error state: HTTP 400: Invalid input",
+            )
+            self.assertEqual(qa_colon.returncode, 0, qa_colon.stderr)
+            story_300 = json.loads((root / ".ai-workflow/active/PROJ-300.json").read_text(encoding="utf-8"))
+            self.assertEqual(story_300["qa"]["test_cases"][0]["title"], "Verify endpoint: returns HTTP 200: JSON")
+            self.assertEqual(story_300["qa"]["test_cases"][1]["id"], "TC-002")
+            self.assertEqual(story_300["qa"]["test_cases"][1]["title"], "Verify error state: HTTP 400: Invalid input")
+
+            # 2. Test multi-ID complete-task + Git auto-detection of --commit and --files (omitting both flags!)
+            comp_multi = run_cli(
+                root, "complete-task",
+                "--key", "PROJ-300",
+                "--task-id", "TASK-001,TASK-002",
+                "--test-result", "pytest: 2 passed",
+            )
+            self.assertEqual(comp_multi.returncode, 0, comp_multi.stderr)
+            comp_out = json.loads(comp_multi.stdout)
+            self.assertEqual(comp_out["completed_ids"], ["TASK-001", "TASK-002"])
+            self.assertTrue(comp_out["ready_for_review"])
+            self.assertTrue(len(comp_out["commit"]) >= 4)
+            self.assertIn("src/export.py", comp_out["changed_files"])
+
+            # 3. Test changes-requested WITHOUT --findings-json auto-creating REV-001
+            cr_no_findings = run_cli(
+                root, "handoff",
+                "--key", "PROJ-300",
+                "--review-status", "changes-requested",
+                "--summary", "Please add rate limit header",
+            )
+            self.assertEqual(cr_no_findings.returncode, 0, cr_no_findings.stderr)
+            st_cr = json.loads(run_cli(root, "status", "--key", "PROJ-300").stdout)
+            self.assertEqual(st_cr["recommended_skill"], "team-dev")
+            self.assertEqual(st_cr["open_finding_ids"], ["REV-001"])
+            self.assertIn("REV-001", st_cr["done_when"])
+
+            # Remediate REV-001 without passing --commit or --files
+            rem_rev = run_cli(
+                root, "complete-task",
+                "--key", "PROJ-300",
+                "--task-id", "REV-001",
+                "--test-result", "pytest: rate limit verified",
+            )
+            self.assertEqual(rem_rev.returncode, 0, rem_rev.stderr)
+
+            # 4. Test Dev Fast-Track + QA Fast-Track (--all-pass) + default close-story on PROJ-301
+            run_cli(
+                root, "sync-story",
+                "--key", "PROJ-301",
+                "--title", "Fast-Track Story",
+                "--ac", "AC-001:Fast track works",
+                "--ac", "AC-002:Zero ceremony",
+                "--status", "approved",
+            )
+            # Directly run complete-task without create-subtasks (Dev Fast-Track)
+            ft_dev = run_cli(
+                root, "complete-task",
+                "--key", "PROJ-301",
+                "--task-id", "TASK-001",
+                "--test-result", "pytest: all passed",
+            )
+            self.assertEqual(ft_dev.returncode, 0, ft_dev.stderr)
+            ft_dev_out = json.loads(ft_dev.stdout)
+            self.assertTrue(ft_dev_out["fast_track"])
+            self.assertTrue(ft_dev_out["ready_for_review"])
+
+            # Approve review
+            self.assertEqual(
+                run_cli(root, "handoff", "--key", "PROJ-301", "--review-status", "approved", "--summary", "LGTM").returncode,
+                0,
+            )
+
+            # Directly run record-qa --mode verify --all-pass without --mode plan (QA Fast-Track)
+            ft_qa = run_cli(
+                root, "record-qa",
+                "--key", "PROJ-301",
+                "--mode", "verify",
+                "--all-pass",
+            )
+            self.assertEqual(ft_qa.returncode, 0, ft_qa.stderr)
+            ft_qa_out = json.loads(ft_qa.stdout)
+            self.assertTrue(ft_qa_out["fast_track"])
+            self.assertEqual(ft_qa_out["qa_status"], "passed")
+            self.assertEqual(ft_qa_out["counts"]["pass"], 2)
+
+            # Close story without --commit or --version
+            ft_close = run_cli(root, "close-story", "--key", "PROJ-301")
+            self.assertEqual(ft_close.returncode, 0, ft_close.stderr)
+            ft_close_out = json.loads(ft_close.stdout)
+            self.assertEqual(ft_close_out["version"], "v1.0.0")
+            self.assertTrue(ft_close_out["active_file_removed"])
+
+    def test_08_cross_machine_worktree_hydration_and_rich_adf(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.simulate_put_404_keys = {"PROJ-404"}
+        MockJiraHandler.reject_subtask_types = {"Sub-task"}
+
+        server = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            live_env = {
+                "JIRA_BASE_URL": f"http://127.0.0.1:{port}",
+                "JIRA_EMAIL": "bot@team.io",
+                "JIRA_API_TOKEN": "secret-token-123",
+            }
+            with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+                root_a = Path(tmp_a)
+                root_b = Path(tmp_b)
+                for r in (root_a, root_b):
+                    run_cli(r, "init", "--project-key", "PROJ", "--jira-url", f"http://127.0.0.1:{port}")
+
+                # 1. Machine A: sync-story on PROJ-404 where PUT returns 404 -> must auto-fallback to POST create-story!
+                res_a = run_cli(
+                    root_a, "sync-story",
+                    "--key", "PROJ-404",
+                    "--title", "Story 404 Fallback & Hydration",
+                    "--ac", "AC-001:Hydrate across machines",
+                    "--ac", "AC-002:Rich ADF tables and headings",
+                    "--status", "approved",
+                    env_override=live_env,
+                )
+                self.assertEqual(res_a.returncode, 0, res_a.stderr)
+                out_a = json.loads(res_a.stdout)
+                self.assertEqual(out_a["jira_sync"]["action"], "create-story")
+
+                # Verify Rich ADF conversion (heading & bulletList) in stored issue description
+                stored_desc = MockJiraHandler.stored_issues["PROJ-404"]["fields"]["description"]
+                node_types = [n["type"] for n in stored_desc["content"]]
+                self.assertIn("heading", node_types)
+                self.assertIn("bulletList", node_types)
+
+                # Machine A creates subtask where "Sub-task" returns HTTP 400 -> auto-falls back to "Subtask"!
+                sub_a = run_cli(
+                    root_a, "create-subtasks",
+                    "--key", "PROJ-404",
+                    "--task", "TASK-001:Cross-machine task:AC-001,AC-002:pytest",
+                    env_override=live_env,
+                )
+                self.assertEqual(sub_a.returncode, 0, sub_a.stderr)
+
+                # Machine A records QA plan -> posts Markdown table converted to ADF 'table' node
+                qa_a = run_cli(
+                    root_a, "record-qa",
+                    "--key", "PROJ-404",
+                    "--mode", "plan",
+                    "--tc", "TC-001:AC-001:automated:Check hydration",
+                    "--tc", "TC-002:AC-002:automated:Check ADF table",
+                    env_override=live_env,
+                )
+                self.assertEqual(qa_a.returncode, 0, qa_a.stderr)
+                comment_bodies = [body["body"] for (m, p, body, _) in MockJiraHandler.requests_log if p.endswith("/comment")]
+                self.assertTrue(any(any(n["type"] == "table" for n in b["content"]) for b in comment_bodies))
+
+                # 2. Machine B: has NO local .ai-workflow/active/PROJ-404.json!
+                self.assertFalse((root_b / ".ai-workflow/active/PROJ-404.json").exists())
+
+                # Machine B runs status --key PROJ-404 -> must auto-hydrate from Mock Jira Server!
+                st_b = run_cli(root_b, "status", "--key", "PROJ-404", env_override=live_env)
+                self.assertEqual(st_b.returncode, 0, st_b.stderr)
+                st_b_out = json.loads(st_b.stdout)
+                self.assertTrue(st_b_out["story_found"])
+                self.assertEqual(st_b_out.get("hydrated_from"), "jira")
+                self.assertEqual(st_b_out["recommended_skill"], "team-dev")
+                self.assertEqual(st_b_out["recommended_mode"], "implement")
+                self.assertEqual(st_b_out["next_task_id"], "TASK-001")
+                self.assertTrue((root_b / ".ai-workflow/active/PROJ-404.json").exists())
+
+                # 3. Git Worktree Hydration: create a secondary Git worktree from root_b
+                subprocess.run(["git", "init"], cwd=str(root_b), check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.email", "b@team.io"], cwd=str(root_b), check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Bob"], cwd=str(root_b), check=True, capture_output=True)
+                (root_b / "README.md").write_text("# Worktree Test\n", encoding="utf-8")
+                subprocess.run(["git", "add", "."], cwd=str(root_b), check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", "chore: init"], cwd=str(root_b), check=True, capture_output=True)
+
+                wt_parent = Path(tempfile.mkdtemp())
+                wt_dir = wt_parent / "wt-feature"
+                try:
+                    subprocess.run(
+                        ["git", "worktree", "add", "-b", "feat/wt", str(wt_dir)],
+                        cwd=str(root_b),
+                        check=True,
+                        capture_output=True,
+                    )
+                    # .ai-workflow/active/PROJ-404.json is gitignored, so it does not exist in wt_dir initially
+                    self.assertFalse((wt_dir / ".ai-workflow/active/PROJ-404.json").exists())
+                    # Running status in offline mode inside wt_dir must auto-hydrate from main worktree root_b!
+                    st_wt = json.loads(run_cli(wt_dir, "status").stdout)
+                    self.assertTrue(st_wt["story_found"])
+                    self.assertEqual(st_wt["jira_key"], "PROJ-404")
+                    self.assertTrue((wt_dir / ".ai-workflow/active/PROJ-404.json").exists())
+                finally:
+                    subprocess.run(["git", "worktree", "remove", "--force", str(wt_dir)], cwd=str(root_b), capture_output=True)
+                    import shutil as _shutil
+                    _shutil.rmtree(wt_parent, ignore_errors=True)
+        finally:
+            MockJiraHandler.simulate_put_404_keys.clear()
+            MockJiraHandler.reject_subtask_types.clear()
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

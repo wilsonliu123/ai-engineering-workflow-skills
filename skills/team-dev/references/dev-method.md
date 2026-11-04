@@ -36,15 +36,24 @@ A good `TASK-###` in `.ai-workflow/active/<JIRA-KEY>.json` lets a fresh AI codin
 
 ## 2. Minimal-Context Implementation Loop (`implement` mode)
 
-For each task or open Bug:
+### 2.1 Execution Priority Order
+When entering `implement` mode, select the target work item in this strict order:
+1. **Priority 1 — Open Bugs (`BUG-*`):** Any defect in `story["bugs"]` with `status == "open"`.
+2. **Priority 2 — Pending Tasks (`TASK-###`):** The next `TASK-###` in `story["tasks"]` with `status == "pending"` whose `depends_on` tasks are all `completed`.
+   - **Dev Fast-Track (Single-Task Stories):** If `story["tasks"]` is empty `[]` and `spec_status == "approved"`, running `complete-task --key <KEY> --task-id TASK-001` automatically creates `TASK-001` covering all Story `AC-*`, syncs the Jira Sub-task, and marks it completed in one step.
+3. **Priority 3 — Open Review Findings (`REV-###`):** When `review.status == "changes-requested"`, remediate every open `blocker`/`major` finding in `review.findings` (e.g., `REV-001`, `REV-002`) and check them off via `complete-task --key <KEY> --task-id REV-001,REV-002`.
+
+### 2.2 Step-by-Step Loop
+For each task, open Bug, or Review Finding:
 
 1. **Read Only What Applies:**
-   - `.ai-workflow/active/<JIRA-KEY>.json`
+   - `.ai-workflow/active/<JIRA-KEY>.json` (auto-hydrated from main Git worktree or remote Jira if missing locally)
    - `docs/shared/engineering-standards.md` (or `AGENTS.md` if absent)
    - Target files listed in `files`
 2. **Test-First / Evidence-First Coding:**
-   - Write or update automated tests that directly assert the behavior required by the linked `AC-*` or reproduce the `BUG-*`.
+   - Write or update automated tests that directly assert the behavior required by the linked `AC-*` or reproduce the `BUG-*` / `REV-###`.
    - Implement the minimal, clean production code that satisfies the tests and adheres to `docs/shared/engineering-standards.md`.
-3. **Deterministic Task Check-Off:**
-   - Commit the change (or obtain the current HEAD commit SHA) and run `jira_sync.py complete-task`.
-   - This updates `.ai-workflow/active/<JIRA-KEY>.json` (`status: "completed"`, `commit`, `changed_files`, `test_result`), updates `candidate_commit`, posts a completion comment to the Jira `Sub-task` (or `Bug`), and transitions it to `Done`.
+3. **Deterministic Task Check-Off (with Git Auto-Detection & Multi-ID Support):**
+   - Commit the change and run `python3 .ai-workflow/bin/jira_sync.py complete-task --key <KEY> --task-id <ID[,ID2]> --test-result "<summary>"`.
+   - `--commit` (from `git rev-parse --short HEAD`) and `--files` (from `git show` / `git diff`) are detected automatically when omitted.
+   - This updates `.ai-workflow/active/<JIRA-KEY>.json` (`status: "completed"`, `commit`, `changed_files`, `test_result`), updates `candidate_commit`, transitions `review.status` to `"remediated"` once all open blocking `REV-*` findings are resolved, posts a completion comment to the Jira `Sub-task` (or `Bug`), and transitions it to `Done`.

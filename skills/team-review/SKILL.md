@@ -36,28 +36,30 @@ Apply **"抓大放小"**:
 - `minor` and `note` observations are included in the summary for visibility but do not block QA handoff when tests pass.
 
 ### 3. Sync combined handoff & review to Jira (`jira_sync.py handoff`)
-Run `scripts/jira_sync.py handoff` from the repository root:
+Run `jira_sync.py handoff` from the repository root (prefer `.ai-workflow/bin/jira_sync.py` or fall back to `<skill-dir>/scripts/jira_sync.py`):
 
 ```bash
-python3 <skill-dir>/scripts/jira_sync.py --repo-root . handoff \
+python3 .ai-workflow/bin/jira_sync.py --repo-root . handoff \
   --key "<JIRA-KEY>" \
   --from-role reviewer \
   --to-role qa \
   --review-status "<approved|changes-requested>" \
-  --commit "<candidate-commit-sha>" \
+  [--commit "<candidate-commit-sha>"] \
   --summary "<Combined Dev Handoff (tasks, commits, test evidence, QA focus areas) + 3-Axis Review Summary>" \
   [--findings-json '<JSON array of findings>']
 ```
 
-### 4. Multi-role notification behavior
+- **Automatic `REV-001` Safeguard:** If `--review-status changes-requested` is passed and `--findings-json` is omitted (or contains no open `blocker`/`major` item), `jira_sync.py` automatically creates an open `REV-001` finding from `--summary` so `$team-dev` (`implement` mode) can remediate and check it off via `complete-task --task-id REV-001`.
+
+### 4. Multi-role notification & Auto-Chaining behavior
 `jira_sync.py handoff` inspects `.ai-workflow/team-config.json`:
 - **If `--review-status changes-requested`:** Automatically routes back to `developer` (transitions Story to `In Progress`, reassigns to Developer, and `@mention`s Developer if a different person).
 - **If `--review-status approved` and `reviewer` != `qa` (Different People):**
   1. Transitions the Jira Story status to `In QA` (`status_mapping.in_qa`).
   2. Reassigns the Jira Story assignee to the QA owner's `jira_account_id`.
   3. Posts the combined Handoff & Review comment with `@<QA Owner>` mention, triggering Jira's native email/push notification.
-- **If `--review-status approved` and `reviewer` == `qa` (Same Person):**
-  - Records `handoff_mode: "auto-consolidated"` without self-notification spam and immediately recommends `$team-qa` (`verify` mode, or `plan` mode if `TC-*` are not yet planned).
+- **If `--review-status approved` and `reviewer` == `qa` (Same Person, `same_person: true`):**
+  - Records `handoff_mode: "auto-consolidated"` without self-notification spam; **proactively auto-chain** into `$team-qa` (`verify` mode with QA Fast-Track, or `plan` mode) or ask in one line whether to proceed immediately.
 - **If `developer` == `reviewer` (Same Person):**
   - `jira_sync.py` automatically records `self_reviewed_with_ai: true` in the review record and Jira comment for audit transparency.
 
