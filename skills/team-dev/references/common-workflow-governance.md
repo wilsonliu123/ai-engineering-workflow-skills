@@ -32,20 +32,20 @@ Only system-wide rules, project workflow configuration, and long-lived architect
 |---|---|---|---|---|
 | **Init** | `team-init` | — | Configure `.ai-workflow/team-config.json`, install `.ai-workflow/bin/jira_sync.py`, update `.gitignore`, and extract `docs/shared/engineering-standards.md` from `AGENTS.md` | `jira_sync.py init` |
 | **Router** | `team-next-step` | — | Read-only inspection of `team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json` (with auto-hydration), and Jira state to recommend the exact next action | `jira_sync.py status` |
-| **Station 1** | `team-spec` | — | One-pass Scope + `AC-*` + conditional UI/API Design + inline "抓大放小" review | `jira_sync.py sync-story` |
-| **Station 2** | `team-dev` | `plan` / `implement` | Decompose into `TASK-001..N` (`Sub-task`), implement code & tests, and check off completed tasks/bugs/review findings (supports Dev Fast-Track & Git auto-detect) | `jira_sync.py create-subtasks` / `complete-task` |
-| **Station 3a** | `team-review` | — | Combined Dev Handoff & Code Review against ACs, design, and `engineering-standards.md` (fallback: `AGENTS.md`) | `jira_sync.py handoff` |
-| **Station 3b** | `team-qa` | `plan` / `verify` | Parallel `TC-001..N` planning with AI pre-filled execution types; verify test results (supports QA Fast-Track `--all-pass`) or file linked Jira `Bug` tickets | `jira_sync.py record-qa` / `create-bug` |
-| **Station 4** | `team-release` | — | Verify all gates + zero open Bugs, post release summary, transition Story to `Done`, delete `.ai-workflow/active/<JIRA-KEY>.json` | `jira_sync.py close-story` |
+| **Station 1** | `team-spec` | `one-pass` / `draft` | Scale-aware Spec: Small/clear stories in one pass; Large/complex stories via iterative `draft` deep-dive + 6-Dimension AC Checklist | `jira_sync.py sync-story` |
+| **Station 2** | `team-dev` | `plan` / `implement` | Decompose into `TASK-001..N` (`Sub-task`), implement code & tests, and check off completed tasks/bugs/review findings (Dev Fast-Track guarded to `<= 3` ACs & `low/medium` risk) | `jira_sync.py create-subtasks` / `complete-task` |
+| **Station 3a** | `team-review` | — | Combined Dev Handoff & Code Review against ACs (AC-by-AC traceability), design, `engineering-standards.md`, plus QA external tool/env hints | `jira_sync.py handoff` |
+| **Station 3b** | `team-qa` | `plan` / `verify` | 3-Tier QA (`automated` / `external` / `manual`) planning & verification; `--all-pass` restricted to `automated` only to prevent false passes | `jira_sync.py record-qa` / `create-bug` |
+| **Station 4** | `team-release` | — | Verify all gates + zero open Bugs, post release summary (with 3-tier QA breakdown), transition Story to `Done`, delete `.ai-workflow/active/<JIRA-KEY>.json` | `jira_sync.py close-story` |
 
 ### 2.1 Zero-CLI Burden for Humans & Single-Command Entry (`$team-next-step`)
 - **CLI Completely Hidden in Background:** Humans never need to memorize or manually type `jira_sync.py` flags. Users interact in plain natural language (e.g., `"幫我規劃 PROJ-101 訂單匯出"`, `"核准"`, `"繼續下一步"`), and the AI agent assembles and executes `python3 .ai-workflow/bin/jira_sync.py ...` automatically.
-- **Only One Command to Remember (`$team-next-step`):** Team members do not need to memorize all 7 skill names. Invoking `$team-next-step` (or saying `"下一步"` / `"目前進度"`) at any point automatically inspects local/remote state and routes to the right station.
-- **Fast-Track & Git Auto-Detection:**
+- **Only One Command to Remember (`$team-next-step`):** Team members do not need to memorize all 7 skill names. Invoking `$team-next-step` (or saying `"下一步"` / `"目前進度"`) at any point automatically inspects local/remote state and routes to the right station (including reporting `pending_automated_tcs`, `pending_external_tcs`, and `pending_manual_tcs` during QA verification).
+- **Scale-Aware Fast-Track & Anti-False-Pass Guardrails:**
   - `complete-task` automatically detects `--commit` (from `git rev-parse --short HEAD`) and `--files` (from `git show` / `git diff`) when omitted, and supports comma-separated multi-ID completion (`--task-id TASK-001,TASK-002` or `REV-001,REV-002`).
-  - **Dev Fast-Track:** For small/single-task stories where `tasks` is empty and `spec_status == "approved"`, running `complete-task --key <KEY> --task-id TASK-001` automatically creates `TASK-001` covering all Story ACs and marks it completed in one step.
-  - **QA Fast-Track:** In `record-qa --mode verify`, if `test_cases` is empty, `jira_sync.py` automatically derives `TC-001..N` 1:1 from `AC-001..N`; passing `--all-pass` marks all un-overridden test cases as `pass`.
-  - `close-story` automatically defaults `--commit` to `candidate_commit` (or Git `HEAD`) and `--version` to `v1.0.0` when omitted.
+  - **Dev Fast-Track (with Complexity Guard):** Only allowed for small stories (`len(acceptance_criteria) <= 3` AND `risk_level in ("low", "medium")`). When `tasks` is empty and `spec_status == "approved"`, running `complete-task --key <KEY> --task-id TASK-001` automatically creates `TASK-001` covering all Story ACs and marks it completed in one step. Stories with `> 3` ACs or `high`/`critical` risk are rejected by the Dev Fast-Track guard and MUST be decomposed via `create-subtasks` (`plan` mode) first.
+  - **3-Tier Hybrid QA & Anti-False-Pass (`record-qa`):** Test cases (`TC-001..N`) are classified into three execution types: `automated` (local AI-runnable unit/integration tests), `external` (requires external tools, CI/Staging, Playwright/Cypress against remote envs, Postman/Newman, JMeter, or third-party sandboxes), and `manual` (human visual/exploratory checks). Passing `--all-pass` ONLY marks `automated` test cases as `pass`; any `external` or `manual` test cases remain `not-executed` (`qa_status: "incomplete"`) until verified via `--junit-xml`, `--results-json`, or `--result TC-ID=pass`.
+  - `close-story` automatically defaults `--commit` to `candidate_commit` (or Git `HEAD`) and `--version` to `v1.0.0` when omitted, and records the `qa_breakdown` (`automated`, `external`, `manual`) in the Release Summary.
 
 ---
 
@@ -66,20 +66,20 @@ Small teams frequently assign one person to multiple roles (e.g., PM + Release M
 
 ---
 
-## 4. Inline "抓大放小" (Focus on Material Risks, Auto-Default Minor Details)
-
-Human review bandwidth is scarce. Every skill must enforce the **"抓大放小"** principle:
-
+## 4. Inline "抓大放小" & Scale-Aware Spec Clarification
+ 
+Human review bandwidth is scarce, yet large features fail when edge cases are silently skipped. Every skill must balance **"抓大放小"** with **Scale-Aware Deep-Dive**:
+ 
 - **放小 (Auto-Default Routine Details):**
   - AI must never interrogate humans over conventional engineering, UI state, copy wording, or test-method details that have safe defaults under `docs/shared/engineering-standards.md` or existing codebase conventions.
   - Instead, AI makes the decision, applies it, and lists it in a concise **"AI 預設細節清單 (Auto-Decided Defaults)"** table so the human can review at a glance or override any item.
-- **抓大 (Surface Only Material Decisions — Max 3 Questions):**
+- **抓大 (Surface Material Decisions — Scale-Aware Dual Track):**
   - Ask the human **only** when a choice involves:
     1. Irreversible architecture, schema, or data-migration risk.
     2. Direct contradiction in product scope, business rules, or security policy.
     3. Major scope, cost, compatibility, or user-experience trade-off.
-  - Ask **at most 3 material questions** in a single round. Every question must include a **Recommended Option (建議方案)** and a 1-sentence trade-off explanation.
-  - If there are 0 material questions, present the summary and Auto-Decided Defaults directly for confirmation.
+  - **Small / Clear Requirements (One-Pass Track):** Ask **at most 3 material questions** in a single round, each with a **Recommended Option (建議方案)** and 1-sentence trade-off. Once confirmed, sync directly as `--status approved`.
+  - **Medium / Large or Ambiguous Requirements (Iterative `draft` Deep-Dive Track):** Never force a complex epic/story into a single-pass approval. Persist intermediate progress via `sync-story --status draft`, ask **3–5 focused business/boundary questions per round** across multiple rounds (`draft` -> `draft` -> `approved`), accumulate all confirmed `material_decisions`, and verify the **6-Dimension AC Completeness Checklist** (Happy Path, Role/AuthZ, Input Boundary/Idempotency, State Transitions/Concurrency, External Failure/Compensation, Legacy Data Compatibility) before marking `--status approved`.
 
 ---
 

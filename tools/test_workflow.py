@@ -1003,6 +1003,135 @@ class WorkflowTestSuite(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_09_scale_aware_draft_guard_and_3tier_qa_anti_false_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(root, "init", "--project-key", "PROJ")
+
+            # 1. Iterative draft deep-dive for a large story: accumulate >3 material decisions across draft rounds
+            r1 = run_cli(
+                root, "sync-story",
+                "--key", "PROJ-500",
+                "--title", "Enterprise Billing & Rebate Engine",
+                "--risk-level", "high",
+                "--ac", "AC-001:Calculate tiered rebate",
+                "--ac", "AC-002:Tenant isolation on invoices",
+                "--material-decision", "D1: Use async ledger batching",
+                "--material-decision", "D2: Lock rebate period at UTC midnight",
+                "--material-decision", "D3: Reject negative adjustments > 100%",
+                "--status", "draft",
+            )
+            self.assertEqual(r1.returncode, 0, r1.stderr)
+
+            # Round 2 adds 2 more material decisions and 2 more ACs (total 5 material decisions, 4 ACs) and approves
+            r2 = run_cli(
+                root, "sync-story",
+                "--key", "PROJ-500",
+                "--ac", "AC-001:Calculate tiered rebate",
+                "--ac", "AC-002:Tenant isolation on invoices",
+                "--ac", "AC-003:Idempotent webhook retry handling",
+                "--ac", "AC-004:Stripe sandbox compensation rollback",
+                "--material-decision", "D4: Idempotency key TTL = 72h",
+                "--material-decision", "D5: Dead-letter queue after 5 webhook failures",
+                "--status", "approved",
+            )
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            story_500 = json.loads((root / ".ai-workflow/active/PROJ-500.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(story_500["material_decisions"]), 5)
+            self.assertEqual(len(story_500["acceptance_criteria"]), 4)
+
+            # 2. Dev Fast-Track Complexity Guard: must REJECT Fast-Track when >3 ACs or risk_level is high/critical
+            blocked_ft = run_cli(
+                root, "complete-task",
+                "--key", "PROJ-500",
+                "--task-id", "TASK-001",
+                "--commit", "c500",
+                "--files", "billing.py",
+                "--test-result", "pytest: 4 passed",
+            )
+            self.assertNotEqual(blocked_ft.returncode, 0)
+            self.assertIn("Dev Fast-Track is restricted to small stories", blocked_ft.stderr)
+
+            # Must decompose via create-subtasks first
+            sub_500 = run_cli(
+                root, "create-subtasks",
+                "--key", "PROJ-500",
+                "--task", "TASK-001:Core rebate & authz:AC-001,AC-002:pytest tests/test_rebate.py",
+                "--task", "TASK-002:Webhook idempotency & compensation:AC-003,AC-004:pytest tests/test_webhook.py",
+            )
+            self.assertEqual(sub_500.returncode, 0, sub_500.stderr)
+            self.assertEqual(
+                run_cli(
+                    root, "complete-task",
+                    "--key", "PROJ-500",
+                    "--task-id", "TASK-001,TASK-002",
+                    "--commit", "c500",
+                    "--files", "billing.py,webhook.py",
+                    "--test-result", "pytest: 12 passed",
+                ).returncode,
+                0,
+            )
+            self.assertEqual(
+                run_cli(root, "handoff", "--key", "PROJ-500", "--review-status", "approved", "--commit", "c500").returncode,
+                0,
+            )
+
+            # 3. 3-Tier Hybrid QA (automated / external / manual) & Anti-False-Pass Guardrail
+            qa_plan = run_cli(
+                root, "record-qa",
+                "--key", "PROJ-500",
+                "--mode", "plan",
+                "--tc", "TC-001:AC-001:automated:Unit test tiered rebate calculation",
+                "--tc", "TC-002:AC-002:automated:Unit test tenant isolation 403",
+                "--tc", "TC-003:AC-003:external:Postman Newman staging webhook replay test",
+                "--tc", "TC-004:AC-004:manual:Human check of Stripe sandbox dashboard refund state",
+            )
+            self.assertEqual(qa_plan.returncode, 0, qa_plan.stderr)
+
+            # Running verify with --all-pass MUST ONLY pass automated TCs (TC-001, TC-002)
+            # and keep external (TC-003) and manual (TC-004) as not-executed -> qa_status == "incomplete"!
+            qa_verify_partial = run_cli(
+                root, "record-qa",
+                "--key", "PROJ-500",
+                "--mode", "verify",
+                "--commit", "c500",
+                "--all-pass",
+            )
+            self.assertEqual(qa_verify_partial.returncode, 0, qa_verify_partial.stderr)
+            partial_out = json.loads(qa_verify_partial.stdout)
+            self.assertEqual(partial_out["qa_status"], "incomplete")
+            self.assertEqual(partial_out["counts"]["pass"], 2)
+            self.assertEqual(partial_out["counts"]["not-executed"], 2)
+            self.assertEqual(partial_out["pending_external_tcs"], ["TC-003"])
+            self.assertEqual(partial_out["pending_manual_tcs"], ["TC-004"])
+
+            # Status router must report pending_external_tcs and pending_manual_tcs
+            st_qa = json.loads(run_cli(root, "status", "--key", "PROJ-500").stdout)
+            self.assertEqual(st_qa["current_station"], "Station 3b: QA Verify")
+            self.assertEqual(st_qa["pending_automated_tcs"], [])
+            self.assertEqual(st_qa["pending_external_tcs"], ["TC-003"])
+            self.assertEqual(st_qa["pending_manual_tcs"], ["TC-004"])
+
+            # Now provide explicit external and manual verification results -> qa_status becomes "passed"
+            qa_verify_full = run_cli(
+                root, "record-qa",
+                "--key", "PROJ-500",
+                "--mode", "verify",
+                "--commit", "c500",
+                "--result", "TC-003=pass",
+                "--result", "TC-004=pass",
+            )
+            self.assertEqual(qa_verify_full.returncode, 0, qa_verify_full.stderr)
+            full_out = json.loads(qa_verify_full.stdout)
+            self.assertEqual(full_out["qa_status"], "passed")
+            self.assertEqual(full_out["by_type"], {"automated": 2, "external": 1, "manual": 1})
+
+            # Close story and verify qa_breakdown is included
+            close_500 = run_cli(root, "close-story", "--key", "PROJ-500", "--commit", "c500", "--version", "v2.0.0")
+            self.assertEqual(close_500.returncode, 0, close_500.stderr)
+            close_out = json.loads(close_500.stdout)
+            self.assertEqual(close_out["qa_breakdown"], {"automated": 2, "external": 1, "manual": 1})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

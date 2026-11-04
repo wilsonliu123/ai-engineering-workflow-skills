@@ -101,12 +101,12 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **L1/L3** `common-workflow-governance.md` | 四站七技能共同治理契約 | 第一性原理資產邊界、多角色感知、抓大放小、雙模式同步、語言與證據鐵律 | 全體角色 | 2.1 - 2.3（圖 2-1：`01-architecture-asset-boundary.png`、圖 2-2：`02-state-machine-and-roles.png`） |
 | **L1/L2** `skills/team-init/SKILL.md` | 專案與角色初始化 (`team-init`) | `jira_sync.py init`、`team-config.json`、`.gitignore`、`AGENTS.md` 規範萃取與指標去重 | `tech_lead` / `pm` | 第 3 章 情境 0（圖 3-1：`03-scenario0-team-init.png`） |
-| **L1/L2** `skills/team-spec/SKILL.md` | 一體化規格、UX 與技術設計 (`team-spec`) | `jira_sync.py sync-story`、變更面（UI/API/Data）、可測試 `AC-*`、條件式規格、抓大放小（最多 3 題關鍵決策 + 自動預設清單） | `pm` / `tech_lead` | 第 4 章 情境 1（圖 4-1：`04-scenario1-team-spec.png`） |
+| **L1/L2** `skills/team-spec/SKILL.md` | 一體化規格、UX 與技術設計 (`team-spec`) | `jira_sync.py sync-story`、大小需求雙軌制（單趟 `approved` vs 多輪 `draft` 深挖）、6 大 AC 完整性檢查維度、抓大放小 | `pm` / `tech_lead` | 第 4 章 情境 1（圖 4-1：`04-scenario1-team-spec.png`） |
 | **L1/L2** `skills/team-dev/SKILL.md` (`plan`) | 開發任務垂直拆解 (`team-dev` `plan` 模式) | `jira_sync.py create-subtasks`、`TASK-001..N`、Jira `Sub-task`、DFS 循環依賴檢查 | `developer` | 5.1 - 5.2 情境 2A（圖 5-1：`05-scenario2-team-dev-plan.png`） |
-| **L1/L2** `skills/team-dev/SKILL.md` (`implement`) | 極簡上下文編碼與打卡 (`team-dev` `implement` 模式) | `jira_sync.py complete-task`、優先序（Open Bug > Pending Task > Review Finding）、前置依賴檢查、候選 Commit 更新 | `developer` | 5.3 - 5.4 情境 2B（圖 5-2：`06-scenario2-team-dev-implement.png`） |
-| **L1/L2** `skills/team-review/SKILL.md` | 合併開發交接與三軸審查 (`team-review`) | `jira_sync.py handoff`、三軸審查（AC / 設計 / 標準）、嚴重度分級、`AGENTS.md` 自動回退、AI 自審透明標記 | `reviewer`（含獨立審查員） | 第 6 章 情境 3（圖 6-1：`07-scenario3-team-review.png`） |
-| **L1/L2** `skills/team-qa/SKILL.md` (`plan`) | 平行測試案例規劃 (`team-qa` `plan` 模式) | `jira_sync.py record-qa --mode plan`、100% AC 覆蓋強制防呆檢查、AI 預填 `automated` / `manual` | `qa` | 7.1、7.3 情境 4A（圖 7-1：`08-scenario4-team-qa-plan.png`） |
-| **L1/L2** `skills/team-qa/SKILL.md` (`verify`) | 多源測試結果驗證 (`team-qa` `verify` 模式) | `jira_sync.py record-qa --mode verify`、`--junit-xml`（最差結果優先律）、`--results-json`、`--result`、自動交接發佈 | `qa` | 7.2、7.3 情境 4B（圖 7-2：`09-scenario4-team-qa-verify.png`） |
+| **L1/L2** `skills/team-dev/SKILL.md` (`implement`) | 極簡上下文編碼與打卡 (`team-dev` `implement` 模式) | `jira_sync.py complete-task`、優先序（Open Bug > Pending Task > Review Finding）、Dev Fast-Track 複雜度守衛（限 `<= 3` AC 且中低風險） | `developer` | 5.3 - 5.4 情境 2B（圖 5-2：`06-scenario2-team-dev-implement.png`） |
+| **L1/L2** `skills/team-review/SKILL.md` | 合併開發交接與三軸審查 (`team-review`) | `jira_sync.py handoff`、三軸審查（AC 逐條覆蓋 / 設計 / 標準）、QA 外部測試工具提示、`AGENTS.md` 自動回退、AI 自審透明標記 | `reviewer`（含獨立審查員） | 第 6 章 情境 3（圖 6-1：`07-scenario3-team-review.png`） |
+| **L1/L2** `skills/team-qa/SKILL.md` (`plan`) | 平行測試案例規劃 (`team-qa` `plan` 模式) | `jira_sync.py record-qa --mode plan`、100% AC 覆蓋強制防呆檢查、AI 預填三層執行類型（`automated` / `external` / `manual`） | `qa` | 7.1、7.3 情境 4A（圖 7-1：`08-scenario4-team-qa-plan.png`） |
+| **L1/L2** `skills/team-qa/SKILL.md` (`verify`) | 三層混合測試驗證 (`team-qa` `verify` 模式) | `jira_sync.py record-qa --mode verify`、`--all-pass` 防假通過守衛（僅通過 `automated`）、`--junit-xml`、`--results-json`、`--result` | `qa` | 7.2、7.3 情境 4B（圖 7-2：`09-scenario4-team-qa-verify.png`） |
 | **L1/L2** `skills/team-qa/SKILL.md` + `team-dev` | 測試失敗自動開 Bug 與閉環重測 | `jira_sync.py create-bug`、Jira `Bug` + `Blocks` 連結、退回 `developer`、`complete-task` 關單、Commit 漂移重審重驗 | `qa` / `developer` / `reviewer` | 第 8 章 情境 5（圖 8-1：`10-scenario5-bug-loop.png`） |
 | **L1/L2** `skills/team-release/SKILL.md` | 發佈閘門對帳與暫存清除 (`team-release`) | `jira_sync.py close-story`、五大決定性發佈閘門、Story 轉 `Done`、自動刪除 `.ai-workflow/active/<KEY>.json` | `release_manager` | 第 9 章 情境 6（圖 9-1：`11-scenario6-team-release.png`） |
 | **L1/L2** `skills/team-next-step/SKILL.md` | 唯讀工作流導航員 (`team-next-step`) | `jira_sync.py status`、11 級優先序路由表、多 Story 歧義防猜測、`--fetch-remote`、五段式標準回覆 | 全體角色 | 第 10 章 情境 7（圖 10-1：`12-scenario7-and-8-router-and-modes.png`） |
@@ -204,11 +204,13 @@ python3 skills/team-init/scripts/jira_sync.py \
 
 當專案已完成初始化，產品經理（PM）或技術負責人準備啟動一項新功能、變更請求或架構調整（例如 Jira Story `PROJ-101`：**新增訂單 CSV 匯出功能**）時，進入 **Station 1：`team-spec`**。
 
-在舊版工作流中，團隊必須依序執行需求分析、UX 設計、技術架構設計與文件審查四個獨立步驟；而在 `team-spec` 中，AI 會在**單一回合（One Pass）**內完成：
+在舊版工作流中，團隊必須依序執行需求分析、UX 設計、技術架構設計與文件審查四個獨立步驟；而在 `team-spec` 中，AI 採用**大小需求雙軌制（Scale-Aware Dual Track）**與 **6 大 AC 完整性檢查表**，兼顧小需求效率與大需求完整性：
 1. **變更面分析（Change Surface Analysis）**：依據源碼自動判定 `has_ui`、`has_api`、`has_data`。
-2. **可測試驗收條件（`AC-001..N`）**：消除「快速」、「友善」等模糊形容詞，定義明確的觸發條件、預期輸出與邊界/錯誤行為。
+2. **可測試驗收條件（`AC-001..N`）與 6 大完整性維度檢查**：消除「快速」、「友善」等模糊形容詞，並強制核對六大維度：(1) 核心主流程 Happy Path、(2) 角色權限與租戶隔離 AuthZ、(3) 輸入邊界與冪等性 Idempotency、(4) 狀態流轉與併發衝突 Concurrency、(5) 外部依賴失敗與補償回滾 Compensation、(6) 舊資料相容性與遷移 Legacy Compatibility。
 3. **條件式技術與介面設計（Conditional UI/API Spec）**：僅在 `has_ui: true` 時產出畫面狀態表（`normal`、`loading`、`empty`、`invalid`、`403/404`）與 Wireframe；僅在 `has_api: true` 時產出端點契約。若為純後端或純樣式修改，自動省略不適用區塊，杜絕空白佔位符。
-4. **內嵌「抓大放小」審查（Inline Review）**：將常規細節列入**AI 預設細節清單**（`auto_decisions`），並針對真正具不可逆風險或重大取捨的議題提出**最多 3 題**關鍵問題（`material_decisions`）。
+4. **大小需求分流審查（One-Pass vs. Iterative `draft` Deep-Dive）**：
+   - **小型明確需求（One-Pass 單趟快審）**：將常規細節列入**AI 預設細節清單**（`auto_decisions`），並針對關鍵議題提出**最多 3 題**（`material_decisions`），確認後直接設為 `approved`。
+   - **中大型或複雜需求（Iterative `draft` 多輪深挖）**：先以 `--status draft` 儲存初版草案，每輪聚焦詢問 **3 至 5 題**關鍵業務/邊界問題，支援跨多輪次持續累加 `material_decisions`，直到六大 AC 維度完全無死角後才轉為 `approved`。
 
 ### 4.2 操作步驟與視覺化實況詳解
 
@@ -264,7 +266,7 @@ python3 skills/team-spec/scripts/jira_sync.py \
 | `--design-summary` | 選填（字串） | 技術架構、影響模組、資料相容性與資安控制點摘要 | 寫入 `design.summary` |
 | `--ui-spec` / `--api-spec` | 選填（字串） | 條件式 UI 狀態規格與 API 介面契約 | 僅在對應之 `--has-ui` / `--has-api` 為真時儲存與渲染 |
 | `--auto-decision` | 可重複指定 | 「放小」：AI 依專案慣例自動決定的常規技術或 UX 細節 | 彙整於 Jira 描述第 4 節 **AI 預設細節清單** |
-| `--material-decision` | 可重複指定（**上限 3 筆**） | 「抓大」：經人類確認之關鍵架構或業務決策 | **超過 3 筆強制報錯攔截**（觸發 **抓大放小** 上限錯誤：`at most 3 material questions/decisions are allowed`） |
+| `--material-decision` | 可重複指定 | 「抓大」：經人類確認之關鍵架構或業務決策 | **大小需求雙軌防呆**：全新 Story 單趟直接 `approved` 上限 3 筆；大型複雜需求透過 `--status draft` 多輪深挖時，每輪上限 5 筆且跨輪次可無上限累加 |
 | `--spec-json` | 選填（JSON 字串或檔案） | 以整包 JSON 載入規格欄位 | 可與個別 CLI 旗標搭配使用（個別旗標優先覆寫） |
 | `--status` | 選填（`draft` / `approved`） | 規格狀態；使用者確認後設為 `approved` | **未定 AC 禁止核准**：若設為 `approved` 但無任何 `AC-*`，立即報錯拒絕；核准後自動觸發 `pm -> developer` 交接 |
 | `--approved-by` | 選填（字串） | 核准人姓名或角色 | 預設自動帶入 `team-config.json` 中之 `pm.name` |
@@ -348,7 +350,7 @@ python3 skills/team-dev/scripts/jira_sync.py \
 
 1. **步驟一：依嚴格三層優先序選取下一個可執行項目**
    - **第一優先（Open Bugs `BUG-*`）**：若 `bugs` 陣列中有 `status == "open"` 的缺陷，優先修復。
-   - **第二優先（Pending Tasks `TASK-###` / 單任務快車道 Dev Fast-Track）**：選取第一個 `status == "pending"` 且其 `depends_on` 內所有前置任務皆已 `completed` 的 `TASK-###`。若為小型單任務 Story 且尚未跑 `create-subtasks`（`tasks` 為空且 `spec_status == "approved"`），可直接執行 `complete-task --key <KEY> --task-id TASK-001`，系統將自動建立涵蓋全部 `AC-*` 的 `TASK-001` 並一次完成打卡！
+   - **第二優先（Pending Tasks `TASK-###` / 小型單任務快車道 Dev Fast-Track）**：選取第一個 `status == "pending"` 且其 `depends_on` 內所有前置任務皆已 `completed` 的 `TASK-###`。若為**小型 Story（`AC <= 3` 條且風險為 `low` 或 `medium`）**且尚未跑 `create-subtasks`（`tasks` 為空且 `spec_status == "approved"`），可直接執行 `complete-task --key <KEY> --task-id TASK-001`，系統將自動建立涵蓋全部 `AC-*` 的 `TASK-001` 並一次完成打卡！若為中大型或高風險需求（`AC > 3` 條或風險為 `high`/`critical`），**複雜度守衛（Complexity Guard）**會強制攔截快車道，要求必須先執行 `create-subtasks` 進行垂直切片拆解。
    - **第三優先（Open Review Findings `REV-###`）**：當 `review.status == "changes-requested"` 時，優先修復所有 `status == "open"` 之 `REV-###` 審查阻斷項。
 2. **步驟二：極簡上下文載入（Minimal Context Loading）**
    - 僅讀取：(1) `AGENTS.md` 與 `docs/shared/engineering-standards.md`；(2) `.ai-workflow/active/PROJ-101.json` 中該任務關聯的 `AC-*` 與設計摘要（若跨機或跨 Git Worktree 本地無此檔案，系統會自動從主 Worktree 或遠端 Jira 無損回填）；(3) 該任務 `files` 指定的目標源碼與測試檔。
@@ -372,7 +374,7 @@ python3 .ai-workflow/bin/jira_sync.py \
 | 參數名稱 | 必填 / 類型 | 功能說明與輸入規範 | 內建防呆與狀態影響 |
 | :--- | :--- | :--- | :--- |
 | `--key` | **必填**（字串） | Jira Story 代號（如 `PROJ-101`） | 更新對應之 `.ai-workflow/active/<KEY>.json`（缺失時自動從 Worktree 或 Jira 回填） |
-| `--task-id` | 選填（預設 `TASK-001`，支援逗號多選） | 支援單一或逗號分隔之多個目標 ID：(1) 子任務 `TASK-001,TASK-002`；(2) 缺陷單 `PROJ-101-BUG-1`；(3) 審查問題 `REV-001,REV-002` | **Dev Fast-Track**：當 `tasks` 為空且 `spec_status == "approved"` 時，傳入 `TASK-001` 會自動建立子任務並打卡完成 |
+| `--task-id` | 選填（預設 `TASK-001`，支援逗號多選） | 支援單一或逗號分隔之多個目標 ID：(1) 子任務 `TASK-001,TASK-002`；(2) 缺陷單 `PROJ-101-BUG-1`；(3) 審查問題 `REV-001,REV-002` | **Dev Fast-Track 與複雜度守衛**：僅限 `AC <= 3` 且 `low`/`medium` 風險之小型 Story 可自動建立 `TASK-001` 並打卡；大型或高風險 Story 強制要求先執行 `create-subtasks` |
 | `--commit` | 選填（自動從 Git HEAD 偵測） | 實作該任務或修復該缺陷之 Git Commit SHA（如 `a1b2c3d`） | 未傳時自動執行 `git rev-parse --short HEAD` 取得，並更新 Story 之 `candidate_commit` |
 | `--files` | 選填（自動從 Git Diff 偵測） | 以逗號分隔之實際修改檔案路徑清單 | 未傳時自動執行 `git show --name-only` / `git diff --name-only` 取得修改檔案清單 |
 | `--test-result` | **必填**（字串） | 實際執行的測試指令與通過結果摘要 | **證據鐵律**：若未提供測試結果字串，拒絕標記為完成 |
@@ -461,21 +463,24 @@ python3 skills/team-review/scripts/jira_sync.py \
 
 ## 7. 情境 4：QA 平行測試規劃與多源結果驗證（`team-qa`）
 
-**Station 3b（`team-qa`）** 將傳統繁瑣的測試計畫、執行類型確認、證據收集與驗證報告收斂為兩個精煉模式：
-- **模式一：`plan`（平行測試案例規劃 + AI 預填 `automated` / `manual` 類型）**
-- **模式二：`verify`（JUnit XML / JSON / CLI 多源結果匯入 + 自動放行或開立 Bug 單）**
+**Station 3b（`team-qa`）** 將傳統繁瑣的測試計畫、執行類型確認、證據收集與驗證報告收斂為兩個精煉模式，並內建**三層混合測試模型（`automated` / `external` / `manual`）**與**防假通過守衛（Anti-False-Pass Guardrail）**：
+- **模式一：`plan`（平行測試案例規劃 + AI 預填 `automated` / `external` / `manual` 三層執行類型）**
+- **模式二：`verify`（本機自動測試執行 + 外部工具報告匯入 + 人工驗證回填 + 自動放行或開立 Bug 單）**
 
 ### 7.1 情境 4A（`team-qa` `plan` 模式）：平行測試規劃與 AI 預填類型一鍵確認
 
 只要 `team-spec` 已核准（`spec_status == "approved"`），QA 即可隨時執行 `team-qa` 的 **`plan` 模式**（可與 `team-dev` 平行進行，或在 `team-review` 通過後執行）。
 
 ![情境 4A（team-qa plan 模式）：平行測試規劃與 AI 預填執行類型一鍵確認](./screenshots/08-scenario4-team-qa-plan.png)
-*圖 7-1：情境 4A 執行 `team-qa`（`plan` 模式 / `jira_sync.py record-qa --mode plan`）之 AI 預填測試總表與 100% AC 覆蓋檢查圖。用途：展示 AI 如何自動為每條 `AC-001..003` 規劃對應的 `TC-001..N` 並預填 `automated` 或 `manual` 執行類型，讓 QA 一鍵確認後同步至 Jira。視覺焦點：請依序查看標註序號 ① 左側 AI 預填執行類型的測試案例總表與判定準則；② 右上角 100% AC 覆蓋率強制防呆檢查（漏測任何 `AC-001..003` 立即報錯）；③ 右下角執行 `record-qa --mode plan` 輸出與 Jira 評論同步。狀態變化：執行後 `qa.status` 設為 `"planned"`，`qa.test_cases` 寫入 3 筆初始結果為 `"not-executed"` 之測試案例。*
+*圖 7-1：情境 4A 執行 `team-qa`（`plan` 模式 / `jira_sync.py record-qa --mode plan`）之 AI 預填測試總表與 100% AC 覆蓋檢查圖。用途：展示 AI 如何自動為每條 `AC-001..003` 規劃對應的 `TC-001..N` 並預填 `automated`、`external` 或 `manual` 執行類型，讓 QA 一鍵確認後同步至 Jira。視覺焦點：請依序查看標註序號 ① 左側 AI 預填執行類型的測試案例總表與判定準則；② 右上角 100% AC 覆蓋率強制防呆檢查（漏測任何 `AC-001..003` 立即報錯）；③ 右下角執行 `record-qa --mode plan` 輸出與 Jira 評論同步。狀態變化：執行後 `qa.status` 設為 `"planned"`，`qa.test_cases` 寫入 3 筆初始結果為 `"not-executed"` 之測試案例。*
 
 `plan` 模式的標準操作步驟如下：
 
-1. **步驟一：啟動 `$team-qa` `plan` 模式檢視 AI 預填測試總表**
-   - AI 讀取 `PROJ-101.json` 中的 `AC-001..003` 與變更面旗標，自動產出涵蓋正常路徑、權限攔截（403）與 UI 空狀態的 `TC-001..003` 總表，並預先填好 `automated` 或 `manual` 建議類型。
+1. **步驟一：啟動 `$team-qa` `plan` 模式檢視 AI 預填三層測試總表**
+   - AI 讀取 `PROJ-101.json` 中的 `AC-001..003` 與變更面旗標，自動產出涵蓋正常路徑、權限攔截（403）與 UI 空狀態的 `TC-001..003` 總表，並依技術特性預填三種執行類型：
+     - `automated`：本機 AI 可直接執行的單元與整合測試（如 `pytest`、`vitest`）。
+     - `external`：需依賴外部工具、CI/Staging 環境或第三方沙盒的測試（如 Playwright/Cypress E2E、Postman/Newman、JMeter）。
+     - `manual`：需人工進行視覺體驗或探索式核對的測試。
    - QA 人員無須逐題回答，只需檢視總表並回覆「確認」（或指定修改某列類型）。
 2. **步驟二：執行 `jira_sync.py record-qa --mode plan` 同步測試計畫**
 
@@ -523,12 +528,12 @@ python3 skills/team-qa/scripts/jira_sync.py \
 | :--- | :--- | :--- | :--- | :--- |
 | `--key` | `plan` & `verify` | **必填**（字串） | Jira Story 代號（如 `PROJ-101`） | 讀寫 `.ai-workflow/active/<KEY>.json` 之 `qa` 區塊 |
 | `--mode` | `plan` & `verify` | **必填**（列舉） | 指定執行模式：`plan` 或 `verify` | **QA Fast-Track**：`verify` 模式下若尚未執行過 `plan`（`test_cases` 為空），自動由 `AC-001..N` 1:1 衍生預設之 `TC-001..N` |
-| `--tc` | `plan` | 可重複指定 | 單行測試案例格式：`TC-001:AC-001:<type>:<Title>`（`<type>` 為 `automated` 或 `manual`，`<Title>` 為**標題與預期結果**，完整保留標題內所有冒號） | **100% AC 覆蓋防呆**：若規劃的所有 `TC-*` 未完整覆蓋 Story 的每一條 `AC-*`，立即報錯退出 |
+| `--tc` | `plan` | 可重複指定 | 單行測試案例格式：`TC-001:AC-001:<type>:<Title>`（`<type>` 支援 `automated`、`external` 或 `manual`，`<Title>` 為**標題與預期結果**，完整保留標題內所有冒號） | **100% AC 覆蓋防呆**：若規劃的所有 `TC-*` 未完整覆蓋 Story 的每一條 `AC-*`，立即報錯退出 |
 | `--cases-json` | `plan` | 選填（JSON 字串或檔案） | 批次載入測試案例陣列（支援多重 AC 覆蓋 `ac_ids` 與 `notes`） | 自動標記 `"recommended_by_ai": true` 與初始結果 `"not-executed"` |
 | `--junit-xml` | `verify` | 選填（檔案路徑） | 解析 JUnit XML 報告中 `classname` 或 `name` 含 `TC-\d{3,}` 之 `<testcase>` | 採**最差結果優先律**（`fail > blocked > not-executed > pass`），確保參數化測試任一失敗即標為 `fail` |
 | `--results-json` | `verify` | 選填（JSON 字串或檔案） | 傳入 `{"TC-001": "pass"}` 字典或 `[{"id": "TC-001", "result": "pass"}]` 陣列 | **未知 TC 攔截**：若包含未規劃於 `qa.test_cases` 的 TC ID，立即報錯拒絕 |
 | `--result` | `verify` | 可重複指定 | 單項結果格式：`TC-001=<status>`（`<status>` 支援 `pass`、`fail`、`blocked` 或 `not-executed`） | 若傳入非上述 4 種合法狀態值，立即報錯攔截 |
-| `--all-pass` | `verify` | 選填（布林旗標） | 將所有未被 `--junit-xml` / `--results-json` / `--result` 覆寫之 `TC-*` 標記為 `pass` | 搭配 **QA Fast-Track** 可在測試全數通過後以 `record-qa --mode verify --all-pass` 一鍵完成驗證與發佈交接 |
+| `--all-pass` | `verify` | 選填（布林旗標） | **防假通過守衛（Anti-False-Pass）**：僅將尚未覆寫且 `execution_type == "automated"` 之本機自動化測試案例標記為 `pass` | `external`（外部工具/Staging）與 `manual`（人工測試）案例**絕不會**被 `--all-pass` 自動標為通過，必須透過 `--junit-xml`、`--results-json` 或 `--result` 提供真實結果，否則維持 `not-executed`（`qa_status: "incomplete"`） |
 | `--commit` | `verify` | 選填（字串） | 本次測試驗證對應之 Git Commit SHA（預設讀取 `candidate_commit` 或 Git `HEAD`） | 記錄於 `qa.tested_commit`，作為 Station 4 發佈閘門對帳依據 |
 
 ---

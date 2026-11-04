@@ -523,7 +523,7 @@
 <tr>
 <td><strong>L1/L2</strong> <code class="inline-code">skills/team-spec/SKILL.md</code></td>
 <td>一體化規格、UX 與技術設計 (<code class="inline-code">team-spec</code>)</td>
-<td><code class="inline-code">jira_sync.py sync-story</code>、變更面（UI/API/Data）、可測試 <code class="inline-code">AC-*</code>、條件式規格、抓大放小（最多 3 題關鍵決策 + 自動預設清單）</td>
+<td><code class="inline-code">jira_sync.py sync-story</code>、大小需求雙軌制（單趟 <code class="inline-code">approved</code> vs 多輪 <code class="inline-code">draft</code> 深挖）、6 大 AC 完整性檢查維度、抓大放小</td>
 <td><code class="inline-code">pm</code> / <code class="inline-code">tech_lead</code></td>
 <td>第 4 章 情境 1（圖 4-1：<code class="inline-code">04-scenario1-team-spec.png</code>）</td>
 </tr>
@@ -537,28 +537,28 @@
 <tr>
 <td><strong>L1/L2</strong> <code class="inline-code">skills/team-dev/SKILL.md</code> (<code class="inline-code">implement</code>)</td>
 <td>極簡上下文編碼與打卡 (<code class="inline-code">team-dev</code> <code class="inline-code">implement</code> 模式)</td>
-<td><code class="inline-code">jira_sync.py complete-task</code>、優先序（Open Bug &gt; Pending Task &gt; Review Finding）、前置依賴檢查、候選 Commit 更新</td>
+<td><code class="inline-code">jira_sync.py complete-task</code>、優先序（Open Bug &gt; Pending Task &gt; Review Finding）、Dev Fast-Track 複雜度守衛（限 <code class="inline-code">&lt;= 3</code> AC 且中低風險）</td>
 <td><code class="inline-code">developer</code></td>
 <td>5.3 - 5.4 情境 2B（圖 5-2：<code class="inline-code">06-scenario2-team-dev-implement.png</code>）</td>
 </tr>
 <tr>
 <td><strong>L1/L2</strong> <code class="inline-code">skills/team-review/SKILL.md</code></td>
 <td>合併開發交接與三軸審查 (<code class="inline-code">team-review</code>)</td>
-<td><code class="inline-code">jira_sync.py handoff</code>、三軸審查（AC / 設計 / 標準）、嚴重度分級、<code class="inline-code">AGENTS.md</code> 自動回退、AI 自審透明標記</td>
+<td><code class="inline-code">jira_sync.py handoff</code>、三軸審查（AC 逐條覆蓋 / 設計 / 標準）、QA 外部測試工具提示、<code class="inline-code">AGENTS.md</code> 自動回退、AI 自審透明標記</td>
 <td><code class="inline-code">reviewer</code>（含獨立審查員）</td>
 <td>第 6 章 情境 3（圖 6-1：<code class="inline-code">07-scenario3-team-review.png</code>）</td>
 </tr>
 <tr>
 <td><strong>L1/L2</strong> <code class="inline-code">skills/team-qa/SKILL.md</code> (<code class="inline-code">plan</code>)</td>
 <td>平行測試案例規劃 (<code class="inline-code">team-qa</code> <code class="inline-code">plan</code> 模式)</td>
-<td><code class="inline-code">jira_sync.py record-qa --mode plan</code>、100% AC 覆蓋強制防呆檢查、AI 預填 <code class="inline-code">automated</code> / <code class="inline-code">manual</code></td>
+<td><code class="inline-code">jira_sync.py record-qa --mode plan</code>、100% AC 覆蓋強制防呆檢查、AI 預填三層執行類型（<code class="inline-code">automated</code> / <code class="inline-code">external</code> / <code class="inline-code">manual</code>）</td>
 <td><code class="inline-code">qa</code></td>
 <td>7.1、7.3 情境 4A（圖 7-1：<code class="inline-code">08-scenario4-team-qa-plan.png</code>）</td>
 </tr>
 <tr>
 <td><strong>L1/L2</strong> <code class="inline-code">skills/team-qa/SKILL.md</code> (<code class="inline-code">verify</code>)</td>
-<td>多源測試結果驗證 (<code class="inline-code">team-qa</code> <code class="inline-code">verify</code> 模式)</td>
-<td><code class="inline-code">jira_sync.py record-qa --mode verify</code>、<code class="inline-code">--junit-xml</code>（最差結果優先律）、<code class="inline-code">--results-json</code>、<code class="inline-code">--result</code>、自動交接發佈</td>
+<td>三層混合測試驗證 (<code class="inline-code">team-qa</code> <code class="inline-code">verify</code> 模式)</td>
+<td><code class="inline-code">jira_sync.py record-qa --mode verify</code>、<code class="inline-code">--all-pass</code> 防假通過守衛（僅通過 <code class="inline-code">automated</code>）、<code class="inline-code">--junit-xml</code>、<code class="inline-code">--results-json</code>、<code class="inline-code">--result</code></td>
 <td><code class="inline-code">qa</code></td>
 <td>7.2、7.3 情境 4B（圖 7-2：<code class="inline-code">09-scenario4-team-qa-verify.png</code>）</td>
 </tr>
@@ -742,13 +742,17 @@
 <h2 id="4-情境-1-新功能從-user-story-到定規格與-抓大放小-審查-team-spec">4. 情境 1：新功能從 User Story 到定規格與「抓大放小」審查（<code class="inline-code">team-spec</code>）</h2>
 <h3 id="4-1-觸發時機與情境背景">4.1 觸發時機與情境背景</h3>
 <p>當專案已完成初始化，產品經理（PM）或技術負責人準備啟動一項新功能、變更請求或架構調整（例如 Jira Story <code class="inline-code">PROJ-101</code>：<strong>新增訂單 CSV 匯出功能</strong>）時，進入 <strong>Station 1：<code class="inline-code">team-spec</code></strong>。</p>
-<p>在舊版工作流中，團隊必須依序執行需求分析、UX 設計、技術架構設計與文件審查四個獨立步驟；而在 <code class="inline-code">team-spec</code> 中，AI 會在<strong>單一回合（One Pass）</strong>內完成：</p>
+<p>在舊版工作流中，團隊必須依序執行需求分析、UX 設計、技術架構設計與文件審查四個獨立步驟；而在 <code class="inline-code">team-spec</code> 中，AI 採用<strong>大小需求雙軌制（Scale-Aware Dual Track）</strong>與 <strong>6 大 AC 完整性檢查表</strong>，兼顧小需求效率與大需求完整性：</p>
 <ol>
   <li><strong>變更面分析（Change Surface Analysis）</strong>：依據源碼自動判定 <code class="inline-code">has_ui</code>、<code class="inline-code">has_api</code>、<code class="inline-code">has_data</code>。</li>
-  <li><strong>可測試驗收條件（<code class="inline-code">AC-001..N</code>）</strong>：消除「快速」、「友善」等模糊形容詞，定義明確的觸發條件、預期輸出與邊界/錯誤行為。</li>
+  <li><strong>可測試驗收條件（<code class="inline-code">AC-001..N</code>）與 6 大完整性維度檢查</strong>：消除「快速」、「友善」等模糊形容詞，並強制核對六大維度：(1) 核心主流程 Happy Path、(2) 角色權限與租戶隔離 AuthZ、(3) 輸入邊界與冪等性 Idempotency、(4) 狀態流轉與併發衝突 Concurrency、(5) 外部依賴失敗與補償回滾 Compensation、(6) 舊資料相容性與遷移 Legacy Compatibility。</li>
   <li><strong>條件式技術與介面設計（Conditional UI/API Spec）</strong>：僅在 <code class="inline-code">has_ui: true</code> 時產出畫面狀態表（<code class="inline-code">normal</code>、<code class="inline-code">loading</code>、<code class="inline-code">empty</code>、<code class="inline-code">invalid</code>、<code class="inline-code">403/404</code>）與 Wireframe；僅在 <code class="inline-code">has_api: true</code> 時產出端點契約。若為純後端或純樣式修改，自動省略不適用區塊，杜絕空白佔位符。</li>
-  <li><strong>內嵌「抓大放小」審查（Inline Review）</strong>：將常規細節列入<strong>AI 預設細節清單</strong>（<code class="inline-code">auto_decisions</code>），並針對真正具不可逆風險或重大取捨的議題提出<strong>最多 3 題</strong>關鍵問題（<code class="inline-code">material_decisions</code>）。</li>
+  <li><strong>大小需求分流審查（One-Pass vs. Iterative <code class="inline-code">draft</code> Deep-Dive）</strong>：</li>
 </ol>
+<ul>
+  <li><strong>小型明確需求（One-Pass 單趟快審）</strong>：將常規細節列入<strong>AI 預設細節清單</strong>（<code class="inline-code">auto_decisions</code>），並針對關鍵議題提出<strong>最多 3 題</strong>（<code class="inline-code">material_decisions</code>），確認後直接設為 <code class="inline-code">approved</code>。</li>
+  <li><strong>中大型或複雜需求（Iterative <code class="inline-code">draft</code> 多輪深挖）</strong>：先以 <code class="inline-code">--status draft</code> 儲存初版草案，每輪聚焦詢問 <strong>3 至 5 題</strong>關鍵業務/邊界問題，支援跨多輪次持續累加 <code class="inline-code">material_decisions</code>，直到六大 AC 維度完全無死角後才轉為 <code class="inline-code">approved</code>。</li>
+</ul>
 <h3 id="4-2-操作步驟與視覺化實況詳解">4.2 操作步驟與視覺化實況詳解</h3>
 <figure class="manual-figure"><img src="file:///Users/wilsonliu/ai-proj/team-skills/ai-engineering-workflow-skills/docs/screenshots/04-scenario1-team-spec.png" alt="情境 1（team-spec）：變更面分析、可測試 AC-* 與「抓大放小」規格同步"><figcaption>圖 4-1：情境 1 執行 <code class="inline-code">team-spec</code>（<code class="inline-code">jira_sync.py sync-story</code>）之變更面判定、抓大放小雙軌審查與 Jira 同步實況圖。用途：說明如何在單一回合內產出可測試 <code class="inline-code">AC-001..003</code>、條件式 UI/API 規格，並透過「抓大放小」過濾器完成審查與 Jira 同步。視覺焦點：請依序查看標註序號 ① 左側變更面旗標（<code class="inline-code">--has-ui</code>、<code class="inline-code">--has-api</code>、<code class="inline-code">--has-data</code>）與 <code class="inline-code">AC-001..003</code> 可測試驗收條件；② 右上角內嵌「抓大放小」雙軌過濾器（AI 自動拍板之 <code class="inline-code">auto_decisions</code> vs 最多 3 題之 <code class="inline-code">material_decisions</code>）；③ 右下角執行 <code class="inline-code">sync-story --status approved</code> 同步至 Jira Story 與本地 <code class="inline-code">.ai-workflow/active/PROJ-101.json</code>。狀態變化：Story 規格由 <code class="inline-code">draft</code> 轉為 <code class="inline-code">approved</code>，Jira 狀態自動推進至 <code class="inline-code">In Progress</code>，並依角色配置自動交接予 <code class="inline-code">developer</code>。</figcaption></figure>
 <p>請依序執行以下四步驟完成 Station 1 規格定義與核准：</p>
@@ -872,9 +876,9 @@
 </tr>
 <tr>
 <td><code class="inline-code">--material-decision</code></td>
-<td>可重複指定（<strong>上限 3 筆</strong>）</td>
+<td>可重複指定</td>
 <td>「抓大」：經人類確認之關鍵架構或業務決策</td>
-<td><strong>超過 3 筆強制報錯攔截</strong>（觸發 <strong>抓大放小</strong> 上限錯誤：<code class="inline-code">at most 3 material questions/decisions are allowed</code>）</td>
+<td><strong>大小需求雙軌防呆</strong>：全新 Story 單趟直接 <code class="inline-code">approved</code> 上限 3 筆；大型複雜需求透過 <code class="inline-code">--status draft</code> 多輪深挖時，每輪上限 5 筆且跨輪次可無上限累加</td>
 </tr>
 <tr>
 <td><code class="inline-code">--spec-json</code></td>
@@ -1018,7 +1022,7 @@
 </ol>
 <ul>
   <li><strong>第一優先（Open Bugs <code class="inline-code">BUG-*</code>）</strong>：若 <code class="inline-code">bugs</code> 陣列中有 <code class="inline-code">status == &quot;open&quot;</code> 的缺陷，優先修復。</li>
-  <li><strong>第二優先（Pending Tasks <code class="inline-code">TASK-###</code> / 單任務快車道 Dev Fast-Track）</strong>：選取第一個 <code class="inline-code">status == &quot;pending&quot;</code> 且其 <code class="inline-code">depends_on</code> 內所有前置任務皆已 <code class="inline-code">completed</code> 的 <code class="inline-code">TASK-###</code>。若為小型單任務 Story 且尚未跑 <code class="inline-code">create-subtasks</code>（<code class="inline-code">tasks</code> 為空且 <code class="inline-code">spec_status == &quot;approved&quot;</code>），可直接執行 <code class="inline-code">complete-task --key &lt;KEY&gt; --task-id TASK-001</code>，系統將自動建立涵蓋全部 <code class="inline-code">AC-*</code> 的 <code class="inline-code">TASK-001</code> 並一次完成打卡！</li>
+  <li><strong>第二優先（Pending Tasks <code class="inline-code">TASK-###</code> / 小型單任務快車道 Dev Fast-Track）</strong>：選取第一個 <code class="inline-code">status == &quot;pending&quot;</code> 且其 <code class="inline-code">depends_on</code> 內所有前置任務皆已 <code class="inline-code">completed</code> 的 <code class="inline-code">TASK-###</code>。若為<strong>小型 Story（<code class="inline-code">AC &lt;= 3</code> 條且風險為 <code class="inline-code">low</code> 或 <code class="inline-code">medium</code>）</strong>且尚未跑 <code class="inline-code">create-subtasks</code>（<code class="inline-code">tasks</code> 為空且 <code class="inline-code">spec_status == &quot;approved&quot;</code>），可直接執行 <code class="inline-code">complete-task --key &lt;KEY&gt; --task-id TASK-001</code>，系統將自動建立涵蓋全部 <code class="inline-code">AC-*</code> 的 <code class="inline-code">TASK-001</code> 並一次完成打卡！若為中大型或高風險需求（<code class="inline-code">AC &gt; 3</code> 條或風險為 <code class="inline-code">high</code>/<code class="inline-code">critical</code>），<strong>複雜度守衛（Complexity Guard）</strong>會強制攔截快車道，要求必須先執行 <code class="inline-code">create-subtasks</code> 進行垂直切片拆解。</li>
   <li><strong>第三優先（Open Review Findings <code class="inline-code">REV-###</code>）</strong>：當 <code class="inline-code">review.status == &quot;changes-requested&quot;</code> 時，優先修復所有 <code class="inline-code">status == &quot;open&quot;</code> 之 <code class="inline-code">REV-###</code> 審查阻斷項。</li>
 </ul>
 <ol>
@@ -1068,7 +1072,7 @@
 <td><code class="inline-code">--task-id</code></td>
 <td>選填（預設 <code class="inline-code">TASK-001</code>，支援逗號多選）</td>
 <td>支援單一或逗號分隔之多個目標 ID：(1) 子任務 <code class="inline-code">TASK-001,TASK-002</code>；(2) 缺陷單 <code class="inline-code">PROJ-101-BUG-1</code>；(3) 審查問題 <code class="inline-code">REV-001,REV-002</code></td>
-<td><strong>Dev Fast-Track</strong>：當 <code class="inline-code">tasks</code> 為空且 <code class="inline-code">spec_status == &quot;approved&quot;</code> 時，傳入 <code class="inline-code">TASK-001</code> 會自動建立子任務並打卡完成</td>
+<td><strong>Dev Fast-Track 與複雜度守衛</strong>：僅限 <code class="inline-code">AC &lt;= 3</code> 且 <code class="inline-code">low</code>/<code class="inline-code">medium</code> 風險之小型 Story 可自動建立 <code class="inline-code">TASK-001</code> 並打卡；大型或高風險 Story 強制要求先執行 <code class="inline-code">create-subtasks</code></td>
 </tr>
 <tr>
 <td><code class="inline-code">--commit</code></td>
@@ -1226,20 +1230,23 @@
 </table>
 <hr>
 <h2 id="7-情境-4-qa-平行測試規劃與多源結果驗證-team-qa">7. 情境 4：QA 平行測試規劃與多源結果驗證（<code class="inline-code">team-qa</code>）</h2>
-<p><strong>Station 3b（<code class="inline-code">team-qa</code>）</strong> 將傳統繁瑣的測試計畫、執行類型確認、證據收集與驗證報告收斂為兩個精煉模式：</p>
+<p><strong>Station 3b（<code class="inline-code">team-qa</code>）</strong> 將傳統繁瑣的測試計畫、執行類型確認、證據收集與驗證報告收斂為兩個精煉模式，並內建<strong>三層混合測試模型（<code class="inline-code">automated</code> / <code class="inline-code">external</code> / <code class="inline-code">manual</code>）</strong>與<strong>防假通過守衛（Anti-False-Pass Guardrail）</strong>：</p>
 <ul>
-  <li><strong>模式一：<code class="inline-code">plan</code>（平行測試案例規劃 + AI 預填 <code class="inline-code">automated</code> / <code class="inline-code">manual</code> 類型）</strong></li>
-  <li><strong>模式二：<code class="inline-code">verify</code>（JUnit XML / JSON / CLI 多源結果匯入 + 自動放行或開立 Bug 單）</strong></li>
+  <li><strong>模式一：<code class="inline-code">plan</code>（平行測試案例規劃 + AI 預填 <code class="inline-code">automated</code> / <code class="inline-code">external</code> / <code class="inline-code">manual</code> 三層執行類型）</strong></li>
+  <li><strong>模式二：<code class="inline-code">verify</code>（本機自動測試執行 + 外部工具報告匯入 + 人工驗證回填 + 自動放行或開立 Bug 單）</strong></li>
 </ul>
 <h3 id="7-1-情境-4a-team-qa-plan-模式-平行測試規劃與-ai-預填類型一鍵確認">7.1 情境 4A（<code class="inline-code">team-qa</code> <code class="inline-code">plan</code> 模式）：平行測試規劃與 AI 預填類型一鍵確認</h3>
 <p>只要 <code class="inline-code">team-spec</code> 已核准（<code class="inline-code">spec_status == &quot;approved&quot;</code>），QA 即可隨時執行 <code class="inline-code">team-qa</code> 的 <strong><code class="inline-code">plan</code> 模式</strong>（可與 <code class="inline-code">team-dev</code> 平行進行，或在 <code class="inline-code">team-review</code> 通過後執行）。</p>
-<figure class="manual-figure"><img src="file:///Users/wilsonliu/ai-proj/team-skills/ai-engineering-workflow-skills/docs/screenshots/08-scenario4-team-qa-plan.png" alt="情境 4A（team-qa plan 模式）：平行測試規劃與 AI 預填執行類型一鍵確認"><figcaption>圖 7-1：情境 4A 執行 <code class="inline-code">team-qa</code>（<code class="inline-code">plan</code> 模式 / <code class="inline-code">jira_sync.py record-qa --mode plan</code>）之 AI 預填測試總表與 100% AC 覆蓋檢查圖。用途：展示 AI 如何自動為每條 <code class="inline-code">AC-001..003</code> 規劃對應的 <code class="inline-code">TC-001..N</code> 並預填 <code class="inline-code">automated</code> 或 <code class="inline-code">manual</code> 執行類型，讓 QA 一鍵確認後同步至 Jira。視覺焦點：請依序查看標註序號 ① 左側 AI 預填執行類型的測試案例總表與判定準則；② 右上角 100% AC 覆蓋率強制防呆檢查（漏測任何 <code class="inline-code">AC-001..003</code> 立即報錯）；③ 右下角執行 <code class="inline-code">record-qa --mode plan</code> 輸出與 Jira 評論同步。狀態變化：執行後 <code class="inline-code">qa.status</code> 設為 <code class="inline-code">&quot;planned&quot;</code>，<code class="inline-code">qa.test_cases</code> 寫入 3 筆初始結果為 <code class="inline-code">&quot;not-executed&quot;</code> 之測試案例。</figcaption></figure>
+<figure class="manual-figure"><img src="file:///Users/wilsonliu/ai-proj/team-skills/ai-engineering-workflow-skills/docs/screenshots/08-scenario4-team-qa-plan.png" alt="情境 4A（team-qa plan 模式）：平行測試規劃與 AI 預填執行類型一鍵確認"><figcaption>圖 7-1：情境 4A 執行 <code class="inline-code">team-qa</code>（<code class="inline-code">plan</code> 模式 / <code class="inline-code">jira_sync.py record-qa --mode plan</code>）之 AI 預填測試總表與 100% AC 覆蓋檢查圖。用途：展示 AI 如何自動為每條 <code class="inline-code">AC-001..003</code> 規劃對應的 <code class="inline-code">TC-001..N</code> 並預填 <code class="inline-code">automated</code>、<code class="inline-code">external</code> 或 <code class="inline-code">manual</code> 執行類型，讓 QA 一鍵確認後同步至 Jira。視覺焦點：請依序查看標註序號 ① 左側 AI 預填執行類型的測試案例總表與判定準則；② 右上角 100% AC 覆蓋率強制防呆檢查（漏測任何 <code class="inline-code">AC-001..003</code> 立即報錯）；③ 右下角執行 <code class="inline-code">record-qa --mode plan</code> 輸出與 Jira 評論同步。狀態變化：執行後 <code class="inline-code">qa.status</code> 設為 <code class="inline-code">&quot;planned&quot;</code>，<code class="inline-code">qa.test_cases</code> 寫入 3 筆初始結果為 <code class="inline-code">&quot;not-executed&quot;</code> 之測試案例。</figcaption></figure>
 <p><code class="inline-code">plan</code> 模式的標準操作步驟如下：</p>
 <ol>
-  <li><strong>步驟一：啟動 <code class="inline-code">$team-qa</code> <code class="inline-code">plan</code> 模式檢視 AI 預填測試總表</strong></li>
+  <li><strong>步驟一：啟動 <code class="inline-code">$team-qa</code> <code class="inline-code">plan</code> 模式檢視 AI 預填三層測試總表</strong></li>
 </ol>
 <ul>
-  <li>AI 讀取 <code class="inline-code">PROJ-101.json</code> 中的 <code class="inline-code">AC-001..003</code> 與變更面旗標，自動產出涵蓋正常路徑、權限攔截（403）與 UI 空狀態的 <code class="inline-code">TC-001..003</code> 總表，並預先填好 <code class="inline-code">automated</code> 或 <code class="inline-code">manual</code> 建議類型。</li>
+  <li>AI 讀取 <code class="inline-code">PROJ-101.json</code> 中的 <code class="inline-code">AC-001..003</code> 與變更面旗標，自動產出涵蓋正常路徑、權限攔截（403）與 UI 空狀態的 <code class="inline-code">TC-001..003</code> 總表，並依技術特性預填三種執行類型：</li>
+  <li><code class="inline-code">automated</code>：本機 AI 可直接執行的單元與整合測試（如 <code class="inline-code">pytest</code>、<code class="inline-code">vitest</code>）。</li>
+  <li><code class="inline-code">external</code>：需依賴外部工具、CI/Staging 環境或第三方沙盒的測試（如 Playwright/Cypress E2E、Postman/Newman、JMeter）。</li>
+  <li><code class="inline-code">manual</code>：需人工進行視覺體驗或探索式核對的測試。</li>
   <li>QA 人員無須逐題回答，只需檢視總表並回覆「確認」（或指定修改某列類型）。</li>
 </ul>
 <ol>
@@ -1310,7 +1317,7 @@
 <td><code class="inline-code">--tc</code></td>
 <td><code class="inline-code">plan</code></td>
 <td>可重複指定</td>
-<td>單行測試案例格式：<code class="inline-code">TC-001:AC-001:&lt;type&gt;:&lt;Title&gt;</code>（<code class="inline-code">&lt;type&gt;</code> 為 <code class="inline-code">automated</code> 或 <code class="inline-code">manual</code>，<code class="inline-code">&lt;Title&gt;</code> 為<strong>標題與預期結果</strong>，完整保留標題內所有冒號）</td>
+<td>單行測試案例格式：<code class="inline-code">TC-001:AC-001:&lt;type&gt;:&lt;Title&gt;</code>（<code class="inline-code">&lt;type&gt;</code> 支援 <code class="inline-code">automated</code>、<code class="inline-code">external</code> 或 <code class="inline-code">manual</code>，<code class="inline-code">&lt;Title&gt;</code> 為<strong>標題與預期結果</strong>，完整保留標題內所有冒號）</td>
 <td><strong>100% AC 覆蓋防呆</strong>：若規劃的所有 <code class="inline-code">TC-*</code> 未完整覆蓋 Story 的每一條 <code class="inline-code">AC-*</code>，立即報錯退出</td>
 </tr>
 <tr>
@@ -1345,8 +1352,8 @@
 <td><code class="inline-code">--all-pass</code></td>
 <td><code class="inline-code">verify</code></td>
 <td>選填（布林旗標）</td>
-<td>將所有未被 <code class="inline-code">--junit-xml</code> / <code class="inline-code">--results-json</code> / <code class="inline-code">--result</code> 覆寫之 <code class="inline-code">TC-*</code> 標記為 <code class="inline-code">pass</code></td>
-<td>搭配 <strong>QA Fast-Track</strong> 可在測試全數通過後以 <code class="inline-code">record-qa --mode verify --all-pass</code> 一鍵完成驗證與發佈交接</td>
+<td><strong>防假通過守衛（Anti-False-Pass）</strong>：僅將尚未覆寫且 <code class="inline-code">execution_type == &quot;automated&quot;</code> 之本機自動化測試案例標記為 <code class="inline-code">pass</code></td>
+<td><code class="inline-code">external</code>（外部工具/Staging）與 <code class="inline-code">manual</code>（人工測試）案例<strong>絕不會</strong>被 <code class="inline-code">--all-pass</code> 自動標為通過，必須透過 <code class="inline-code">--junit-xml</code>、<code class="inline-code">--results-json</code> 或 <code class="inline-code">--result</code> 提供真實結果，否則維持 <code class="inline-code">not-executed</code>（<code class="inline-code">qa_status: &quot;incomplete&quot;</code>）</td>
 </tr>
 <tr>
 <td><code class="inline-code">--commit</code></td>

@@ -11,19 +11,27 @@ Station 3b of the 4-station Jira-centered workflow. Merges test planning, execut
 
 Read `references/common-workflow-governance.md` and `references/qa-method.md` before running.
 
-## Explicit Modes & QA Fast-Track
+## Explicit Modes, 3-Tier Execution Model & Anti-False-Pass Guardrail
 
 | Mode | When to Run | Key Action |
 |---|---|---|
-| **`plan`** | Anytime after `team-spec` is `approved` (**can run in parallel with `team-dev`**) | Generate `TC-001..N` mapped to `AC-*` with AI pre-filled `automated`/`manual` execution types for 1-step human confirmation; sync via `jira_sync.py record-qa --mode plan` |
-| **`verify`** | After `team-review` approves the candidate commit | Import JUnit XML / JSON results, pass `--all-pass` after suite verification, or record manual outcomes via `jira_sync.py record-qa --mode verify`; if any TC fails, file linked Jira `Bug` tickets via `jira_sync.py create-bug` |
-| **QA Fast-Track** | In `verify` mode when `qa.test_cases` is empty | `record-qa --mode verify` automatically derives `TC-001..N` 1:1 from Story `AC-001..N` without requiring a separate `--mode plan` pass first |
+| **`plan`** | Anytime after `team-spec` is `approved` (**can run in parallel with `team-dev`**) | Generate `TC-001..N` mapped to `AC-*` with AI pre-filled **3-tier execution types (`automated` / `external` / `manual`)** for 1-step human confirmation; sync via `jira_sync.py record-qa --mode plan` |
+| **`verify`** | After `team-review` approves the candidate commit | Verify `automated` tests locally (`--all-pass` or `--junit-xml`), ingest `external` tool reports (`--junit-xml` / `--results-json` / `--result`), and record `manual` human check results (`--result TC-ID=pass\|fail`); file linked Jira `Bug` tickets on any failure via `jira_sync.py create-bug` |
+| **QA Fast-Track** | In `verify` mode when `qa.test_cases` is empty | `record-qa --mode verify` automatically derives `TC-001..N` (`automated`) 1:1 from Story `AC-001..N` without requiring a separate `--mode plan` pass first |
+
+### The 3-Tier Hybrid QA Execution Types
+
+| Execution Type | Scope & Examples | How `verify` Mode Records Pass/Fail |
+|---|---|---|
+| **`automated`** | Local unit, component, or integration tests that AI can execute directly in the workspace (`pytest`, `vitest`, `go test`) | AI runs the test command locally; once green, `--all-pass` or `--junit-xml` marks `automated` TCs as `pass` |
+| **`external`** | Tests requiring external tools, CI/Staging environments, real browsers/devices, or third-party sandboxes (Playwright/Cypress against Staging, Postman/Newman, JMeter, payment/webhook sandboxes) | **Protected against `--all-pass`!** Remains `not-executed` (`qa_status: "incomplete"`) until an external report (`--junit-xml`, `--results-json`) or explicit result (`--result TC-ID=pass`) is provided |
+| **`manual`** | Human visual UX inspection, physical device checks, or cross-system exploratory verification | **Protected against `--all-pass`!** AI presents a concise checklist and records `pass`/`fail` only after human confirmation (`--result TC-ID=pass`) |
 
 ## Hard Boundaries
 
 - **No Per-Feature Markdown Files in Git:** Never create `docs/qa/` files or commit `.ai-workflow/evidence/` files. Test plans, verification tables, and Bug tickets live in Jira and `.ai-workflow/active/<JIRA-KEY>.json`.
-- **Never Invent Test Execution:** Missing evidence is recorded as `not-executed`, never `pass`. Only use `--all-pass` when the automated/manual test suite covering the Story's ACs has actually been executed and verified to pass.
-- **AI Pre-Fills, Human Confirms ("抓大放小"):** In `plan` mode, AI pre-fills the recommended `automated` vs. `manual` execution type for every `TC-*` in one summary table instead of interviewing the human case-by-case. The human can confirm the whole table in one step or override specific rows.
+- **Strict Anti-False-Pass Guardrail:** Missing evidence is recorded as `not-executed`, never `pass`. In `jira_sync.py record-qa --mode verify`, `--all-pass` **ONLY** marks `execution_type == "automated"` test cases as `pass`; any `external` or `manual` test cases without explicit results stay `not-executed` (`qa_status: "incomplete"`), preventing false passes on tests that AI cannot run locally.
+- **AI Pre-Fills, Human Confirms ("抓大放小"):** In `plan` mode, AI pre-fills the recommended `automated` / `external` / `manual` execution type for every `TC-*` in one summary table instead of interviewing the human case-by-case. The human can confirm the whole table in one step or override specific rows.
 
 ## Mode 1: `plan` — Parallel Test Case Checklist (`TC-001..N`)
 
@@ -32,9 +40,10 @@ Read `references/common-workflow-governance.md` and `references/qa-method.md` be
 2. **Generate Traceable Test Cases (`TC-001..N`):**
    - Every `AC-*` must be covered by at least one `TC-*`.
    - Include happy path, boundary/invalid input, authz/permission (`401`/`403`), and error/recovery cases where applicable.
-   - Pre-fill `execution_type`:
-     - `automated` for API contracts, business logic, data validation, permissions, and deterministic UI flows.
-     - `manual` only for visual layout inspection, external hardware/third-party sandbox flows, or exploratory UX checks.
+   - Pre-fill `execution_type` using the 3-tier classification:
+     - `automated` for local unit/integration tests covering API contracts, business logic, data validation, and permissions.
+     - `external` for E2E browser suites against Staging (Playwright/Cypress), API collection runners (Postman/Newman), load/stress tests (JMeter/k6), or third-party sandbox callbacks.
+     - `manual` only for human visual layout inspection, physical hardware, or exploratory UX checks.
 3. **Present Table for Quick Confirmation & Sync:**
    Show the `TC-001..N` table in Traditional Chinese (繁體中文) for quick human confirmation (or override), then run (prefer `.ai-workflow/bin/jira_sync.py` or fall back to `<skill-dir>/scripts/jira_sync.py`):
 
@@ -43,16 +52,18 @@ Read `references/common-workflow-governance.md` and `references/qa-method.md` be
      --key "<JIRA-KEY>" \
      --mode plan \
      --tc "TC-001:AC-001:automated:<Title and expected outcome>" \
-     --tc "TC-002:AC-002:manual:<Title and expected outcome>"
+     --tc "TC-002:AC-002:external:<Title and external tool/env requirement>" \
+     --tc "TC-003:AC-003:manual:<Title and human check steps>"
    ```
    *(Colons inside `<Title and expected outcome>` are preserved automatically. Or pass `--cases-json '<JSON array>'`.)*
 
-## Mode 2: `verify` — Result Intake, QA Fast-Track, Bug Loop & Release Handoff
+## Mode 2: `verify` — 3-Tier Result Intake, Anti-False-Pass & Bug Loop
 
-1. **Collect Real Execution Outcomes:**
-   - **Automated tests:** Ingest JUnit XML (`--junit-xml <path>`) or JSON results (`--results-json <path>`) containing `TC-###` IDs, or run the test suite and pass `--all-pass` once all tests pass.
-   - **Manual tests:** Present any remaining `manual` `TC-*` items concisely and record the human QA tester's actual `pass` / `fail` / `blocked` observation.
-   - **QA Fast-Track:** If `qa.test_cases` is empty when `verify` runs, `jira_sync.py` automatically generates `TC-001..N` 1:1 from `AC-001..N` before applying results.
+1. **Collect Real Execution Outcomes Across All 3 Tiers:**
+   - **Tier 1 — `automated` (Local AI Execution):** Run the project's local test suite (`pytest`, `vitest`, etc.) or ingest `--junit-xml` / `--results-json`. Passing `--all-pass` marks all un-overridden `automated` test cases as `pass` while leaving `external` and `manual` test cases untouched (`not-executed`).
+   - **Tier 2 — `external` (External Tools / CI / Staging):** If `pending_external_tcs` exist, either invoke the configured CLI/MCP runner if reachable, or prompt the user to provide the external test report (`--junit-xml <path>`, `--results-json <path>`) or confirmation (`--result TC-002=pass`).
+   - **Tier 3 — `manual` (Human Verification):** If `pending_manual_tcs` exist, present the step-by-step manual verification checklist to the user and record their reported `pass` / `fail` / `blocked` outcome via `--result TC-003=pass`.
+   - **QA Fast-Track:** If `qa.test_cases` is empty when `verify` runs on a purely automated story, `jira_sync.py` automatically generates `TC-001..N` (`automated`) 1:1 from `AC-001..N` before applying results.
 2. **Record Verification Table on Jira (`record-qa --mode verify`):**
 
    ```bash

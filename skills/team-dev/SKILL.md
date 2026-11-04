@@ -15,9 +15,9 @@ Read `references/common-workflow-governance.md` and `references/dev-method.md` b
 
 | Mode | Trigger Condition | Action & CLI Command |
 |---|---|---|
-| **`plan`** | Story `spec_status == "approved"` and `tasks` is empty or needs multi-task decomposition | Decompose spec into vertical slices (`TASK-001..N`) and run `jira_sync.py create-subtasks` |
+| **`plan`** | Story `spec_status == "approved"` and (`len(acceptance_criteria) > 3`, `risk_level in ("high", "critical")`, or multi-task decomposition needed) | Decompose spec into vertical slices (`TASK-001..N`) and run `jira_sync.py create-subtasks` |
 | **`implement`** | Open `Bug` tickets (`BUG-*`), pending `TASK-001..N`, or open Review Findings (`REV-###`) exist | Pick next eligible item by priority, load minimal context, write code & tests, verify, and run `jira_sync.py complete-task` |
-| **Dev Fast-Track** | Small / single-task Story where `spec_status == "approved"` and `tasks` is empty | Skip `create-subtasks`; implement, test, commit, and run `complete-task --key <KEY> --task-id TASK-001` directly (auto-creates `TASK-001` covering all Story `AC-*` and marks it completed) |
+| **Dev Fast-Track** | **Small Story only** (`len(acceptance_criteria) <= 3` AND `risk_level in ("low", "medium")`) where `spec_status == "approved"` and `tasks` is empty | Skip `create-subtasks`; implement, test, commit, and run `complete-task --key <KEY> --task-id TASK-001` directly (auto-creates `TASK-001` covering all Story `AC-*` and marks it completed). Stories with `> 3` ACs or `high`/`critical` risk are blocked from Fast-Track and MUST run `plan` (`create-subtasks`) first! |
 
 If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-KEY>.json` has no `tasks` (or use **Dev Fast-Track** if it is a small 1-task feature), and `implement` if tasks, open bugs, or review findings already exist. When running on a new machine or Git worktree where local `.ai-workflow/active/<JIRA-KEY>.json` is missing, `jira_sync.py` automatically hydrates it from the main worktree or remote Jira issue.
 
@@ -56,8 +56,9 @@ If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-
    - Follow repository conventions and `docs/shared/engineering-standards.md`.
    - Write or update unit/integration/E2E tests covering the task's `AC-*` (or reproducing the `BUG-*` / `REV-###`). Include `TC-###` identifiers in test names when QA test cases are already planned.
    - Run the verification test suite and confirm it passes before checking off the task.
-4. **Stop & Escalate Conditions:**
-   - Stop and ask the user if implementation requires contradicting an approved `AC-*`, breaking a public API contract, or introducing an unapproved destructive migration.
+4. **Stop & Escalate Conditions (Spec Gap Escalation Loop):**
+   - Stop and ask the user if implementation uncovers a missing edge-case `AC-*`, requires contradicting an approved `AC-*`, breaks a public API contract, or introduces an unapproved destructive migration.
+   - When a genuine spec gap or new AC is discovered during coding, update the Story specification first via `jira_sync.py sync-story` (`$team-spec`) so the new `AC-*` is formally tracked before completing the task.
 5. **Check Off Task Completion (`complete-task` with Git Auto-Detection & Multi-ID Support):**
    Immediately after tests pass and changes are committed, run `jira_sync.py complete-task` so both `.ai-workflow/active/<JIRA-KEY>.json` and Jira are updated (`--commit` and `--files` are auto-detected from Git if omitted, and `--task-id` supports comma-separated IDs like `TASK-001,TASK-002` or `REV-001,REV-002`):
 

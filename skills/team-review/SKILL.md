@@ -25,11 +25,12 @@ Read `references/common-workflow-governance.md` and `references/review-method.md
 3. Load `docs/shared/engineering-standards.md`.
    - **Automatic Fallback:** If `docs/shared/engineering-standards.md` does not exist, fall back to `AGENTS.md` and repository-native linter/test configurations without deadlocking the team, and note `standards_source: "AGENTS.md (fallback)"` in the review summary.
 
-### 2. Perform three-axis "抓大放小" review
+### 2. Perform three-axis "抓大放小" review & QA Environment Hints
 Follow `references/review-method.md` to evaluate:
-1. **Axis 1 — Requirement & AC Conformance:** Does the implementation satisfy every `AC-*` without unapproved scope creep or missing error/boundary handling?
+1. **Axis 1 — Requirement & AC-by-AC Traceability:** Does the implementation satisfy **every single `AC-001..N`** (checked one by one against concrete functions/files and automated tests) without unapproved scope creep or missing boundary handling?
 2. **Axis 2 — Architecture & Design Conformance:** Does the code honor the Story's design summary, conditional UI states (`has_ui`), API contracts (`has_api`), and any referenced `docs/shared/adr/`?
 3. **Axis 3 — Engineering Standards & Security:** Are authz checks, input validation, injection/XSS protections, error handling, and automated test coverage sound?
+4. **QA External Tool & Environment Hints:** In the handoff `--summary`, explicitly call out any scenarios that cannot be verified by local unit tests alone and require `external` tools (e.g., Playwright/Cypress E2E, Postman/Newman, Staging webhook/OAuth sandbox, JMeter) or `manual` visual checks in Station 3b (`team-qa`).
 
 Apply **"抓大放小"**:
 - Only `blocker` (security/data-loss/broken core AC) and `major` (incomplete AC, missing critical test, broken contract) findings block handoff (`--review-status changes-requested`).

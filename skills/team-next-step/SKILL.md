@@ -45,7 +45,7 @@ Follow this strict priority order (matching `jira_sync.py status`):
 | **5** | Code review requested changes (`review.status == "changes-requested"`) | `team-dev` (`implement` mode) | `developer` |
 | **6** | All `tasks` completed, `review.status != "approved"`, or `reviewed_commit != candidate_commit` | `team-review` | `reviewer` |
 | **7** | Review approved, but `qa.test_cases` (`TC-001..N`) not planned yet | `team-qa` (`plan` mode) | `qa` |
-| **8** | Review approved & `TC-*` planned, but `qa.status != "passed"` or `tested_commit != candidate_commit` | `team-qa` (`verify` mode) | `qa` |
+| **8** | Review approved & `TC-*` planned, but `qa.status != "passed"` or `tested_commit != candidate_commit` | `team-qa` (`verify` mode — surfaces `pending_automated_tcs`, `pending_external_tcs`, and `pending_manual_tcs`) | `qa` |
 | **9** | Spec approved + Tasks completed + Review approved + QA passed + 0 open Bugs + commits aligned | `team-release` | `release_manager` |
 | **10** | Jira Story is already `Done` and `.ai-workflow/active/<JIRA-KEY>.json` is removed | No remaining action for this Story | — |
 

@@ -82,7 +82,11 @@ owner_role: Tech Lead
 
 ## 2. Testing & Verification Evidence (測試與驗證要求)
 - 每個開發任務（`TASK-*`）與缺陷修復（`BUG-*`）完成前，必須執行對應的自動化測試並記錄真實執行結果。
-- 測試案例識別碼（`TC-001..N`）必須對應驗收條件（`AC-001..N`）；未執行或缺少證據不得視為通過。
+- 測試案例識別碼（`TC-001..N`）必須對應驗收條件（`AC-001..N`），並區分為三種執行類型：
+  - `automated`：本機 AI 可直接執行的單元與整合測試（如 `pytest`、`vitest`、`go test`）。
+  - `external`：需依賴外部工具、CI/Staging 環境或第三方沙盒的測試（如 Playwright/Cypress E2E、Postman/Newman、JMeter、實機測試）。
+  - `manual`：需人工進行視覺體驗、探索式或跨系統核對的測試。
+- 嚴格防假通過（Anti-False-Pass）：`--all-pass` 僅能將 `automated` 類型的測試案例標記為 `pass`；`external` 與 `manual` 測試案例必須匯入外部測試報告（`--junit-xml` / `--results-json`）或顯式回填結果（`--result TC-ID=pass`），未執行或缺少證據不得視為通過。
 
 ## 3. Security & Data Hygiene (安全與資料保護)
 - 嚴禁在程式碼、設定檔、日誌或版本控制中寫入 API Token、密碼或私鑰。
@@ -1344,6 +1348,18 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             if (qa_status == "passed" and tested_commit != candidate_commit)
             else ""
         )
+        pending_automated = [
+            c["id"] for c in test_cases
+            if c.get("result") != "pass" and c.get("execution_type", "automated") == "automated"
+        ]
+        pending_external = [
+            c["id"] for c in test_cases
+            if c.get("result") != "pass" and c.get("execution_type") == "external"
+        ]
+        pending_manual = [
+            c["id"] for c in test_cases
+            if c.get("result") != "pass" and c.get("execution_type") == "manual"
+        ]
         return {
             "jira_key": jira_key,
             "current_station": "Station 3b: QA Verify",
@@ -1351,6 +1367,9 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             "recommended_mode": "verify",
             "responsible_role": "qa",
             "responsible_person": owner["name"],
+            "pending_automated_tcs": pending_automated,
+            "pending_external_tcs": pending_external,
+            "pending_manual_tcs": pending_manual,
             "reason": f"QA test plan ({len(test_cases)} TCs) is ready; test execution verification is required{stale_note}.",
             "done_when": f"All TCs pass on commit {candidate_commit or 'HEAD'} via `jira_sync.py record-qa --key {jira_key} --mode verify`.",
         }
@@ -1553,6 +1572,9 @@ def cmd_sync_story(args) -> int:
     jira_key = validate_jira_key(args.key)
     active_path = get_active_dir(repo_root) / f"{jira_key}.json"
     story = json.loads(active_path.read_text(encoding="utf-8")) if active_path.exists() else {"jira_key": jira_key}
+    prior_status = story.get("spec_status")
+    prior_material_decisions = list(story.get("material_decisions") or [])
+    prior_auto_decisions = list(story.get("auto_decisions") or [])
 
     if args.spec_json:
         spec_payload = load_json_arg(args.spec_json)
@@ -1614,18 +1636,50 @@ def cmd_sync_story(args) -> int:
         design.pop("api_spec", None)
     story["design"] = design
 
+    status = args.status or story.get("spec_status") or "draft"
+
     if args.auto_decision:
-        story["auto_decisions"] = [d.strip() for d in args.auto_decision if d.strip()]
+        new_auto = [d.strip() for d in args.auto_decision if d.strip()]
+        if prior_status == "draft":
+            merged_auto = list(prior_auto_decisions)
+            for item in new_auto:
+                if item not in merged_auto:
+                    merged_auto.append(item)
+            story["auto_decisions"] = merged_auto
+        else:
+            story["auto_decisions"] = new_auto
+
     if args.material_decision:
-        if len(args.material_decision) > 3:
-            print("ERROR: '抓大放小' rule violated — at most 3 material questions/decisions are allowed.", file=sys.stderr)
+        new_mat = [d.strip() for d in args.material_decision if d.strip()]
+        # Single-pass direct approval on a fresh story enforces <= 3 material decisions ("抓大放小");
+        # Iterative draft rounds (status=='draft' or prior_status=='draft') allow up to 5 per round and accumulate across rounds.
+        if status == "approved" and not prior_status and len(new_mat) > 3:
+            print(
+                "ERROR: '抓大放小' rule violated — at most 3 material questions/decisions are allowed in single-pass approval (use --status draft rounds for complex features).",
+                file=sys.stderr,
+            )
             return 1
-        story["material_decisions"] = [d.strip() for d in args.material_decision if d.strip()]
-    elif len(story.get("material_decisions") or []) > 3:
-        print("ERROR: '抓大放小' rule violated — at most 3 material questions/decisions are allowed.", file=sys.stderr)
+        if len(new_mat) > 5:
+            print(
+                "ERROR: At most 5 material questions/decisions are allowed per single draft round. Split remaining questions into the next draft round.",
+                file=sys.stderr,
+            )
+            return 1
+        if prior_status == "draft":
+            merged_mat = list(prior_material_decisions)
+            for item in new_mat:
+                if item not in merged_mat:
+                    merged_mat.append(item)
+            story["material_decisions"] = merged_mat
+        else:
+            story["material_decisions"] = new_mat
+    elif status == "approved" and not prior_status and len(story.get("material_decisions") or []) > 3:
+        print(
+            "ERROR: '抓大放小' rule violated — at most 3 material questions/decisions are allowed in single-pass approval (use --status draft rounds for complex features).",
+            file=sys.stderr,
+        )
         return 1
 
-    status = args.status or story.get("spec_status") or "draft"
     if status == "approved" and not (story.get("acceptance_criteria") or []):
         print("ERROR: Cannot mark spec 'approved' without at least one testable AC (AC-001..N).", file=sys.stderr)
         return 1
@@ -1854,11 +1908,20 @@ def cmd_complete_task(args) -> int:
         return 1
 
     # Dev Fast-Track: if no tasks are planned yet and spec is approved, auto-create TASK-001 covering all Story ACs
+    # Complexity Guard: only allowed for small stories (<= 3 ACs and low/medium risk)
     fast_tracked = False
     if not (story.get("tasks") or []) and story.get("spec_status") == "approved":
         task_like_ids = [tid for tid in target_ids if re.match(r"^TASK-\d+$", tid, re.IGNORECASE)]
         if task_like_ids:
-            all_ac_ids = [ac.get("id") for ac in (story.get("acceptance_criteria") or []) if ac.get("id")] or ["AC-001"]
+            ac_list = story.get("acceptance_criteria") or []
+            risk_level = (story.get("risk_level") or "medium").lower()
+            if len(ac_list) > 3 or risk_level in ("high", "critical"):
+                print(
+                    f"ERROR: Dev Fast-Track is restricted to small stories (<= 3 ACs and low/medium risk; got {len(ac_list)} ACs, risk={risk_level}). Run create-subtasks first to decompose this story.",
+                    file=sys.stderr,
+                )
+                return 1
+            all_ac_ids = [ac.get("id") for ac in ac_list if ac.get("id")] or ["AC-001"]
             auto_tasks = []
             for idx, tid in enumerate(task_like_ids, start=1):
                 norm_tid = tid.upper()
@@ -2154,8 +2217,9 @@ def cmd_record_qa(args) -> int:
             elif isinstance(loaded, list):
                 raw_cases = loaded
         if args.tc:
+            allowed_exec_types = ("automated", "external", "manual")
             for idx, tc_str in enumerate(args.tc, start=len(raw_cases) + 1):
-                # Format: TC-001:AC-001:automated:Title/expected (or AC-001:automated:Title)
+                # Format: TC-001:AC-001:automated|external|manual:Title/expected (or AC-001:automated|external|manual:Title)
                 first_tok = tc_str.split(":", 1)[0].strip()
                 if re.match(r"^TC-\d+$", first_tok, re.IGNORECASE):
                     parts = [p.strip() for p in tc_str.split(":", 3)]
@@ -2163,7 +2227,7 @@ def cmd_record_qa(args) -> int:
                     ac_id = parts[1].upper() if len(parts) > 1 and parts[1] else "AC-001"
                     exec_type = (
                         parts[2].lower()
-                        if len(parts) > 2 and parts[2].lower() in ("automated", "manual")
+                        if len(parts) > 2 and parts[2].lower() in allowed_exec_types
                         else "automated"
                     )
                     title = parts[3] if len(parts) > 3 else tc_str
@@ -2173,7 +2237,7 @@ def cmd_record_qa(args) -> int:
                     ac_id = parts[0].upper()
                     exec_type = (
                         parts[1].lower()
-                        if len(parts) > 1 and parts[1].lower() in ("automated", "manual")
+                        if len(parts) > 1 and parts[1].lower() in allowed_exec_types
                         else "automated"
                     )
                     title = parts[2] if len(parts) > 2 else tc_str
@@ -2198,11 +2262,13 @@ def cmd_record_qa(args) -> int:
         normalized_cases = []
         for idx, c in enumerate(raw_cases, start=1):
             tc_id = c.get("id") or f"TC-{idx:03d}"
+            raw_et = str(c.get("execution_type") or "automated").strip().lower()
+            exec_type = raw_et if raw_et in ("automated", "external", "manual") else "automated"
             normalized_cases.append({
                 "id": tc_id,
                 "ac_id": c.get("ac_id") or "AC-001",
                 "title": c.get("title") or tc_id,
-                "execution_type": c.get("execution_type") or "automated",
+                "execution_type": exec_type,
                 "recommended_by_ai": True,
                 "result": c.get("result") or "not-executed",
                 "notes": c.get("notes") or "",
@@ -2307,9 +2373,11 @@ def cmd_record_qa(args) -> int:
                 return 1
             incoming_results[tc_id] = val.strip().lower()
 
+    # Anti-False-Pass Guardrail: --all-pass ONLY marks execution_type == 'automated' test cases as 'pass'.
+    # Test cases with execution_type in ('external', 'manual') require explicit results via --junit-xml, --results-json, or --result.
     if getattr(args, "all_pass", False):
         for c in test_cases:
-            if c["id"] not in incoming_results:
+            if c["id"] not in incoming_results and c.get("execution_type", "automated") == "automated":
                 incoming_results[c["id"]] = "pass"
 
     allowed_results = {"pass", "fail", "blocked", "not-executed"}
@@ -2322,9 +2390,19 @@ def cmd_record_qa(args) -> int:
             c["result"] = val
 
     counts = {"pass": 0, "fail": 0, "blocked": 0, "not-executed": 0}
+    by_type = {"automated": 0, "external": 0, "manual": 0}
     for c in test_cases:
         st = c.get("result", "not-executed")
         counts[st] = counts.get(st, 0) + 1
+        et = c.get("execution_type", "automated")
+        by_type[et] = by_type.get(et, 0) + 1
+
+    pending_external_tcs = [
+        c["id"] for c in test_cases if c.get("result") != "pass" and c.get("execution_type") == "external"
+    ]
+    pending_manual_tcs = [
+        c["id"] for c in test_cases if c.get("result") != "pass" and c.get("execution_type") == "manual"
+    ]
 
     tested_commit = (args.commit or story.get("candidate_commit") or _detect_git_head_commit(repo_root) or "unknown").strip()
     open_bugs = [b for b in (story.get("bugs") or []) if b.get("status") not in ("completed", "closed")]
@@ -2342,6 +2420,7 @@ def cmd_record_qa(args) -> int:
     qa["status"] = qa_status
     qa["tested_commit"] = tested_commit
     qa["counts"] = counts
+    qa["by_type"] = by_type
     qa["verified_at"] = now_iso()
     story["qa"] = qa
 
@@ -2349,6 +2428,7 @@ def cmd_record_qa(args) -> int:
         f"[Station 3b: QA Verification Report — {qa_status.upper()}]",
         f"- Tested Commit: `{tested_commit}`",
         f"- Summary Counts: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}",
+        f"- Execution Breakdown: automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}",
         "",
         "| TC ID | AC ID | Type | Result |",
         "|---|---|---|---|",
@@ -2380,6 +2460,9 @@ def cmd_record_qa(args) -> int:
         "fast_track": fast_tracked_qa,
         "tested_commit": tested_commit,
         "counts": counts,
+        "by_type": by_type,
+        "pending_external_tcs": pending_external_tcs,
+        "pending_manual_tcs": pending_manual_tcs,
         "handoff": handoff_info,
         "active_file": str(saved_path.relative_to(repo_root)),
     }, ensure_ascii=False, indent=2))
@@ -2523,12 +2606,17 @@ def cmd_close_story(args) -> int:
 
     ac_count = len(story.get("acceptance_criteria") or [])
     tc_count = len(test_cases)
+    qa_breakdown = {"automated": 0, "external": 0, "manual": 0}
+    for c in test_cases:
+        et = c.get("execution_type", "automated")
+        qa_breakdown[et] = qa_breakdown.get(et, 0) + 1
     release_md = (
         f"[Station 4: Release & Closure — {version}]\n"
         f"- Jira Story: `{jira_key}`\n"
         f"- Release Version / Tag: `{version}`\n"
         f"- Verified Commit: `{commit_sha}`\n"
-        f"- Coverage: {ac_count} ACs, {len(tasks)} Sub-tasks Done, {tc_count} QA Test Cases Passed, 0 Open Bugs\n"
+        f"- Coverage: {ac_count} ACs, {len(tasks)} Sub-tasks Done, {tc_count} QA Test Cases Passed "
+        f"(automated={qa_breakdown['automated']}, external={qa_breakdown['external']}, manual={qa_breakdown['manual']}), 0 Open Bugs\n"
         f"- Release Notes: {args.notes or 'Released and verified through 4-station workflow.'}"
     )
 
@@ -2555,6 +2643,7 @@ def cmd_close_story(args) -> int:
         "version": version,
         "commit": commit_sha,
         "jira_status": done_status,
+        "qa_breakdown": qa_breakdown,
         "transition": trans_res,
         "active_file_removed": True,
     }, ensure_ascii=False, indent=2))
@@ -2609,7 +2698,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--ui-spec", help="UI states, wireframe, and copy (only stored when --has-ui is true)")
     p_sync.add_argument("--api-spec", help="API contract specification (only stored when --has-api is true)")
     p_sync.add_argument("--auto-decision", action="append", help="AI auto-decided conventional detail (抓大放小)")
-    p_sync.add_argument("--material-decision", action="append", help="Human-confirmed material decision (max 3)")
+    p_sync.add_argument("--material-decision", action="append", help="Human-confirmed material decision (<=3 for single-pass approval, <=5 per draft round)")
     p_sync.add_argument("--spec-json", help="JSON string or file with full story spec fields")
     p_sync.add_argument("--status", choices=["draft", "approved"], help="Spec status (draft or approved)")
     p_sync.add_argument("--approved-by", help="Role or person approving the spec")
@@ -2650,11 +2739,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_qa.add_argument("--key", required=True, help="Jira Story key")
     p_qa.add_argument("--mode", choices=["plan", "verify"], required=True, help="QA mode: plan or verify")
     p_qa.add_argument("--cases-json", help="JSON string or file with test cases for plan mode")
-    p_qa.add_argument("--tc", action="append", help="Test case 'TC-001:AC-001:automated|manual:Title'")
+    p_qa.add_argument("--tc", action="append", help="Test case 'TC-001:AC-001:automated|external|manual:Title'")
     p_qa.add_argument("--junit-xml", help="Path to JUnit XML report for verify mode")
     p_qa.add_argument("--results-json", help="JSON string or file with TC results for verify mode")
     p_qa.add_argument("--result", action="append", help="Single TC result 'TC-001=pass|fail|blocked'")
-    p_qa.add_argument("--all-pass", action="store_true", help="Mark all un-overridden test cases as pass in verify mode (QA Fast-Track)")
+    p_qa.add_argument("--all-pass", action="store_true", help="Mark all un-overridden 'automated' test cases as pass in verify mode (external/manual TCs require explicit result)")
     p_qa.add_argument("--commit", help="Tested git commit SHA")
     p_qa.set_defaults(func=cmd_record_qa)
 

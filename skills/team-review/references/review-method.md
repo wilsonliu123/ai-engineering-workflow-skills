@@ -8,9 +8,9 @@ Station 3a combines what was previously two separate documents (`dev-delivery.md
    - Candidate Commit SHA (`candidate_commit`)
    - Completed Sub-tasks (`TASK-001..N`) and changed files
    - Executed test suites and results from `complete-task`
-   - Any intentional deviations or operational/environment notes for QA
+   - **QA External Tool / Environment Hints:** Explicitly flag which `AC-*` items are already covered by local `automated` tests vs. which require `external` tool runs (Playwright, Postman, CI/Staging, third-party sandbox) or `manual` human verification in Station 3b.
 2. **Three-Axis Verification (Code Review):**
-   - **AC Conformance:** Every `AC-001..N` mapped to implementing code and tests.
+   - **AC-by-AC Traceability:** Every `AC-001..N` explicitly mapped to implementing code locations and test cases (any unimplemented AC is an automatic `major` or `blocker` finding).
    - **Design Conformance:** Boundaries, API contracts, UI states, and data safety.
    - **Standards & Security:** Compliance with `docs/shared/engineering-standards.md` (or `AGENTS.md` fallback).
 

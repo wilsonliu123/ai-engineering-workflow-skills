@@ -42,7 +42,7 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 ### 1. Inspect existing repository state
 1. Check whether `.ai-workflow/team-config.json`, `AGENTS.md`, `docs/shared/engineering-standards.md`, and `.gitignore` exist.
 2. Apply the **"抓大放小"** principle:
-   - Auto-detect existing stack conventions, test commands, and linter rules from the repository (`package.json`, `pyproject.toml`, `go.mod`, `Makefile`, `AGENTS.md`).
+   - Auto-detect existing stack conventions, local unit/integration test commands (`pytest`, `vitest`, `go test`), **external test tools / E2E / CI pipelines** (Playwright, Cypress, Postman/Newman, JMeter, GitHub Actions / GitLab CI), and linter rules from the repository (`package.json`, `pyproject.toml`, `go.mod`, `Makefile`, `AGENTS.md`).
    - Ask the user **at most 3 concise setup questions** (or 1 combined question) if not already provided:
      1. **Jira Project Key & Base URL** (e.g., `PROJ`, `https://your-org.atlassian.net`; default `PROJ` if offline/local).
      2. **Role-to-Person Mapping**: Who holds `pm`, `tech_lead`, `developer`, `reviewer`, `qa`, and `release_manager`? Explicitly note that **one person can hold multiple roles** (when adjacent stations belong to the same person, the workflow auto-consolidates handoffs without redundant notifications or self-approval ceremonies).
