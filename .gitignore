@@ -3,3 +3,4 @@ __pycache__/
 dist/
 *.zip
 .ai-workflow/active/
+docs/screenshots/*.raw.png
