@@ -1,8 +1,21 @@
 # Changelog
 
-Source of issue IDs: TeamBoard validation report (`docs/skill-validation/VALIDATION-REPORT.md` in wilsonliu123/team-board) and the team notes: D-xx (full-stack), T-xx (Tech Leader), UX-xx / UX-Sxx (UI/UX), F-xx (PM), "QA: topic" (QA notes, unnumbered).
+## v1.0.0 — 4-Station Jira-Centered Small-Team Workflow (Issue #1)
 
-Rules followed: no new skills, no new workflow steps beyond what is listed, scripts shared across skills stay byte-identical.
+Consolidated the 11-skill markdown-heavy pipeline into **7 streamlined, Jira-centered skills** tailored for small teams where one person may hold multiple roles:
+
+- **`team-init` (New):** Initializes `.ai-workflow/team-config.json` (role-to-person mappings supporting multi-role consolidation, Jira project key, base URL, and status mappings), ensures `.gitignore` ignores `.ai-workflow/active/`, and extracts `docs/shared/engineering-standards.md` from `AGENTS.md` while trimming duplicated rules in `AGENTS.md` into a reference link.
+- **`team-next-step` (Updated):** Read-only router inspecting `.ai-workflow/team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json`, and Jira state (`jira_sync.py status`) to recommend the exact next station, mode, and owner. Updated `evals/evals.json` for the 7-skill workflow.
+- **`team-spec` (Station 1 — replaces `team-requirements`, `team-ux`, `team-design`, `team-doc-review`):** One-pass change-surface analysis producing Scope, testable `AC-001..N`, technical design summary, conditional UI states/wireframe/copy (`has_ui`), and conditional API contract (`has_api`). Enforces inline **"抓大放小"** review (routine details auto-decided by AI; at most 3 material questions asked) and syncs directly to the Jira `User Story` via `jira_sync.py sync-story`.
+- **`team-dev` (Station 2 — replaces `team-dev-prep` + adds coding execution):** Decoupled from QA test planning. `plan` mode decomposes approved specs into `TASK-001..N` and creates Jira `Sub-task` items (`create-subtasks`). `implement` mode loads minimal context, implements code & tests, and marks tasks/bugs `completed` (`Done`) in both `.ai-workflow/active/<JIRA-KEY>.json` and Jira (`complete-task`).
+- **`team-review` (Station 3a — merges `team-dev-handoff` and `team-review`):** Inspects the actual code diff, completed task evidence, ACs, and `docs/shared/engineering-standards.md` (with fallback to `AGENTS.md`). Posts the combined handoff & 3-axis review summary to Jira and executes role-aware handoff (`jira_sync.py handoff`: auto-consolidated when same person; status transition + assignee update + `@mention` notification when different person).
+- **`team-qa` (Station 3b — merges `team-qa` and `team-qa-evidence`):** Streamlined into `plan` mode (parallel `TC-001..N` checklist with AI pre-filled `automated`/`manual` execution types) and `verify` mode (ingests JUnit XML, JSON, or manual results via `record-qa`; automatically files linked Jira `Bug` tickets via `create-bug` and routes back to Developer on failure).
+- **`team-release` (Station 4 — updated):** Verifies all 5 readiness gates and zero open Bugs, posts the release summary, transitions the Jira Story to `Done`, and deletes `.ai-workflow/active/<JIRA-KEY>.json` via `jira_sync.py close-story` so zero per-feature process files remain in Git.
+- **Shared Files & Tooling:** `scripts/jira_sync.py` (stdlib-only Python 3 CLI supporting live Jira REST API v3 and offline mode) and `references/common-workflow-governance.md` are kept byte-identical across all 7 skills and verified by `tools/check_shared.sh` and `tools/test_workflow.py`.
+
+---
+
+Source of historical issue IDs (v0.4–v0.7): TeamBoard validation report (`docs/skill-validation/VALIDATION-REPORT.md` in wilsonliu123/team-board) and the team notes: D-xx (full-stack), T-xx (Tech Leader), UX-xx / UX-Sxx (UI/UX), F-xx (PM), "QA: topic" (QA notes, unnumbered).
 
 ## v0.7.0 — final release (KnowBase run)
 

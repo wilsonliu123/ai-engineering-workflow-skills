@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "project_key": "PROJ",
+  "jira_base_url": "https://your-org.atlassian.net",
+  "sync_mode": "auto",
+  "notification_channel": "jira",
+  "roles": {
+    "pm": {
+      "name": "Alice Chen",
+      "email": "alice@example.com",
+      "jira_account_id": "acct-alice"
+    },
+    "tech_lead": {
+      "name": "Bob Lin",
+      "email": "bob@example.com",
+      "jira_account_id": "acct-bob"
+    },
+    "developer": {
+      "name": "Bob Lin",
+      "email": "bob@example.com",
+      "jira_account_id": "acct-bob"
+    },
+    "reviewer": {
+      "name": "Alice Chen",
+      "email": "alice@example.com",
+      "jira_account_id": "acct-alice"
+    },
+    "qa": {
+      "name": "Carol Wu",
+      "email": "carol@example.com",
+      "jira_account_id": "acct-carol"
+    },
+    "release_manager": {
+      "name": "Alice Chen",
+      "email": "alice@example.com",
+      "jira_account_id": "acct-alice"
+    }
+  },
+  "status_mapping": {
+    "todo": "To Do",
+    "in_progress": "In Progress",
+    "in_review": "In Review",
+    "in_qa": "In QA",
+    "ready_for_release": "Ready for Release",
+    "done": "Done"
+  }
+}

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team Init"
+  short_description: "Initialize .ai-workflow/team-config.json, multi-role Jira mappings, and engineering-standards.md."

@@ -1,9 +1,25 @@
 #!/usr/bin/env bash
-# P2-5: shared files are duplicated per skill on purpose (each skill must be self-contained);
-# this check fails if any copy drifts. Run before every commit.
-cd "$(dirname "$0")/../skills" || exit 2; rc=0
-for f in scripts/check_upstream_gate.py scripts/emit_event.py scripts/summarize_metrics.py references/common-artifact-governance.md references/observability-protocol.md references/review-protocol.md; do
-  n=$(ls */$f 2>/dev/null | xargs -r md5sum | awk '{print $1}' | sort -u | wc -l)
-  c=$(ls */$f 2>/dev/null | wc -l)
-  if [ "$n" -gt 1 ]; then echo "DRIFT: $f ($n variants across $c copies)"; rc=1; else echo "OK: $f ($c identical copies)"; fi
-done; exit $rc
+# Shared files are intentionally duplicated per skill so each skill zip is self-contained.
+# This check fails if any copy drifts or if a skill is missing a required shared file.
+set -euo pipefail
+cd "$(dirname "$0")/../skills" || exit 2
+rc=0
+EXPECTED_SKILLS=7
+
+for f in scripts/jira_sync.py references/common-workflow-governance.md; do
+  files=(*/$f)
+  c=${#files[@]}
+  if [ "$c" -ne "$EXPECTED_SKILLS" ]; then
+    echo "DRIFT: $f (found $c copies, expected $EXPECTED_SKILLS)"
+    rc=1
+    continue
+  fi
+  n=$(shasum -a 256 "${files[@]}" | awk '{print $1}' | sort -u | wc -l | tr -d ' ')
+  if [ "$n" -gt 1 ]; then
+    echo "DRIFT: $f ($n variants across $c copies)"
+    rc=1
+  else
+    echo "OK: $f ($c identical copies)"
+  fi
+done
+exit $rc

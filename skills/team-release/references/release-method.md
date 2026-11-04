@@ -1,70 +1,22 @@
-# Release Method
+# Release Gate Verification & Story Closure Method
 
-## Purpose
+## 1. The 5 Deterministic Release Gates
 
-Create a final handoff from the software lifecycle without turning document completeness into false release confidence.
+`jira_sync.py close-story` enforces five mandatory checks before transitioning a Jira Story to `Done`:
 
-## Core principles
+| Gate | Required Condition in `.ai-workflow/active/<JIRA-KEY>.json` | Action if Unmet |
+|---|---|---|
+| **1. Spec Gate** | `spec_status == "approved"` | Route to `$team-spec` |
+| **2. Sub-task Gate** | Non-empty `tasks` and every task has `status == "completed"` | Route to `$team-dev` (`plan` or `implement`) |
+| **3. Review & Commit Alignment** | `review.status == "approved"` and `review.reviewed_commit == --commit` | Route to `$team-review` |
+| **4. QA & Commit Alignment** | `qa.status == "passed"` and `qa.tested_commit == --commit` | Route to `$team-qa` (`verify`) |
+| **5. Zero Open Bugs** | Every item in `bugs` has `status == "completed"` or `"closed"` | Route to `$team-dev` (`implement`) |
 
-1. **Identity before readiness.** Evidence applies only to the exact version/configuration it covered.
-2. **Aggregate, do not reinterpret.** Release documentation summarizes upstream requirements, review, QA, and operational evidence; it does not silently change their conclusions.
-3. **Evidence over assertion.** A claim such as "verified", "deployed", "accepted", or "rollback tested" requires an actual source record.
-4. **Keep decision authority human.** The skill prepares the decision packet; authorized roles decide release/acceptance.
-5. **Expose residual risk.** Failed, blocked, unexecuted, deferred, waived, unknown, and not-applicable are distinct states.
-6. **Prefer references to duplication.** Link to canonical requirements/design/review/QA/manuals instead of copying whole sections.
-7. **Do not let version drift inherit old evidence.** Any post-review or post-QA change requires explicit impact assessment and, where relevant, re-review/retest.
+---
 
-## Readiness sequence
+## 2. First-Principles Cleanup
 
-1. Resolve intended handoff/release target.
-2. Lock candidate identity.
-3. Compare candidate identity with reviewed identity.
-4. Compare candidate identity with QA-tested identity.
-5. Check in-scope REQ/AC disposition.
-6. Inventory unresolved review findings and QA defects/gaps.
-7. Check required manuals and operational artifacts.
-8. Surface migration/configuration/rollback/observability needs.
-9. List residual risk, limitations, and required human decisions.
-10. Produce a concise handoff packet for review.
-
-## Scope disposition guidance
-
-For each in-scope requirement or AC, use one of:
-
-- `verified` — upstream evidence explicitly supports implementation and required validation.
-- `implemented-unverified` — implementation is claimed/observed but required verification evidence is missing.
-- `deferred` — intentionally moved out of this delivery with an external approved decision reference.
-- `blocked` — cannot be completed/validated because of a known blocker.
-- `unknown` — insufficient evidence to classify.
-
-Do not use `verified` merely because code exists or a developer says "done" without the required evidence.
-
-## Version-alignment guidance
-
-Treat a release candidate as aligned only when all required independently versioned components match the versions covered by the relevant review/QA evidence, or when later changes are proven non-impacting by an explicit impact/revalidation record.
-
-Examples of identity sources:
-
-- Git commit SHA
-- pull request head SHA
-- build ID
-- container/image digest
-- package checksum/version
-- frontend bundle version
-- backend service version
-- database migration ID
-- deployment manifest/config revision
-
-If identity cannot be established, classify alignment as `unknown`.
-
-## Human-decision guidance
-
-Typical roles (adapt to the team's actual model):
-
-- Product Owner — business scope/acceptance
-- Tech Lead — technical/architecture acceptance
-- QA Lead — QA evidence review
-- Release Manager / SRE — deployment readiness and execution authority
-- Security/Compliance reviewer — only when required by scope/risk
-
-The skill may name these roles as required reviewers. It must not invent the person currently filling a role.
+Why does `close-story` delete `.ai-workflow/active/<JIRA-KEY>.json` upon completion?
+- During active development, `.ai-workflow/active/<JIRA-KEY>.json` provides fast, offline-capable local context for AI coding and verification without querying Jira on every token.
+- Once the feature is released and the Jira `User Story` is `Done`, Jira holds the complete permanent audit trail (Specification, Sub-tasks, Code Review summary, QA Verification table, Bug history, and Release Summary).
+- Deleting `.ai-workflow/active/<JIRA-KEY>.json` guarantees zero dead process files accumulate in the workspace or repository.

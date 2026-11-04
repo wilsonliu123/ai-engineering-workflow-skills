@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team Spec"
+  short_description: "Station 1: One-pass scope, testable ACs, conditional UI/API design, inline 抓大放小 review, and Jira Story sync."

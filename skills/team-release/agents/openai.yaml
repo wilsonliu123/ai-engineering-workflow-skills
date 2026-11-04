@@ -1,3 +1,3 @@
 interface:
   display_name: "Team Release"
-  short_description: "Create evidence-linked release and delivery handoff documents."
+  short_description: "Station 4: Verify all gates, post release summary, transition Jira Story to Done, and clean up active JSON."

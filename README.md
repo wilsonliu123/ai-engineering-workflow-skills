@@ -1,12 +1,28 @@
-# ai-engineering-workflow skills
+# ai-engineering-workflow skills (v1.0 — 4-Station Jira-Centered Small-Team Workflow)
 
-Eleven AI-agent skills: the nine engineering workflow skills from ai-engineering-workflow v0.4, plus `team-next-step` for finding the next action and `team-ux` for standardized UI/UX design packages.
+Seven AI-agent skills designed for small engineering teams where one person may hold multiple roles and **Jira** serves as the single permanent lifecycle asset:
 
-Invoke `$team-next-step` with a feature name or artifact path to get an evidence-based recommendation, the responsible skill/mode or role, and a completion condition. It inspects the existing workflow without changing its state; further execution follows the user's task authorization. It uses the existing team skills and their shared gate checker, so keep those skills available alongside it.
+| Station | Skill | Modes | Purpose |
+|---|---|---|---|
+| **Init** | `skills/team-init/` | — | Initialize `.ai-workflow/team-config.json` (role-to-person mappings, Jira settings), configure `.gitignore`, and extract/deduplicate `docs/shared/engineering-standards.md` from `AGENTS.md`. |
+| **Router** | `skills/team-next-step/` | — | Read-only router that inspects `team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json`, and Jira state to recommend the exact next station, mode, and owner. |
+| **Station 1** | `skills/team-spec/` | — | Unified specification & design (merges `team-requirements`, `team-ux`, `team-design`, and inline `team-doc-review`). Produces Scope, testable `AC-*`, conditional UI/API design, and **"抓大放小"** review in one pass; syncs to the Jira `User Story`. |
+| **Station 2** | `skills/team-dev/` | `plan` / `implement` | Decomposes approved specs into verifiable tasks (`TASK-001..N` → Jira `Sub-task`), implements code & tests with minimal context, and checks off completed tasks/bugs via `complete-task`. |
+| **Station 3a** | `skills/team-review/` | — | Combined Dev Handoff & 3-axis Code Review against ACs, design, and `docs/shared/engineering-standards.md` (fallback: `AGENTS.md`). Auto-transitions Jira Story and `@mention`s QA when roles belong to different people. |
+| **Station 3b** | `skills/team-qa/` | `plan` / `verify` | Parallel test planning (`TC-001..N` with AI pre-filled `automated`/`manual` execution types) and result verification (JUnit XML / JSON / manual). Automatically files linked Jira `Bug` tickets on failure and routes back to Developer. |
+| **Station 4** | `skills/team-release/` | — | Verifies all 5 readiness gates and zero open Bugs, posts the Release Summary, transitions the Jira Story to `Done`, and deletes `.ai-workflow/active/<JIRA-KEY>.json`. |
 
-Routing scenarios live in `skills/team-next-step/evals/evals.json`. Evaluate each prompt independently against `SKILL.md`, using the supplied snapshot as fixture evidence and checking its assertions without executing the recommended work.
+## First-Principles Asset Boundary
 
-- `skills/<name>/` = contents of each skill (SKILL.md, agents/, references/, scripts/).
-- `skill.zip` packages are NOT committed; rebuild with `cd skills/<name> && zip -r ../../dist/<name>.zip .` when needed.
-- The first commit is the unchanged v0.4 originals; later commits are the fixes from the TeamBoard validation report. See `CHANGELOG.md`.
-- Scripts shared across skills (`check_upstream_gate.py`, `emit_event.py`, `summarize_metrics.py`, `common-artifact-governance.md`) are intentionally duplicated per skill and must stay byte-identical.
+- **Per-Feature Lifecycle Assets (Jira + Temporary Active JSON):**
+  - User Stories, ACs, Sub-tasks, Code Review summaries, QA Test Plans & Verification tables, and Bug tickets live permanently in **Jira**.
+  - During active development, `.ai-workflow/active/<JIRA-KEY>.json` (gitignored) stores machine-readable state and is automatically deleted on release (`jira_sync.py close-story`). No per-feature markdown files (`docs/requirements/`, `docs/design/`, `docs/qa/`, etc.) are committed to Git.
+- **System-Wide Living Assets (Committed to Git):**
+  - `AGENTS.md`, `docs/shared/engineering-standards.md`, and optional `docs/shared/glossary.md` / `docs/shared/adr/`.
+
+## Shared Files & Verification
+
+- `scripts/jira_sync.py` (dependency-free Python 3 stdlib CLI supporting both live Jira REST API v3 and offline mode) and `references/common-workflow-governance.md` are intentionally duplicated across all 7 skills so each packaged skill `.zip` is self-contained.
+- Run `./tools/check_shared.sh` to verify all 7 copies remain byte-identical.
+- Run `python3 tools/test_workflow.py` to execute the end-to-end workflow and mock Jira REST API v3 test suite.
+- Routing and QA scenarios live in `skills/team-next-step/evals/evals.json` and `skills/team-qa/evals/evals.json`.

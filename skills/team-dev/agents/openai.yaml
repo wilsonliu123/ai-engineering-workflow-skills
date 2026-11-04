@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team Dev"
+  short_description: "Station 2: Decompose Story into Jira Sub-tasks (plan) and implement, test, and check off tasks/bugs (implement)."

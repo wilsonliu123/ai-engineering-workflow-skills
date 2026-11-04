@@ -1,6 +1,3 @@
 interface:
   display_name: "Team Next Step"
-  short_description: "Find the next action from current workflow evidence"
-  default_prompt: "Use $team-next-step to inspect this feature's current state and recommend the next action, its owner, and its completion condition."
-policy:
-  allow_implicit_invocation: false
+  short_description: "Inspect Jira and .ai-workflow/active/ state to recommend the exact next station, skill, mode, and owner."

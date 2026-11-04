@@ -1,46 +1,37 @@
-# QA Method
+# Streamlined QA Planning, Verification & Bug Loop Method
 
-## Lifecycle model
+## 1. Parallel Test Case Planning (`plan` mode)
 
-1. `requirements-review`: Requirements testability review.
-2. `test-planning`: test planning from approved Requirements + Design.
-3. `execution-assignment`: human QA chooses automated/manual/hybrid/deferred after planning and before execution; this preparation may run in parallel with development.
-4. `execution-handoff`: bind the candidate build/commit/environment to the planned run.
-5. Actual execution by existing QA agents/tools/humans outside `team-qa`.
-6. Evidence normalization by `team-qa-evidence`.
-7. `final-assessment`: assessment by `team-qa` from normalized execution evidence.
+`team-qa` (`plan` mode) can run anytime after `team-spec` is approved — in parallel with `team-dev` (`plan` and `implement`).
 
-## Principles
+### Coverage Rules
+1. **100% AC Traceability:** Every `AC-001..N` in `.ai-workflow/active/<JIRA-KEY>.json` must map to at least one `TC-001..N`.
+2. **Security & Boundary Coverage:**
+   - When `has_api` or `has_data` is true, include boundary/invalid-input cases and unauthorized (`401`/`403`) access cases.
+   - When `has_ui` is true, include key situation states (`normal`, `empty`, `invalid`/`error`) and XSS/escaping checks where user input is rendered.
+3. **AI Pre-Filled Execution Type ("抓大放小"):**
+   - Pre-fill `execution_type: "automated"` or `"manual"` for every test case based on technical feasibility.
+   - Present the complete table once so the human QA owner can approve in 1 reply or adjust specific rows.
 
-- Trace from approved REQ/AC, not from implementation behavior.
-- Separate what should be tested from how humans choose to execute it.
-- Separate execution from evidence normalization and final assessment.
-- A test case is a plan; evidence proves execution.
-- Missing evidence is not executed, never pass.
-- Preserve tested build/commit/environment identity.
-- Humans own execution-mode choice and final acceptance.
-- Performance testing is broad; stress testing is one subtype.
+---
 
-## Performance planning
+## 2. Verification & Evidence Intake (`verify` mode)
 
-Create performance/load/stress/spike/soak/scalability cases only when approved requirements, design constraints, engineering standards, or documented risk justify them. Never invent numeric thresholds. If a meaningful threshold is missing, raise an open question instead of creating a false oracle.
+`jira_sync.py record-qa --mode verify` supports three input sources (which can be combined in a single run):
 
-## Flaky results
+1. **JUnit XML (`--junit-xml <path>`):**
+   - Automatically matches `<testcase>` elements whose `name` or `classname` contains `TC-\d{3,}` (e.g., `test_export_csv_TC-001` or `TestExport/TC-001_valid`).
+   - Maps `<failure>` / `<error>` → `fail`, `<skipped>` → `not-executed`, otherwise → `pass`.
+2. **JSON Results (`--results-json <path-or-json>`):**
+   - Accepts either a dictionary `{"TC-001": "pass", "TC-002": "fail"}` or a list of objects `[{"id": "TC-001", "result": "pass"}]`.
+3. **CLI Result Flags (`--result TC-001=pass`):**
+   - Used for manual test outcomes reported by the QA tester in chat.
 
-If the same TC passes and fails on the same commit, rerun it up to two more times in a clean state. Record every run. If results still disagree, report `blocked` with note `flaky`, void none of them, and raise a defect; `validate_qa.py` rejects unresolved pass+fail conflicts on one commit. A TC is never `pass` on a "best of N" basis.
+---
 
-## Partial execution
+## 3. Closed-Loop Defect Routing (`create-bug`)
 
-Use `partial` when only part of a TC's steps/paths was observed (e.g. happy path seen, failure path not run). `partial` never counts as pass; state what was not observed in `notes`.
-
-## Interaction states
-
-Hover, focus, tooltip and similar states are not provable by static screenshots. Prefer an automated E2E assertion on the state; otherwise attach a short recording (`--attachment`). Code inspection alone is `not-executed`.
-
-## Test data and isolation
-
-Use realistic fixtures (display names, non-ASCII text, long strings) so UI defects are not fixture artifacts. For E2E with a single shared server, isolate by unique per-test data (prefix/UUID) instead of a fresh database per case; say so in test-spec §4. Ensure server logs (e.g. Playwright `webServer` stdout) reach CI output so startup warnings can be evidenced.
-
-## Test naming
-
-The importer maps tests by regex `\bTC-\d{3,}\b` in the test or class name (e.g. Go subtest `t.Run("TC-017/rejects-empty", ...)`; `TestTC017_x` does not match). QA owns TC IDs and sub-test names; record the exact automated test name per TC in test-cases (`Automated test name`) before coding starts. Review findings that need a regression test are mapped to a TC by QA.
+When any test case fails during `verify` mode:
+1. Run `jira_sync.py create-bug` with `--tc-id`, `--ac-id`, `--title`, `--severity`, `--steps`, `--expected`, `--actual`, and `--commit`.
+2. `create-bug` creates a Jira `Bug` issue, links it to the parent `User Story`, records it in `.ai-workflow/active/<JIRA-KEY>.json` under `bugs` (`status: "open"`), and triggers a role-aware handoff back to `developer`.
+3. When the developer fixes the bug in `team-dev` (`implement` mode), they run `jira_sync.py complete-task --key <JIRA-KEY> --task-id <BUG-KEY> --commit <new-sha> ...`, which closes the Bug and updates `candidate_commit` for re-verification.

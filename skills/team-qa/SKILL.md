@@ -1,193 +1,89 @@
 ---
 name: team-qa
-description: "Run the team's standardized QA workflow across explicit lifecycle modes: requirements-review checks requirement/AC testability, test-planning creates traceable functional and non-functional test plans/cases, execution-assignment records human QA decisions about automated/manual/hybrid/deferred execution, execution-handoff binds a candidate build to the planned run, and final-assessment turns normalized execution evidence into a QA report. Use across the lifecycle, not only at final QA. This skill never executes tests, chooses automation on behalf of humans, invents evidence, rewrites upstream requirements/design, or self-approves release."
+description: Use when planning QA test cases (TC-001..N) mapped to acceptance criteria with AI pre-filled automated/manual execution types (plan mode, which can run in parallel with development), or when verifying test execution results, importing JUnit XML/JSON test reports, and filing linked Jira Bug tickets on failure (verify mode).
 ---
 
-# Team QA
+# Team QA (Station 3b — Streamlined QA Plan & Verify)
 
-## Purpose
+## Overview
 
-Keep QA involved from requirement testability through final evidence-based assessment while preserving strict boundaries between planning, human execution choice, actual execution, evidence normalization, and final QA judgment.
+Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), and final QA assessment into two streamlined modes: `plan` and `verify`. Syncs the Test Plan table, AC/TC Verification table, and any linked `Bug` tickets directly to Jira and `.ai-workflow/active/<JIRA-KEY>.json`.
 
-Read `references/common-artifact-governance.md`, `references/qa-method.md`, and `references/observability-protocol.md` when applicable.
+Read `references/common-workflow-governance.md` and `references/qa-method.md` before running.
 
-## Hard boundaries
+## Explicit Modes
 
-- Do not execute product tests in this skill.
-- Default output language: Write test specifications, test cases, execution run details, and QA reports in Traditional Chinese (繁體中文) by default, preserving TC IDs, test code, assertion syntax, and technical keywords.
-- Do not decide whether a test case is automated, manual, hybrid, or deferred. A human QA/QA Lead makes that choice.
-- Do not claim pass/fail without normalized execution evidence tied to the test case and tested target.
-- Do not turn test existence, code inspection, or expected behavior into execution evidence.
-- Do not rewrite Requirements, AC, Design, Engineering Standards, code, CI, or release decisions.
-- Do not self-approve Requirements, QA, or Release.
-- Do not treat performance testing as identical to stress testing. Stress is one subtype of performance testing.
+| Mode | When to Run | Key Action |
+|---|---|---|
+| **`plan`** | Anytime after `team-spec` is `approved` (**can run in parallel with `team-dev`**) | Generate `TC-001..N` mapped to `AC-*` with AI pre-filled `automated`/`manual` execution types for 1-step human confirmation; sync via `jira_sync.py record-qa --mode plan` |
+| **`verify`** | After `team-review` approves the candidate commit | Import JUnit XML / JSON results or record manual execution outcomes via `jira_sync.py record-qa --mode verify`; if any TC fails, file linked Jira `Bug` tickets via `jira_sync.py create-bug` |
 
-## Repository contract
+## Hard Boundaries
 
-Primary sources:
+- **No Per-Feature Markdown Files in Git:** Never create `docs/qa/` files or commit `.ai-workflow/evidence/` files. Test plans, verification tables, and Bug tickets live in Jira and `.ai-workflow/active/<JIRA-KEY>.json`.
+- **Never Invent Test Execution:** Missing evidence is recorded as `not-executed`, never `pass`.
+- **AI Pre-Fills, Human Confirms ("抓大放小"):** In `plan` mode, AI pre-fills the recommended `automated` vs. `manual` execution type for every `TC-*` in one summary table instead of interviewing the human case-by-case. The human can confirm the whole table in one step or override specific rows.
 
-- `docs/requirements/<feature-slug>.md`
-- `docs/design/<feature-slug>/sad.md` and relevant design attachments
-- `docs/shared/engineering-standards.md`
-- `docs/dev-prep/<feature-slug>/` when available
-- `docs/dev-delivery/<feature-slug>/dev-delivery.md` when available
-- `docs/review/<feature-slug>/code-review.md` for final QA
-- `.ai-workflow/evidence/<feature-slug>/normalized/` for final evidence
+## Mode 1: `plan` — Parallel Test Case Checklist (`TC-001..N`)
 
-Outputs under `docs/qa/<feature-slug>/`:
+1. **Read Story Specification:**
+   - Load `.ai-workflow/active/<JIRA-KEY>.json` (`AC-001..N`, change surface `has_ui`/`has_api`/`has_data`, design summary, security/boundary rules) and `docs/shared/engineering-standards.md`.
+2. **Generate Traceable Test Cases (`TC-001..N`):**
+   - Every `AC-*` must be covered by at least one `TC-*`.
+   - Include happy path, boundary/invalid input, authz/permission (`401`/`403`), and error/recovery cases where applicable.
+   - Pre-fill `execution_type`:
+     - `automated` for API contracts, business logic, data validation, permissions, and deterministic UI flows.
+     - `manual` only for visual layout inspection, external hardware/third-party sandbox flows, or exploratory UX checks.
+3. **Present Table for Quick Confirmation & Sync:**
+   Show the `TC-001..N` table in Traditional Chinese (繁體中文) for quick human confirmation (or override), then run:
 
-- `requirements-testability.md` — requirements-review mode
-- `test-spec.md` — test-planning mode
-- `test-cases.md` — test-planning mode
-- `execution-matrix.md` — execution-assignment mode; human decisions only
-- `execution-run.md` — execution-handoff snapshot for a candidate build
-- `qa-report.md` — final-assessment mode
+   ```bash
+   python3 <skill-dir>/scripts/jira_sync.py --repo-root . record-qa \
+     --key "<JIRA-KEY>" \
+     --mode plan \
+     --tc "TC-001:AC-001:automated:<Title and expected outcome>" \
+     --tc "TC-002:AC-002:manual:<Title and expected outcome>"
+   ```
+   *(Or pass `--cases-json '<JSON array>'`.)*
 
-## Explicit modes
+## Mode 2: `verify` — Result Intake, Bug Loop & Release Handoff
 
-Prefer explicit invocation:
+1. **Collect Real Execution Outcomes:**
+   - **Automated tests:** Ingest JUnit XML (`--junit-xml <path>`) or JSON results (`--results-json <path>`) containing `TC-###` IDs, or run the test suite and capture the report.
+   - **Manual tests:** Present any remaining `manual` `TC-*` items concisely and record the human QA tester's actual `pass` / `fail` / `blocked` observation.
+2. **Record Verification Table on Jira (`record-qa --mode verify`):**
 
-- `requirements-review`
-- `test-planning`
-- `execution-assignment`
-- `execution-handoff`
-- `final-assessment`
+   ```bash
+   python3 <skill-dir>/scripts/jira_sync.py --repo-root . record-qa \
+     --key "<JIRA-KEY>" \
+     --mode verify \
+     --commit "<tested-commit-sha>" \
+     [--junit-xml "<path/to/junit.xml>"] \
+     [--result "TC-001=pass" --result "TC-002=pass"]
+   ```
 
-If no mode is supplied, infer only when repository state is unambiguous; otherwise ask which mode is intended.
+3. **Branch on Verification Outcome:**
+   - **If Any Test Fails (`fail` or `blocked`):**
+     Immediately create a linked Jira `Bug` ticket for each failure using `jira_sync.py create-bug`:
 
-## Mode 1 — requirements-review
+     ```bash
+     python3 <skill-dir>/scripts/jira_sync.py --repo-root . create-bug \
+       --key "<JIRA-KEY>" \
+       --tc-id "<TC-002>" \
+       --ac-id "<AC-001>" \
+       --title "<Concise defect summary>" \
+       --severity "<blocker|major|minor>" \
+       --steps "<Reproduction steps>" \
+       --expected "<Expected behavior>" \
+       --actual "<Actual observed behavior>" \
+       --commit "<tested-commit-sha>"
+     ```
+     `create-bug` automatically links the Bug to `<JIRA-KEY>`, transitions the Story back to `In Progress`, and notifies/reassigns the `developer` role from `team-config.json` with `@mention` so `$team-dev` (`implement` mode) can fix it.
+   - **If All Tests Pass (`qa_status: "passed"` and 0 open Bugs):**
+     `record-qa --mode verify` automatically posts the passing AC/TC Verification Table to Jira and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if the same person). Recommend `$team-release` (Station 4) as the next step.
 
-Run after `team-requirements` produces a reviewable Requirements/AC draft and before final human Requirements approval.
+## Red Flags — STOP
 
-Goal: determine whether Requirements and AC can later be objectively verified.
-
-1. Read Requirements, AC, scope, exceptions, and relevant glossary terms.
-2. Identify testability gaps only: ambiguous outcomes, missing boundaries, undefined error behavior, missing measurable non-functional criteria, or contradictory AC.
-3. Do not write full test cases yet.
-4. Produce `requirements-testability.md` using `references/requirements-testability-template.md`.
-5. If blocking gaps exist, route them back to `team-requirements`; do not silently fix the source document.
-
-This review informs the human Requirements decision. It does not approve Requirements.
-
-## Mode 2 — test-planning
-
-Run after Requirements and Design are approved/current and before development preparation is finalized.
-
-Goal: define what must be tested and what evidence would prove it, without deciding the execution method.
-
-1. Read approved/current Requirements/AC, Design, interfaces, and Engineering Standards.
-2. Build risk-based coverage for every in-scope AC, and list every normative security constraint in Design/interfaces (auth, session, CSRF, access control, input limits) in the `## Design constraint coverage` table with a covering TC or `n/a: <reason>`. For XSS/injection TCs, verify escaping and CSP separately: a positive control on a page without CSP, DOM assertions (no injected elements or `on*` attributes, payload shown as text) as primary evidence, and zero `securitypolicyviolation` events; never rely only on dialog or global-flag checks under CSP.
-3. Produce `test-spec.md` and `test-cases.md`.
-4. Include functional and non-functional verification where Requirements, Design, Engineering Standards, or risk justify it.
-5. For performance-related cases distinguish, when applicable: performance baseline, load, stress, spike, soak/endurance, scalability/capacity.
-6. Never invent load targets, latency limits, availability goals, or other thresholds. If missing, create an open question.
-7. Do not choose manual/automated/hybrid execution. Mark each planned case `human-assignment-pending`.
-
-Use `references/test-spec-template.md` and `references/test-cases-template.md`.
-
-## Mode 3 — execution-assignment
-
-Run after test planning and before QA execution begins. It may happen before development completes so QA can prepare tools/environments.
-
-Goal: record the human QA team's decision for every planned test case:
-
-- `automated`
-- `manual`
-- `hybrid`
-- `deferred`
-
-AI must not select the execution type. The test case's `Proposed layer` is a planning hint, not a human execution decision. The human QA may decide case by case or give a standing authorization ("QA decides by layer"); record who decided in `decided_by` and the authorization in `decision_source` (validator enforced). For each undecided case without applicable standing authorization, use `references/execution-assignment-interaction.md`: explain the actual check in plain language before a short, separate execution-choice question. Preserve applicable existing decisions when resuming.
-
-For automated/hybrid cases, ask the human to record the intended tool/method if known. For deferred cases, require a human-provided reason/reference.
-
-Persist interrupted progress under `docs/workflow/reviews/<feature-slug>-qa-execution-assignment.md` and resume from the next undecided case.
-
-Produce/update `execution-matrix.md` using `references/execution-matrix-template.md`. Every manual case gets an executing owner role (QA or UI/UX); manual UI cases link `docs/ux/<feature-slug>/ui-acceptance.md` (template `references/ui-acceptance-template.md`) as their evidence attachment.
-
-## Mode 4 — execution-handoff
-
-Run when a real candidate build/commit/environment is ready for QA execution.
-
-Produce `execution-run.md` containing:
-
-- candidate build/commit/component versions,
-- environment,
-- approved/current test plan baseline,
-- execution matrix baseline,
-- in-scope cases for this run,
-- known blockers/limitations.
-
-This is an execution contract, not execution evidence.
-
-Upstream gate for Mode 4: `check_upstream_gate.py --downstream docs/qa/<slug>/execution-run.md` over requirements, design `sad.md`, test-spec, test-cases, dev-delivery and code-review (`--record` on first creation). If dev-delivery or code-review are not yet approved, a human may set `proceed_at_risk` on them for a pre-check run; the run is then labeled pre-check and its evidence cannot support the final assessment until the gate passes cleanly.
-
-Standard steps for every run: archive raw reports and screenshots to `evidence/<tested-commit>/` before any further CI run; import with `--requirements --test-plan --design`; commit the normalized JSON under `.ai-workflow/evidence/<slug>/normalized/` and the archive (raw outputs otherwise stay uncommitted). For negative cases such as "CI must fail" (TC-069 style): archive the green run first, break deliberately in a throw-away worktree, record the exit code and log as manual evidence with `--attachment`, then discard the worktree.
-
-## Actual QA execution — outside team-qa
-
-The real QA tester or toolchain executes assigned cases using existing team practice, including AI agents + Playwright/other automation tools, API/integration tools, performance/load/stress tools, or manual human testing.
-
-Raw reports/observations go to `team-qa-evidence`:
-
-- `tool-import` for machine-generated reports,
-- `manual-interview` for human test results.
-
-`team-qa-evidence` normalizes the results into `.ai-workflow/evidence/<feature>/normalized/`.
-
-## Mode 5 — final-assessment
-
-Run after execution has occurred and normalized evidence is available.
-
-1. Resolve candidate build/commit/environment and approved/current upstream baselines: gate `qa-report.md` (`--record`, later `--downstream`) over requirements, design `sad.md`, test-spec, test-cases, execution-matrix, dev-delivery, code-review and `docs/ux/<slug>` when used; none may be AT-RISK.
-2. Read `test-cases.md`, `execution-matrix.md`, normalized evidence, and relevant review/dev-handoff documents.
-3. Map each in-scope TC to evidence.
-4. Allowed states: `pass`, `fail`, `blocked`, `not-executed`, `not-applicable`, and `waived` only with explicit human authorization/reference.
-5. Missing evidence is `not-executed` / `evidence-missing`, never pass. Void evidence and evidence whose baseline no longer matches current requirements/test cases do not count; run `scripts/validate_qa.py docs/qa/<feature-slug> --evidence-dir <normalized-dir>` and resolve every error before writing the conclusion.
-6. For performance cases compare observed metrics only against approved thresholds recorded in Requirements/Test Cases.
-7. Produce/update `qa-report.md` using `references/qa-report-template.md`; generate §3 and `result_counts` with `validate_qa.py ... --evidence-dir <dir> --emit-table` (do not hand-count), list void evidence in §8.3, known limitations in §8.1.
-8. Enter the human document review protocol. Human QA acceptance/release decisions remain human-owned.
-
-## Test taxonomy
-
-Functional examples: feature behavior, API/contract, integration, permission/authorization, validation/boundary, error/recovery, regression.
-
-Non-functional examples: performance baseline, load, stress, spike, soak/endurance, scalability/capacity, reliability/resilience, security, accessibility, compatibility, observability.
-
-Not every feature requires every non-functional category.
-
-## Source-of-truth and gates
-
-- Requirements/AC remain authoritative in `docs/requirements/`.
-- Design remains authoritative in `docs/design/`.
-- QA plans define verification intent, not product behavior.
-- Execution Matrix records human execution decisions, not AI recommendations.
-- Normalized evidence is observation data, not release approval.
-- QA Report is the canonical evidence summary for the tested candidate.
-
-`team-dev-prep` is not ready for coding until approved/current Requirements, approved/current Design, and approved/current QA Test Spec exist. The execution matrix should be substantially assigned before QA execution; any unassigned in-scope case is a visible planning gap.
-
-## Validation
-
-When execution is available run `scripts/validate_qa.py docs/qa/<feature-slug> [--evidence-dir <normalized-dir>]` from the repository root (argument is the QA directory). `--evidence-dir` is required whenever `qa-report.md` exists; without it the validator fails.
-
-Before authoritative planning or final assessment, run `scripts/check_upstream_gate.py --downstream docs/qa/<feature-slug>/test-spec.md docs/requirements/<feature-slug>.md docs/design/<feature-slug>/sad.md` (use `--record` when the test spec is first created). Also record the test-cases baseline: `check_upstream_gate.py --record docs/qa/<feature-slug>/test-cases.md docs/requirements/<feature-slug>.md docs/design/<feature-slug>/sad.md`, and check it with `--downstream` before final assessment. `BLOCK` or `STALE` (non-zero exit) stops authoritative QA work.
-
-Migration from v0.4: approved documents without `approved_sha256` BLOCK until `check_upstream_gate.py --stamp-approved <doc>` is run once (after confirming the approval still applies); evidence without a baseline is rejected and must be re-imported with `--requirements` / `--test-plan`.
-
-## Observability
-
-Emit best-effort events such as `qa_requirements_reviewed`, `qa_plan_completed`, `qa_execution_assigned`, `qa_execution_handoff_created`, and `qa_final_assessment_completed`. Telemetry failure must never affect QA artifacts or decisions.
-
-## Bundled resources
-
-- `references/qa-method.md`
-- `references/requirements-testability-template.md`
-- `references/test-spec-template.md`
-- `references/test-cases-template.md`
-- `references/execution-matrix-template.md`
-- `references/execution-assignment-interaction.md`
-- `references/execution-run-template.md`
-- `references/qa-report-template.md`
-- `references/ui-acceptance-template.md`
-- `scripts/validate_qa.py`
-- `scripts/check_upstream_gate.py`
+- Marking a test `pass` without an actual test run report or explicit human QA result.
+- Asking the human one message per test case just to choose `automated` vs. `manual`.
+- Recommending `team-release` while any `TC-*` is `fail`, `blocked`, `not-executed`, or while any `Bug` is `open`.

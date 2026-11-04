@@ -1,3 +1,3 @@
 interface:
   display_name: "Team QA"
-  short_description: "Plan traceable QA tests and document evidence-based execution results."
+  short_description: "Station 3b: Parallel test planning with AI pre-filled execution types (plan) and result verification / Jira Bug creation (verify)."
