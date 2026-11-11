@@ -190,7 +190,8 @@ python3 skills/team-init/scripts/jira_sync.py \
 
 | 類別 | 參數或檔案名稱 | 必填 / 預設值 | 功能說明與輸入規範 | 狀態影響與防呆機制 |
 | :--- | :--- | :--- | :--- | :--- |
-| **CLI 子指令** | `auth`（或 `init --auth-only`） | 協作者專用 | 新成員 `git clone` 已初始化專案後，僅綁定個人 `--jira-email`、`--jira-token`（自動依 Email 匹配角色）與選填 `--qase-token` | 驗證 `/rest/api/3/myself` 後寫入本機 `.ai-workflow/credentials.json`（`0600`），**完全不改動 `team-config.json`**；未綁定前系統禁止靜默退回離線模式 |
+| **CLI 子指令** | `auth`（或 `init --auth-only`） | 協作者專用 | 新成員 `git clone` 已初始化專案後，選擇負責角色（`--role qa` 或 `--role reviewer,qa`）並綁定個人 `--jira-email`、`--jira-token` 與選填 `--qase-token` | 驗證 `/rest/api/3/myself` 後，將 Token 寫入本機 `.ai-workflow/credentials.json`（`0600`），並自動將認領角色之 `name`、`email`、`jira_account_id` 補寫回 `team-config.json`（若角色原本已吻合則不重複改動） |
+| **CLI 旗標** | `--role` / `--name` | 選填（支援逗號分隔） | 初始化者或協作者可僅認領自己負責的角色（如 `--role pm,tech_lead,developer`），未指定之角色保留於 `unclaimed_roles` 供後續成員認領 | 若未傳 `--name`，連線模式下自動由 Jira `/rest/api/3/myself` 帶入 `displayName` 與 `accountId` |
 | **CLI 旗標** | `--inspect` | 選填（布林旗標） | 唯讀檢查目前專案初始化與憑證狀態，回傳尚未確認之 `questions_to_ask` | 不修改任何檔案；供 AI 在執行 `init` 前先向使用者詢問確認 |
 | **CLI 旗標** | `-i` / `--interactive` | 選填（布林旗標） | 終端機互動式問答模式，逐步詢問 URL、Project Key、帳號、Token 與六大角色 | 適合人類開發者直接於終端機手動執行初始化 |
 | **CLI 旗標** | `--project-key` | 選填（預設 `PROJ`） | 設定 Jira 專案代號（自動轉為大寫，如 `TEAM`） | 寫入 `team-config.json` 之 `project_key` |

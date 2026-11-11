@@ -42,18 +42,23 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 
 ## Workflow
 
-### Fast Path for Collaborators Cloning an Existing Repo (`auth` Mode)
-When `.ai-workflow/team-config.json` **already exists** with a configured `jira_base_url` and the collaborator simply needs to bind their own local `.ai-workflow/credentials.json` (for example, `status` reported `requires_member_auth: true`):
-1. Run `python3 .ai-workflow/bin/jira_sync.py --repo-root . auth --inspect` to view the configured project key, Jira URL, roles, and whether `qase_required` is `true`.
-2. **STOP and ask the collaborator** only for their **personal Jira Email & Jira API Token** (plus **Qase API Token** if they act as QA and `qase_required` is `true`). Do **NOT** re-ask the full 6-role project setup.
+### Fast Path for Collaborators Cloning an Existing Repo (`auth` Mode — Progressive Role Claiming)
+When `.ai-workflow/team-config.json` **already exists** with a configured `jira_base_url` and a teammate clones the repo without local `.ai-workflow/credentials.json` (for example, `status` reported `requires_member_auth: true`):
+1. Run `python3 .ai-workflow/bin/jira_sync.py --repo-root . auth --inspect` to view `claimed_roles`, `unclaimed_roles`, and whether `qase_required` is `true`.
+2. **STOP and show the current role board** (which roles are already claimed vs. still in `unclaimed_roles`), then ask this collaborator:
+   - **請問您負責哪一個（或哪幾個）角色？**（例如認領空缺的 `qa`、`reviewer,qa`，或接手特定角色）
+   - **請問您的個人 Jira Email 與 Jira API Token 為何？**（顯示名稱選填，系統可透過 `/rest/api/3/myself` 自動帶入；若認領 `qa` 且 `qase_required: true`，請一併提供 **Qase API Token**。）
 3. Run:
    ```bash
    python3 .ai-workflow/bin/jira_sync.py --repo-root . auth \
+     --role "<CLAIMED_ROLES_COMMA_SEPARATED>" \
+     [--name "<DISPLAY_NAME>"] \
      --jira-email "<COLLABORATOR_EMAIL>" \
      --jira-token "<COLLABORATOR_JIRA_API_TOKEN>" \
      [--qase-token "<QASE_API_TOKEN>"]
    ```
-   `auth` verifies `/rest/api/3/myself`, auto-matches any role(s) in `team-config.json` sharing that email into `role_credentials`, writes gitignored `.ai-workflow/credentials.json` (`0600`), and leaves `team-config.json` **100% untouched** (`git status` stays clean). Then immediately run `status` (`$team-next-step`) to auto-discover active Jira Stories!
+   - **Secrets stay local:** All tokens write exclusively to gitignored `.ai-workflow/credentials.json` (`0600`).
+   - **Public role claiming:** `auth` verifies `/rest/api/3/myself` and automatically populates the collaborator's `name`, `email`, and `jira_account_id` into `.ai-workflow/team-config.json` for their claimed role(s) (`team_config_modified: true`; or leaves `team-config.json` untouched if those roles already matched). Remind the collaborator to commit `.ai-workflow/team-config.json` if `team_config_modified` is `true` so teammates automatically `@mention` and assign Jira issues to them, then immediately run `status` (`$team-next-step`) to discover active Jira Stories!
 
 ### Step 1: Inspect existing repository state (`init --inspect`)
 1. Run pre-init inspection to check whether `.ai-workflow/team-config.json`, `.ai-workflow/credentials.json`, `AGENTS.md`, `docs/shared/engineering-standards.md`, and `.gitignore` exist:
@@ -72,17 +77,18 @@ If any of the following items have not been explicitly provided or confirmed by 
    - *(若團隊確定不使用遠端 Jira、僅走純本地離線模式，請使用者明確回覆「離線模式」)*。
 2. **預設 Jira 認證帳號與 API Token (Default Jira Account Email & API Token)**
    - 請提供預設用於呼叫 Jira REST API v3 的登入帳號 Email（`JIRA_EMAIL`）與 `JIRA_API_TOKEN`（當某角色未設定專屬 API Token 時，系統會以此預設帳號作為 fallback）。
-3. **六大角色定義、對應人員與各角色專屬 API Token (Role-to-Person, Email & Per-Role API Token)**
-   - 請逐一確認以下 6 個角色分別由哪位成員擔任（包含 **姓名 `name`**、**信箱 `email`**、**該成員的 Jira `api_token`**，以及選填的 **`jira_account_id`**）：
+3. **角色認領與 API Token（支援「僅先填自己的角色，其他交由協作者後續認領」）**
+   - 列出以下 6 個標準角色：
      - `pm`（產品經理 / 規格定義 — Station 1 `team-spec`）
      - `tech_lead`（技術負責人 / 架構與規範）
      - `developer`（開發工程師 / 任務實作 — Station 2 `team-dev`）
      - `reviewer`（程式碼審查員 — Station 3a `team-review`）
      - `qa`（品質工程師 / 測試規劃與驗證 — Station 3b `team-qa`）
      - `release_manager`（發佈管理員 / 上線與結案 — Station 4 `team-release`）
-   - **為什麼需要確認各角色的 API Token？** Jira REST API v3 的留言（Comment）與狀態變更發送人頭像，永遠取決於當次 HTTP 請求所使用的 API Token 帳號。為不同人員擔任的角色配置各自的 API Token 後，`team-spec`（`pm`）、`team-dev`（`developer`）、`team-review`（`reviewer`）、`team-qa`（`qa`）、`team-release`（`release_manager`）在寫入 Jira 評論與交接時，就會**直接以該角色成員本人的 Jira 帳號身分發送**，且初始化時會自動透過各角色的 Token 呼叫 `/rest/api/3/myself` 精準綁定其 `jira_account_id`。
-   - **安全儲存承諾**：所有 API Token（包含預設 Token 與各角色專屬 `role_credentials`）皆**只會寫入受 `.gitignore` 保護的 `.ai-workflow/credentials.json`（權限 `0600`）**；即便在 `--roles-json` 中傳入 `api_token`，`jira_sync.py init` 也會自動將其剝離轉存至 `credentials.json`，**絕不會寫入 Git 追蹤的 `.ai-workflow/team-config.json`**。
-   - **一人兼任多角色自動共用**：若同一位成員（相同 Email）兼任多個角色，只需提供一次該成員的 API Token，系統會自動在同 Email 的角色間共用 Token，並在相鄰站點為同一人時標記 `auto-consolidated`（同時仍會將 Jira 單據 `Assignee` 指派給該成員，避免單據顯示為 `Unassigned`）。
+   - **漸進式角色認領（Progressive Role Claiming）**：初始化者**不需要**預先幫所有人代填帳號或收集他人的 Token！您可以直接詢問使用者：
+     - **「請問您自己負責哪幾個角色（例如 `pm, tech_lead, developer`）？以及您的姓名、Jira Email 與 API Token 為何？」**
+     - 其他尚未確定的角色可直接留空（標記為 `unclaimed_roles`），當第二、第三位協作者 `git clone` 專案並執行 `$team-next-step` 時，系統會自動請他們認領自己的角色並綁定各自的本機 Token！（若初始化時已知全體成員，仍可透過 `--roles-json` 一次填齊。）
+   - **安全儲存承諾**：所有 API Token 皆**只會寫入受 `.gitignore` 保護的 `.ai-workflow/credentials.json`（權限 `0600`）**，**絕不會寫入 Git 追蹤的 `.ai-workflow/team-config.json`**。
 4. **Jira 狀態、單據類型映射與選填 QA 測試管理後端（選填確認）**
    - 列出預設狀態映射（`To Do`、`In Progress`、`In Review`、`In QA`、`Ready for Release`、`Done`）與單據類型（`Story`、`Sub-task`、`Bug`），詢問是否直接沿用預設值或需自訂。
    - 選填確認團隊的 QA 測試案例管理方式（`--qa-backend`）：直接放在 **Jira 評論（`jira-comment`）** 或同步至 **Qase TestOps（`qase`，搭配 `--qase-project-code` 與 `--qase-token`）**。若初始化時尚未決定可先留空，首次執行 `$team-qa` 時會自動詢問一次並記憶於 `team-config.json`。
@@ -93,13 +99,23 @@ If any of the following items have not been explicitly provided or confirmed by 
 Once the user has confirmed the values in Step 2, execute `scripts/jira_sync.py init` from the repository root (or run with `--interactive` if executing directly in an interactive terminal):
 
 ```bash
+# Option A: Founder claims only their own role(s); teammates claim remaining roles later via `auth`
+python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
+  --project-key "<PROJECT_KEY>" \
+  --jira-url "<JIRA_BASE_URL>" \
+  --role "<FOUNDER_ROLES_COMMA_SEPARATED>" \
+  --name "<FOUNDER_NAME>" \
+  --jira-email "<JIRA_EMAIL>" \
+  --jira-token "<JIRA_API_TOKEN>"
+
+# Option B: Full multi-person mapping upfront
 python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   --project-key "<PROJECT_KEY>" \
   --jira-url "<JIRA_BASE_URL>" \
   --jira-email "<JIRA_EMAIL>" \
   --jira-token "<JIRA_API_TOKEN>" \
   --roles-json '<JSON_MAPPING>' \
-  --role-tokens-json '<ROLE_TOKENS_JSON>'
+  [--role-tokens-json '<ROLE_TOKENS_JSON>']
 ```
 
 *(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`.)*

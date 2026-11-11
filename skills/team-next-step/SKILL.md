@@ -29,7 +29,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . status [--key <JIRA-KEY>] [-
 ```
 
 - If `.ai-workflow/team-config.json` does not exist (`initialized: false`), immediately recommend `$team-init`.
-- If `requires_member_auth: true` (`credentials_missing: true` — a teammate cloned a live Jira repository whose `.ai-workflow/credentials.json` is gitignored), immediately guide them through `$team-init` (`auth` mode: ask only for their personal Jira Email + API Token, plus Qase Token if `qase_required: true`, and run `jira_sync.py auth`), then re-run `status`.
+- If `requires_member_auth: true` (`credentials_missing: true` — a teammate cloned a live Jira repository whose `.ai-workflow/credentials.json` is gitignored), immediately display `claimed_roles` and `unclaimed_roles` from `status`, ask **which role(s) they own** (`--role`, e.g. `qa` or `reviewer,qa`) plus their **personal Jira Email + API Token** (and Qase Token if claiming `qa` when `qase_required: true`), run `jira_sync.py auth --role <ROLES> --jira-email <EMAIL> --jira-token <TOKEN>`, and then immediately re-run `status` to auto-discover active Stories from Jira!
 - When `.ai-workflow/active/` is empty on a newly cloned machine with valid live credentials, `jira_sync.py status` automatically queries Jira (`POST /rest/api/3/search/jql`) for non-Done Stories in `project_key`, hydrates `.ai-workflow/active/<KEY>.json`, and routes seamlessly (`discovered_from_jira`).
 - If multiple `.ai-workflow/active/*.json` files exist and no `<JIRA-KEY>` was specified (`ambiguous: true`), ask one concise question listing the active Jira keys so the user can choose.
 

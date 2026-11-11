@@ -1431,16 +1431,25 @@ def execute_role_handoff(
             "notified": False,
         }
     else:
-        # Different people: transition status, reassign issue, and @mention in comment
+        # Different people (or target role not yet claimed by a collaborator): transition status, reassign if known, and comment
+        role_claimed = _is_role_claimed(to_role, (config.get("roles") or {}).get(to_role))
         client.transition_issue(jira_key, target_jira_status)
         if to_person.get("jira_account_id"):
             client.assign_issue(jira_key, to_person["jira_account_id"])
-        client.add_comment(
-            jira_key,
-            full_comment_md,
-            mention_account_id=to_person.get("jira_account_id", ""),
-            mention_name=to_person.get("name", to_role),
-        )
+        if role_claimed:
+            client.add_comment(
+                jira_key,
+                full_comment_md,
+                mention_account_id=to_person.get("jira_account_id", ""),
+                mention_name=to_person.get("name", to_role),
+            )
+            mention_val = f"@{to_person.get('name') or to_role}"
+            notified_val = True
+        else:
+            unclaimed_note = f"{full_comment_md}\n- **Next Role Pending Claim**: `{to_role}` 尚待協作成員執行 `$team-next-step` / `auth` 認領"
+            client.add_comment(jira_key, unclaimed_note)
+            mention_val = ""
+            notified_val = False
         handoff_record = {
             "timestamp": now_iso(),
             "from_role": from_role,
@@ -1448,11 +1457,12 @@ def execute_role_handoff(
             "from_person": from_person["name"],
             "to_person": to_person["name"],
             "same_person": False,
-            "handoff_mode": "jira-notification",
+            "role_claimed": role_claimed,
+            "handoff_mode": "jira-notification" if role_claimed else "awaiting-role-claim",
             "target_jira_status": target_jira_status,
             "assigned_account_id": to_person.get("jira_account_id", ""),
-            "mention": f"@{to_person.get('name') or to_role}",
-            "notified": True,
+            "mention": mention_val,
+            "notified": notified_val,
         }
 
     story.setdefault("handoffs", []).append(handoff_record)
@@ -1614,20 +1624,60 @@ def extract_and_trim_agents_md(agents_path: Path, standards_path: Path) -> dict:
     }
 
 
+def _is_role_claimed(role_key: str, entry) -> bool:
+    """Return True if a role in team-config.json has been claimed by an actual person (not left at default placeholder)."""
+    def_name = (DEFAULT_TEAM_CONFIG["roles"].get(role_key) or {}).get("name", role_key)
+    unclaimed_Placeholders = {"", def_name.lower(), role_key.lower(), "unclaimed", "待認領", "tbd"}
+    if isinstance(entry, str):
+        return entry.strip().lower() not in unclaimed_Placeholders
+    if isinstance(entry, dict):
+        name = (entry.get("name") or "").strip()
+        email = (entry.get("email") or "").strip()
+        acct = (entry.get("jira_account_id") or "").strip()
+        if email or acct:
+            return True
+        return name.lower() not in unclaimed_Placeholders
+    return False
+
+
+def _partition_claimed_roles(config: dict) -> tuple:
+    """Return (claimed_roles_dict, unclaimed_roles_list) across the 6 standard workflow roles."""
+    claimed = {}
+    unclaimed = []
+    roles_cfg = config.get("roles") or {}
+    for r_key in DEFAULT_TEAM_CONFIG["roles"]:
+        entry = roles_cfg.get(r_key)
+        if _is_role_claimed(r_key, entry):
+            p = resolve_role_person(config, r_key)
+            claimed[r_key] = {
+                "name": p["name"],
+                "email": p["email"],
+                "jira_account_id": p["jira_account_id"],
+            }
+        else:
+            unclaimed.append(r_key)
+    return claimed, unclaimed
+
+
+def _parse_role_list(raw_role: str) -> list:
+    """Parse comma-separated role names (e.g. 'pm,developer,qa') and validate against known roles."""
+    if not raw_role or not raw_role.strip():
+        return []
+    valid_roles = set(DEFAULT_TEAM_CONFIG["roles"].keys()) | {"independent_reviewer"}
+    parsed = []
+    for part in raw_role.split(","):
+        rk = part.strip().lower()
+        if not rk:
+            continue
+        if rk not in valid_roles:
+            raise ValueError(f"Unknown role '{rk}'. Expected one of: {', '.join(sorted(valid_roles))}.")
+        if rk not in parsed:
+            parsed.append(rk)
+    return parsed
+
+
 def _are_roles_unconfigured(roles: dict) -> bool:
-    default_names = {k: v["name"] for k, v in DEFAULT_TEAM_CONFIG["roles"].items()}
-    for r_key, def_name in default_names.items():
-        entry = (roles or {}).get(r_key) or {}
-        if isinstance(entry, str):
-            if entry.strip() and entry.strip() != def_name:
-                return False
-        elif isinstance(entry, dict):
-            name = (entry.get("name") or "").strip()
-            email = (entry.get("email") or "").strip()
-            acct = (entry.get("jira_account_id") or "").strip()
-            if (name and name != def_name) or email or acct:
-                return False
-    return True
+    return not any(_is_role_claimed(rk, (roles or {}).get(rk)) for rk in DEFAULT_TEAM_CONFIG["roles"])
 
 
 def _inspect_init_state(repo_root: Path) -> dict:
@@ -1674,11 +1724,11 @@ def _inspect_init_state(repo_root: Path) -> dict:
         },
         {
             "id": "role_definitions_and_tokens",
-            "title": "2. 六大角色定義、對應人員帳號（Name / Email）與 API Token",
+            "title": "2. 角色認領與個人 Jira API Token（支援僅先填寫自己的角色，其餘交由協作者後續認領）",
             "prompt": (
-                "請確認 pm、tech_lead、developer、reviewer、qa、release_manager 六大角色分別由哪位成員負責（姓名、Email、Jira Account ID），"
-                "以及各角色成員的 Jira API Token（若不同角色為不同 Jira 帳號，提供各自的 API Token 可讓各站點的 Jira 評論直接以該角色本人的 Jira 帳號頭像發出；"
-                "若同一人兼任或共用預設 Token 亦可直接指定）。所有 Token 將安全儲存於受 .gitignore 保護的 .ai-workflow/credentials.json（權限 0600），絕不寫入版控。"
+                "請問您自己負責哪幾個角色（pm / tech_lead / developer / reviewer / qa / release_manager），並請提供您的姓名、Jira Email 與 API Token？"
+                "（若您已知其他成員資訊亦可一併提供；若尚未確定，其他角色可留空為待認領狀態，待其他成員 git clone 並執行 $team-next-step 時再各自認領並綁定個人 Token。）"
+                "所有 Token 僅寫入受 .gitignore 保護的 .ai-workflow/credentials.json（權限 0600），絕不進版控。"
             ),
             "configured": (not _are_roles_unconfigured(cfg.get("roles", {}))) and has_any_creds,
             "current_value": {
@@ -1836,11 +1886,13 @@ def cmd_auth(args) -> int:
     )
 
     if getattr(args, "inspect", False):
+        claimed_map, unclaimed_list = _partition_claimed_roles(config)
         roles_summary = {}
         for r_key, r_val in (config.get("roles") or {}).items():
             p = resolve_role_person(config, r_key)
             rc = role_creds.get(r_key) if isinstance(role_creds.get(r_key), dict) else {}
             roles_summary[r_key] = {
+                "claimed": _is_role_claimed(r_key, r_val),
                 "name": p["name"],
                 "email": p["email"],
                 "jira_account_id": p["jira_account_id"],
@@ -1852,15 +1904,18 @@ def cmd_auth(args) -> int:
             "project_key": config.get("project_key", ""),
             "jira_base_url": config.get("jira_base_url", ""),
             "credentials_configured": has_creds,
+            "claimed_roles": claimed_map,
+            "unclaimed_roles": unclaimed_list,
             "qa_test_backend": qa_backend,
             "qase_required": qa_backend == "qase",
             "qase_project_code": (config.get("qase") or {}).get("project_code", ""),
             "qase_token_configured": qase_token_configured,
             "roles": roles_summary,
             "agent_instruction": (
-                "Ask this collaborator for their personal Jira account Email and Jira API Token "
-                "(plus Qase API Token if they act as QA and qase_required is true), then run "
-                "`jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN> [--qase-token <QASE_TOKEN>]`."
+                "Show the collaborator `claimed_roles` and `unclaimed_roles`, then STOP and ask: "
+                "(1) Which role(s) they are responsible for (`--role`, e.g. `qa` or `reviewer,qa`), and "
+                "(2) Their personal Jira Email and Jira API Token (plus display name `--name` if desired, and Qase API Token if claiming `qa` when `qase_required` is true). "
+                "Then run `jira_sync.py auth --role <ROLES> [--name <NAME>] --jira-email <EMAIL> --jira-token <TOKEN> [--qase-token <QASE_TOKEN>]`."
             ),
         }, ensure_ascii=False, indent=2))
         return 0
@@ -1868,9 +1923,19 @@ def cmd_auth(args) -> int:
     jira_email = getattr(args, "jira_email", None)
     jira_token = getattr(args, "jira_token", None)
     qase_token = getattr(args, "qase_token", None)
+    explicit_roles = _parse_role_list(getattr(args, "role", None) or "")
+    person_name_arg = (getattr(args, "name", None) or "").strip()
 
     if getattr(args, "interactive", False):
-        print("=== Collaborator Local Credential Binding (.ai-workflow/credentials.json) ===", file=sys.stderr)
+        _, unclaimed_list = _partition_claimed_roles(config)
+        print("=== Collaborator Role Claim & Local Credential Binding ===", file=sys.stderr)
+        if not explicit_roles:
+            hint = f" (unclaimed: {', '.join(unclaimed_list)})" if unclaimed_list else ""
+            print(f"Role(s) you own (comma-separated, e.g. qa or reviewer,qa){hint}: ", end="", file=sys.stderr, flush=True)
+            explicit_roles = _parse_role_list(sys.stdin.readline().strip())
+        if not person_name_arg:
+            print("Display Name (optional, auto-filled from Jira if blank): ", end="", file=sys.stderr, flush=True)
+            person_name_arg = sys.stdin.readline().strip()
         if not jira_email:
             print("Jira Account Email: ", end="", file=sys.stderr, flush=True)
             jira_email = sys.stdin.readline().strip()
@@ -1926,13 +1991,14 @@ def cmd_auth(args) -> int:
             return 1
 
     matched_roles = []
-    explicit_role = (getattr(args, "role", None) or "").strip()
-    if explicit_role and jira_email and jira_token:
-        role_tokens_to_save[explicit_role] = {
-            "jira_email": jira_email.strip(),
-            "jira_api_token": jira_token.strip(),
-        }
-        matched_roles.append(explicit_role)
+    for rk in explicit_roles:
+        if jira_email and jira_token:
+            role_tokens_to_save[rk] = {
+                "jira_email": jira_email.strip(),
+                "jira_api_token": jira_token.strip(),
+            }
+        if rk not in matched_roles:
+            matched_roles.append(rk)
 
     if jira_email and jira_token:
         norm_em = jira_email.strip().lower()
@@ -1945,6 +2011,53 @@ def cmd_auth(args) -> int:
                 })
                 if r_key not in matched_roles:
                     matched_roles.append(r_key)
+
+    # Progressive Role Claiming: update team-config.json ONLY if explicit --role was claimed or matched role lacked account_id/name
+    orig_cfg_raw = cfg_path.read_text(encoding="utf-8")
+    raw_cfg_disk = json.loads(orig_cfg_raw)
+    disk_roles = raw_cfg_disk.setdefault("roles", {})
+    claimed_roles_updated = []
+    verified_display_name = (jira_verification.get("display_name") or "").strip()
+    verified_account_id = (jira_verification.get("account_id") or "").strip()
+
+    for rk in matched_roles:
+        existing_entry = disk_roles.get(rk) if isinstance(disk_roles.get(rk), dict) else {}
+        old_name = (existing_entry.get("name") or "").strip()
+        old_email = (existing_entry.get("email") or "").strip()
+        old_acct = (existing_entry.get("jira_account_id") or "").strip()
+
+        if rk in explicit_roles:
+            new_name = (
+                person_name_arg
+                or verified_display_name
+                or (old_name if _is_role_claimed(rk, existing_entry) else "")
+                or ((jira_email or "").split("@")[0].strip() if jira_email else rk)
+            )
+            new_email = (jira_email or old_email).strip()
+            new_acct = verified_account_id or old_acct
+        else:
+            # Matched via pre-configured email: preserve existing name/email unless --name given, and backfill missing account_id
+            new_name = person_name_arg or old_name or verified_display_name
+            new_email = old_email or (jira_email or "").strip()
+            new_acct = old_acct or verified_account_id
+
+        updated_entry = {
+            "name": new_name,
+            "email": new_email,
+            "jira_account_id": new_acct,
+        }
+        if existing_entry != updated_entry:
+            disk_roles[rk] = updated_entry
+            claimed_roles_updated.append(rk)
+
+    team_config_modified = False
+    if claimed_roles_updated:
+        new_cfg_raw = json.dumps(raw_cfg_disk, ensure_ascii=False, indent=2) + "\n"
+        if new_cfg_raw != orig_cfg_raw:
+            cfg_path.write_text(new_cfg_raw, encoding="utf-8")
+            team_config_modified = True
+
+    _, remaining_unclaimed = _partition_claimed_roles(load_team_config(repo_root))
 
     saved_cred_path = save_jira_credentials(
         repo_root,
@@ -1963,10 +2076,12 @@ def cmd_auth(args) -> int:
         "jira_base_url": base_url,
         "credentials_path": str(saved_cred_path.relative_to(repo_root)),
         "matched_roles": matched_roles,
+        "claimed_roles_updated": claimed_roles_updated,
+        "remaining_unclaimed_roles": remaining_unclaimed,
         "qase_token_saved": bool(qase_token),
         "jira_verification": jira_verification,
         "gitignore_updated": gitignore_updated,
-        "team_config_modified": False,
+        "team_config_modified": team_config_modified,
     }, ensure_ascii=False, indent=2))
     return 0
 
@@ -2073,6 +2188,24 @@ def cmd_init(args) -> int:
     eff_email_to_save = jira_email_arg if jira_email_arg is not None else interactive_email
     eff_token_to_save = jira_token_arg if jira_token_arg is not None else interactive_token
 
+    init_explicit_roles = _parse_role_list(getattr(args, "role", None) or "")
+    init_name_arg = (getattr(args, "name", None) or "").strip()
+    if init_explicit_roles:
+        for rk in init_explicit_roles:
+            prev_role = cfg["roles"].get(rk) if isinstance(cfg["roles"].get(rk), dict) else {}
+            r_em = (eff_email_to_save or prev_role.get("email") or "").strip()
+            r_nm = init_name_arg or (prev_role.get("name") if _is_role_claimed(rk, prev_role) else "") or (r_em.split("@")[0] if r_em else rk)
+            cfg["roles"][rk] = {
+                "name": r_nm,
+                "email": r_em,
+                "jira_account_id": prev_role.get("jira_account_id", ""),
+            }
+            if eff_token_to_save:
+                extracted_role_creds.setdefault(rk, {
+                    "jira_email": r_em,
+                    "jira_api_token": eff_token_to_save.strip(),
+                })
+
     # If no default email/token was passed but at least one role token was provided, use the first role's email/token as fallback default
     if not eff_token_to_save and not local_creds.get("jira_api_token") and extracted_role_creds:
         first_rc = next(iter(extracted_role_creds.values()))
@@ -2119,6 +2252,8 @@ def cmd_init(args) -> int:
             try:
                 rv = r_client.verify_connection()
                 role_verifications[r_key] = rv
+                if r_key in init_explicit_roles and not init_name_arg and rv.get("display_name"):
+                    r_entry["name"] = rv["display_name"]
                 if not r_acct and rv.get("account_id"):
                     r_entry["jira_account_id"] = rv["account_id"]
                     r_acct = rv["account_id"]
@@ -2193,6 +2328,8 @@ def cmd_init(args) -> int:
             else (".ai-workflow/credentials.json" if get_credentials_path(repo_root).exists() else None)
         ),
         "role_has_api_token": role_has_api_token,
+        "claimed_roles": list(_partition_claimed_roles(cfg)[0].keys()),
+        "unclaimed_roles": _partition_claimed_roles(cfg)[1],
         "jira_verification": jira_verification,
         "role_verifications": role_verifications,
         "auto_resolved_account_ids": resolved_accounts,
@@ -2520,6 +2657,7 @@ def cmd_status(args) -> int:
 
         if not target_file.exists():
             if creds_missing:
+                claimed_map, unclaimed_list = _partition_claimed_roles(config)
                 out = {
                     "initialized": True,
                     "standards_exists": standards_exists,
@@ -2527,13 +2665,15 @@ def cmd_status(args) -> int:
                     "story_found": False,
                     "credentials_missing": True,
                     "requires_member_auth": True,
+                    "claimed_roles": claimed_map,
+                    "unclaimed_roles": unclaimed_list,
                     "recommended_skill": "team-init",
                     "recommended_mode": "auth",
                     "reason": (
                         f"Project is configured for live Jira ({base_url}), but local `.ai-workflow/credentials.json` is missing on this machine "
                         f"(cannot fetch remote Story {jira_key})."
                     ),
-                    "done_when": "Collaborator binds personal Jira credentials via `jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN>`.",
+                    "done_when": "Collaborator claims their role(s) and binds personal Jira credentials via `jira_sync.py auth --role <ROLES> --jira-email <EMAIL> --jira-token <TOKEN>`.",
                 }
                 print(json.dumps(out, ensure_ascii=False, indent=2))
                 return 0
@@ -2583,12 +2723,15 @@ def cmd_status(args) -> int:
 
     if not active_files and creds_missing:
         qa_backend_val = (config.get("qa_test_backend") or "").strip().lower()
+        claimed_map, unclaimed_list = _partition_claimed_roles(config)
         out = {
             "initialized": True,
             "standards_exists": standards_exists,
             "active_stories": [],
             "credentials_missing": True,
             "requires_member_auth": True,
+            "claimed_roles": claimed_map,
+            "unclaimed_roles": unclaimed_list,
             "qase_required": qa_backend_val == "qase",
             "recommended_skill": "team-init",
             "recommended_mode": "auth",
@@ -2596,7 +2739,7 @@ def cmd_status(args) -> int:
                 f"Repository is already initialized for live Jira ({base_url}), "
                 f"but `.ai-workflow/credentials.json` is gitignored and not yet configured on this machine."
             ),
-            "done_when": "Personal Jira API token (and Qase token if QA) is bound locally via `jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN>`.",
+            "done_when": "Collaborator selects their role(s) and binds personal Jira API token via `jira_sync.py auth --role <ROLES> --jira-email <EMAIL> --jira-token <TOKEN>`.",
         }
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
@@ -4036,8 +4179,9 @@ def build_parser() -> argparse.ArgumentParser:
     # 1. init
     p_init = sub.add_parser("init", help="Initialize .ai-workflow/team-config.json, gitignored credentials.json, .gitignore, and engineering-standards.md")
     p_init.add_argument("--inspect", action="store_true", help="Inspect current initialization state and return required user inquiry questions without modifying files")
-    p_init.add_argument("--auth-only", action="store_true", help="Collaborator mode: bind only local gitignored credentials.json without modifying team-config.json")
-    p_init.add_argument("--role", help="Optional role key when using --auth-only")
+    p_init.add_argument("--auth-only", action="store_true", help="Collaborator mode: bind local gitignored credentials.json and optionally claim role(s)")
+    p_init.add_argument("--role", help="Comma-separated role(s) owned by the current user (e.g. 'pm,tech_lead,developer'); leaves remaining roles unclaimed for teammates")
+    p_init.add_argument("--name", help="Display name for the role(s) claimed via --role (auto-resolved from Jira /myself if omitted)")
     p_init.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for Jira URL, project key, account email, API token, and role mappings")
     p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")
     p_init.add_argument("--jira-url", default=None, help="Jira base URL (e.g. https://org.atlassian.net)")
@@ -4057,13 +4201,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--standards-md", default="docs/shared/engineering-standards.md", help="Relative path to engineering-standards.md")
     p_init.set_defaults(func=cmd_init)
 
-    # 1b. auth (collaborator personal credential onboarding after git clone)
-    p_auth = sub.add_parser("auth", help="Bind personal Jira/Qase API tokens into local gitignored .ai-workflow/credentials.json without modifying team-config.json")
-    p_auth.add_argument("--inspect", action="store_true", help="Inspect collaborator credential readiness and configured team roles")
-    p_auth.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for personal Jira Email, Jira API Token, and optional Qase API Token")
+    # 1b. auth (collaborator role claiming & personal credential onboarding after git clone)
+    p_auth = sub.add_parser("auth", help="Claim role(s) and bind personal Jira/Qase API tokens into local gitignored .ai-workflow/credentials.json")
+    p_auth.add_argument("--inspect", action="store_true", help="Inspect collaborator credential readiness, claimed roles, and unclaimed roles")
+    p_auth.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for owned role(s), display name, Jira Email, Jira API Token, and optional Qase API Token")
+    p_auth.add_argument("--role", default=None, help="Comma-separated role(s) claimed by this collaborator (e.g. 'qa' or 'reviewer,qa')")
+    p_auth.add_argument("--name", default=None, help="Collaborator display name (auto-filled from Jira /rest/api/3/myself if omitted)")
     p_auth.add_argument("--jira-email", default=None, help="Personal Jira account email")
     p_auth.add_argument("--jira-token", default=None, help="Personal Jira API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
-    p_auth.add_argument("--role", default=None, help="Optional explicit role name to bind token to (auto-matched by email if omitted)")
     p_auth.add_argument("--role-tokens-json", default=None, help="Optional JSON mapping role names to Jira API tokens")
     p_auth.add_argument("--qase-token", default=None, help="Optional Qase API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
     p_auth.set_defaults(func=cmd_auth)

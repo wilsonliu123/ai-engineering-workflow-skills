@@ -1880,6 +1880,126 @@ class WorkflowTestSuite(unittest.TestCase):
             jira_srv.shutdown()
             jira_srv.server_close()
 
+    def test_13_progressive_role_claiming_from_partial_init_to_collaborator_auth(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp_alice, tempfile.TemporaryDirectory() as tmp_carol:
+                alice_root = Path(tmp_alice)
+                carol_root = Path(tmp_carol)
+
+                # S1: Alice initializes repo filling ONLY her own roles (`pm,tech_lead,developer`) — leaving reviewer, qa, release_manager unclaimed!
+                init_a = run_cli(
+                    alice_root, "init",
+                    "--project-key", "AP",
+                    "--jira-url", f"http://127.0.0.1:{jira_port}",
+                    "--role", "pm,tech_lead,developer",
+                    "--name", "Alice Chen",
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "alice-tok-111",
+                )
+                self.assertEqual(init_a.returncode, 0, init_a.stderr)
+                ia_out = json.loads(init_a.stdout)
+                self.assertEqual(sorted(ia_out["claimed_roles"]), ["developer", "pm", "tech_lead"])
+                self.assertEqual(sorted(ia_out["unclaimed_roles"]), ["qa", "release_manager", "reviewer"])
+
+                cfg_a = json.loads((alice_root / ".ai-workflow/team-config.json").read_text(encoding="utf-8"))
+                self.assertEqual(cfg_a["roles"]["pm"]["email"], "alice@team.io")
+                self.assertEqual(cfg_a["roles"]["pm"]["jira_account_id"], "acc-alice")
+                self.assertEqual(cfg_a["roles"]["developer"]["jira_account_id"], "acc-alice")
+                self.assertEqual(cfg_a["roles"]["qa"]["email"], "")
+                self.assertEqual(cfg_a["roles"]["qa"]["jira_account_id"], "")
+
+                # S2: Alice creates Story AP-1, completes TASK-001 via Fast-Track, and runs handoff while `qa` is STILL unclaimed ->
+                # Must NOT post fake "@QA Owner 請接手下一階段工作：" mention!
+                self.assertEqual(
+                    run_cli(
+                        alice_root, "sync-story",
+                        "--key", "AP-1",
+                        "--title", "Progressive Role Claiming Story",
+                        "--ac", "AC-001:Progressive claiming works",
+                        "--status", "approved",
+                        "--create",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        alice_root, "complete-task",
+                        "--key", "AP-1",
+                        "--task-id", "TASK-001",
+                        "--commit", "c1a1m01",
+                        "--files", "app.py",
+                        "--test-result", "pytest: 1 passed",
+                    ).returncode,
+                    0,
+                )
+                MockJiraHandler.requests_log.clear()
+                ho_unclaimed = run_cli(
+                    alice_root, "handoff",
+                    "--key", "AP-1",
+                    "--review-status", "approved",
+                    "--commit", "c1a1m01",
+                )
+                self.assertEqual(ho_unclaimed.returncode, 0, ho_unclaimed.stderr)
+                ho_comments = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1].endswith("/comment")]
+                self.assertEqual(len(ho_comments), 1)
+                ho_comment_str = json.dumps(ho_comments[0][2], ensure_ascii=False)
+                self.assertNotIn("@QA Owner", ho_comment_str)
+
+                # S3: Simulate git clone on Carol's machine (copying only Git-tracked files)
+                (carol_root / ".ai-workflow").mkdir(parents=True, exist_ok=True)
+                (carol_root / ".ai-workflow/team-config.json").write_bytes(
+                    (alice_root / ".ai-workflow/team-config.json").read_bytes()
+                )
+                (carol_root / ".gitignore").write_bytes((alice_root / ".gitignore").read_bytes())
+
+                # Carol runs `status` -> sees requires_member_auth AND unclaimed_roles: ["qa", "release_manager", "reviewer"]!
+                st_c = run_cli(carol_root, "status")
+                self.assertEqual(st_c.returncode, 0, st_c.stderr)
+                stc_out = json.loads(st_c.stdout)
+                self.assertTrue(stc_out["requires_member_auth"])
+                self.assertEqual(sorted(stc_out["unclaimed_roles"]), ["qa", "release_manager", "reviewer"])
+                self.assertIn("pm", stc_out["claimed_roles"])
+
+                # Carol claims `reviewer,qa` via `auth` (without even passing --name; displayName & accountId auto-resolved from /myself!)
+                claim_res = run_cli(
+                    carol_root, "auth",
+                    "--role", "reviewer,qa",
+                    "--jira-email", "carol@team.io",
+                    "--jira-token", "qa-token-carol",
+                )
+                self.assertEqual(claim_res.returncode, 0, claim_res.stderr)
+                cr_out = json.loads(claim_res.stdout)
+                self.assertTrue(cr_out["team_config_modified"])
+                self.assertEqual(sorted(cr_out["claimed_roles_updated"]), ["qa", "reviewer"])
+                self.assertEqual(cr_out["remaining_unclaimed_roles"], ["release_manager"])
+
+                # Verify team-config.json on Carol's machine now has Carol Wu + acc-carol-from-token, and ZERO tokens!
+                carol_cfg_raw = (carol_root / ".ai-workflow/team-config.json").read_text(encoding="utf-8")
+                self.assertNotIn("qa-token-carol", carol_cfg_raw)
+                carol_cfg = json.loads(carol_cfg_raw)
+                self.assertEqual(carol_cfg["roles"]["qa"]["name"], "Carol Wu")
+                self.assertEqual(carol_cfg["roles"]["qa"]["email"], "carol@team.io")
+                self.assertEqual(carol_cfg["roles"]["qa"]["jira_account_id"], "acc-carol-from-token")
+                self.assertEqual(carol_cfg["roles"]["reviewer"]["jira_account_id"], "acc-carol-from-token")
+
+                # And Carol immediately runs `status` -> discovers AP-1 at Station 3b owned by Carol Wu!
+                st_after = json.loads(run_cli(carol_root, "status").stdout)
+                self.assertEqual(st_after["jira_key"], "AP-1")
+                self.assertEqual(st_after["recommended_skill"], "team-qa")
+                self.assertEqual(st_after["responsible_person"], "Carol Wu")
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
