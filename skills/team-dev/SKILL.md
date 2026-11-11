@@ -54,10 +54,13 @@ If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-
      2. The active item (`BUG-*`, `TASK-###`, or `REV-###`) and its linked `AC-*` / design section in `.ai-workflow/active/<JIRA-KEY>.json`
      3. The specific source and test files touched by this task.
    - Do not load unrelated feature histories or full repository dumps.
-3. **Implement Code & Automated Tests:**
-   - Follow repository conventions and `docs/shared/engineering-standards.md`.
-   - Write or update unit/integration/E2E tests covering the task's `AC-*` (or reproducing the `BUG-*` / `REV-###`). Include `TC-###` identifiers in test names when QA test cases are already planned.
-   - Run the verification test suite and confirm it passes before checking off the task.
+3. **Compose Specialist Craft Skills & Pass the Exit Gate:**
+   - **Bring-Your-Own-Skill Hook:** `team-dev` orchestrates task selection, spec alignment, and Jira check-off — it does not replace domain coding skills. Before writing code, actively load and apply any matching specialist skill available in the developer's environment (for example TDD / evidence-first coding, frontend UI/UX design, React/Go/Python framework guidance, or testing patterns) or explicitly named by the developer, alongside `docs/shared/engineering-standards.md` (fallback: `AGENTS.md`).
+   - **Pre-Checkoff Exit Gate (Aligned with `$team-review`):** Complete coding only when all four conditions hold (see `references/dev-method.md` §2.3 for surface checks):
+     1. **Module reuse:** Existing project helpers, types, and config constants are reused without duplicate implementations or hardcoded environment values.
+     2. **Red-to-Green boundary tests:** Automated tests verify both the happy path and at least one boundary/error case for every linked `AC-*` (including `TC-###` IDs in test names when planned).
+     3. **Change-surface completeness:** `has_api`/`has_data` changes enforce AuthN/AuthZ, input validation, and transactional integrity; `has_ui` changes implement `Normal`, `Loading`, `Empty`, and `Error` states from `design.ui_spec`.
+     4. **Clean verification & static checks:** Both the verification test command and the repository's typecheck/linter command exit `0`.
 4. **Stop & Escalate Conditions (Spec Gap Escalation Loop):**
    - Stop and ask the user if implementation uncovers a missing edge-case `AC-*`, requires contradicting an approved `AC-*`, breaks a public API contract, or introduces an unapproved destructive migration.
    - When a genuine spec gap or new AC is discovered during coding, update the Story specification first via `jira_sync.py sync-story` (`$team-spec`) so the new `AC-*` is formally tracked before completing the task.

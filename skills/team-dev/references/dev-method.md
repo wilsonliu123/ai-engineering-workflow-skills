@@ -50,10 +50,25 @@ For each task, open Bug, or Review Finding:
    - `.ai-workflow/active/<JIRA-KEY>.json` (auto-hydrated from main Git worktree or remote Jira if missing locally)
    - `docs/shared/engineering-standards.md` (or `AGENTS.md` if absent)
    - Target files listed in `files`
-2. **Test-First / Evidence-First Coding:**
-   - Write or update automated tests that directly assert the behavior required by the linked `AC-*` or reproduce the `BUG-*` / `REV-###`.
-   - Implement the minimal, clean production code that satisfies the tests and adheres to `docs/shared/engineering-standards.md`.
-3. **Deterministic Task Check-Off (with Git Auto-Detection & Multi-ID Support):**
+2. **Compose Specialist Skills & Test-First Coding:**
+   - **Load matching craft skills:** Pair `team-dev` with the developer's installed domain skills — for example TDD / evidence-first coding for core logic, UI/UX & frontend skills when `change_surface.has_ui` is true, and language/framework testing skills — rather than treating `team-dev` as the sole active skill.
+   - **Reuse before writing:** Inspect sibling modules in the target directory for existing utilities, error envelopes, auth middleware, and shared types.
+   - **Red-to-Green verification:** Write or update automated tests asserting both happy-path behavior and boundary/rejection cases (`400`/`401`/`403`/`409`, empty inputs, rollback/concurrency invariants) for every linked `AC-*`, `BUG-*`, or `REV-###`, see them fail before the fix/feature is wired, then implement the minimal production code to make them pass.
+3. **Pass the Station 2 Exit Gate (Pre-Review Shift-Left):**
+   Verify the four checks in §2.3 below so Station 3a (`$team-review`) never rejects the commit for preventable gaps.
+4. **Deterministic Task Check-Off (with Git Auto-Detection & Multi-ID Support):**
    - Commit the change and run `python3 .ai-workflow/bin/jira_sync.py complete-task --key <KEY> --task-id <ID[,ID2]> --test-result "<summary>"`.
    - `--commit` (from `git rev-parse --short HEAD`) and `--files` (from `git show` / `git diff`) are detected automatically when omitted.
    - This updates `.ai-workflow/active/<JIRA-KEY>.json` (`status: "completed"`, `commit`, `changed_files`, `test_result`), updates `candidate_commit`, transitions `review.status` to `"remediated"` once all open blocking `REV-*` findings are resolved, posts a completion comment to the Jira `Sub-task` (or `Bug`), and transitions it to `Done`.
+
+### 2.3 Station 2 Exit Gate Checklist (Aligned with `$team-review` 3-Axis Audit)
+
+Complete every applicable item before running `jira_sync.py complete-task`:
+
+| Dimension | Required Condition Before `complete-task` |
+|---|---|
+| **Codebase Fit** | Reuses existing project conventions, directory layout (`docs/shared/engineering-standards.md` / `AGENTS.md`), shared types, and config variables. |
+| **Test Depth (`AC-*` / `TC-###`)** | Automated tests cover every linked `AC-*` happy path **plus** at least one negative/boundary path; `TC-###` IDs appear in test names when QA cases exist. |
+| **API & Data (`has_api` / `has_data`)** | State-mutating routes enforce AuthN/AuthZ, validate input bounds/schemas, protect against injection/XSS, and preserve transactional consistency. |
+| **Frontend UI (`has_ui`)** | Implements all states specified in `design.ui_spec` (`Normal`, `Loading`, `Empty`, `Invalid`/`Error`, and optimistic-update rollback where applicable). |
+| **Static & Runtime Green** | Both the task's `verification` test command and repository static checks (for example `tsc --noEmit` or project linter) exit `0`. |
