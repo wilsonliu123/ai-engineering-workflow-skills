@@ -1,6 +1,36 @@
 # Changelog
 
-## v1.0.0 — 4-Station Jira-Centered Small-Team Workflow (Issue #1)
+## v1.2.0 — 2026-11-11 — Multi-Member Collaboration, Qase & Media Sync, QA `report` Mode, Living Manuals & `run-workflow`
+
+- **Interactive Auth, Progressive Role Claiming & 1-to-N Role Pools (`acf5c4a`, `0e99eac`, `b66a91f`, `45728e4`):**
+  - **`team-init` (`init` / `auth`):** Added pre-flight `init --inspect`, interactive role/credential inquiry, per-role Jira API token resolution stored exclusively in gitignored `.ai-workflow/credentials.json` (`0600`), and hidden Jira Issue Property (`ai_workflow_state`) synchronization.
+  - **Collaborator Onboarding & Progressive Claiming:** Founders can initialize only their own roles (`claimed_roles` vs `unclaimed_roles`); teammates cloning the repo bind credentials and claim/join roles via `jira_sync.py auth --role <roles> [--specialty <tag>]` without overwriting existing role members (`1-to-N` `roles.<role>.members` arrays). Mutating commands block with `requires_member_auth: true` instead of silently dropping to offline mode when live Jira is configured without local credentials.
+  - **End-to-End Jira Auto-Assignment & `zh-TW` Default Prose:** Automatic `PUT /rest/api/3/issue/{key}/assignee` across all stations — Story assignment (`pm` on `draft`, `developer` on `approved`), per-Sub-task developer assignment with `specialty` matching (`backend`/`frontend`/etc.), automatic peer-reviewer selection from `roles.reviewer.members`, and Bug assignment traced via `tc_id -> ac_id -> TASK-###`. Set **Traditional Chinese (繁體中文)** as the default prose language across generated Jira descriptions and comments.
+- **Bidirectional Jira Web UI Reconciliation & Remote Story Discovery (`0e99eac`, `45728e4`):**
+  - `status`, `pull`, and all mutating station commands reconcile live Jira state (`reconcile_story_with_jira`): discover newly created non-Done project Stories via `POST /rest/api/3/search/jql`, sync manual Jira Web UI Sub-task/linked-Bug additions or status changes, update `story.role_owners` on manual assignee edits, and guard against overwriting human Story Description edits (`last_synced_description_hash`, `--accept-remote-description`, `--force-overwrite`).
+- **`team-dev` Specialist Skill Hook & Review-Aligned Exit Gate (`15f9938`):**
+  - Added Bring-Your-Own-Skill composition guidance (loading environment TDD, UI/UX, or framework skills alongside `engineering-standards.md`) and a 4-point pre-checkoff exit gate (module reuse, red-to-green boundary tests, change-surface completeness, clean verification & static checks) aligned with `$team-review`.
+- **`team-qa` Qase TestOps Backend, Media Attachments & `report` Mode (`4883300`, `5561779`, `4dd2a07`):**
+  - **Remembered Dual QA Backend (`jira-comment` / `qase`):** One-time `record-qa --inspect` choice persisted in `team-config.json`; `qase` mode synchronizes Suites, Test Cases, Test Runs, bulk results, and External Issue links via Qase TestOps API v1 (`qase_api_token` in `credentials.json`) and eliminates self-`@mention` on `plan`.
+  - **Media Evidence Sync (`--attach` / `--tc-attach`):** Uploads screenshots, recordings, and logs to Jira `Bug` Attachments and — when `qa_test_backend == "qase"` — attaches media to Qase Test Run Results and linked Qase Defects (auto-resolved on `complete-task`).
+  - **New `report` Mode (Exploratory & Standalone Production Bugs):** Supports filing unscripted exploratory Story defects (`create-bug --key <STORY-KEY>` without `--tc-id` → appends `TC-EXP-###` without disturbing passing `TC-001..N`) and registering or adopting standalone production/CS `Bug` tickets (`create-bug --standalone [--adopt --key <BUG-KEY>]`) that flow through a lightweight `team-dev -> team-review -> team-qa (verify) -> team-release` track without `team-spec` or Sub-task overhead.
+- **`team-release` Scale-Aware Living HTML Manual Workflow (`029b6c5`):**
+  - Added a 4-tier decision matrix (`0 -> 1` greenfield, major feature, minor enhancement, bug fix/refactor skip) maintaining standalone dark-sidebar HTML manuals under `docs/manuals/<manual-name>/<manual-name>.html` (`./screenshots/`, `./diagrams/`) with 5 quality gates while preserving `<candidate-commit-sha>` gate alignment on `close-story`.
+- **System Skill `skills/system/run-workflow` (`05138bc`):**
+  - Added system skill documenting dynamic Python multi-agent workflow scripts (`run_workflow` tool) with `agent`, `parallel`, `pipeline`, `phase`, `trajectory`, multi-turn agent handles, and `call_tool`.
+
+## v1.1.0 — 2026-11-04 ~ 2026-11-09 — Scale-Aware Guards, Cross-Machine Hydration, 3-Tier QA & Scenario Training Suite
+
+- **Cross-Machine Hydration, Rich ADF & Zero-CLI Ergonomics (`4b68164`, `28848ff`):**
+  - Added automatic cross-machine and Git worktree state hydration from live Jira issues, native Atlassian Document Format (ADF) tables/panels/badges, Git auto-detection of `--commit` and `--files` on `complete-task`, comma-separated multi-ID completion (`TASK-001,TASK-002` / `REV-001,REV-002`), incremental `AC-###` upsert on `sync-story`, colon/note preservation in QA `--tc` / `--result`, and context-aware `status` hints.
+- **Scale-Aware Spec/Dev Tracks & 3-Tier QA Anti-False-Pass Guardrail (`3d42ef3`):**
+  - **`team-spec` (`one-pass` vs `draft`):** Added iterative multi-round `draft` deep-dive mode and 6-Dimension AC Completeness Checklist for complex/ambiguous stories.
+  - **Dev Fast-Track Complexity Guard:** Allowed single-step `complete-task` fast-track (`TASK-001` auto-creation) strictly for small stories (`<= 3` ACs and `low`/`medium` risk); larger or high-risk stories must run `create-subtasks` (`plan` mode).
+  - **3-Tier Hybrid QA (`automated` / `external` / `manual`):** Protected `external` and `manual` test cases from `--all-pass` so unexecuted external/manual checks remain `not-executed` (`qa_status: "incomplete"`) until verified via report or human confirmation.
+- **Scenario-Based Training Manual & 16-Slide Presentation (`c5e48d6`, `5bf9cdc`, `543c005`, `48946a4`, `5775bb9`):**
+  - Added comprehensive `zh-TW` scenario-driven training documentation in `docs/training-manual.md`, standalone `docs/training-manual.html`, `docs/training-manual.pdf`, Google Docs-ready `docs/training-manual.docx`, annotated dual-pane diagrams (`docs/screenshots/`), and a 16-slide training deck (`docs/training-manual.pptx` + `docs/ppt-assets/`).
+
+## v1.0.0 — 2026-11-04 — 4-Station Jira-Centered Small-Team Workflow (Issue #1)
 
 Consolidated the 11-skill markdown-heavy pipeline into **7 streamlined, Jira-centered skills** tailored for small teams where one person may hold multiple roles:
 
