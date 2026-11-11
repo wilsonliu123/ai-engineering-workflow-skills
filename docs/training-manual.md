@@ -663,12 +663,18 @@ python3 skills/team-qa/scripts/jira_sync.py \
 ![情境 6（team-release）：五大發佈閘門對帳、Jira 結案與暫存鷹架自動清除](./screenshots/11-scenario6-team-release.png)
 *圖 9-1：情境 6 執行 `team-release`（`jira_sync.py close-story`）之五大發佈閘門檢查、攔截範例與成功結案清除暫存檔實況圖。用途：展示 `close-story` 如何強制把關五大閘門與 Commit SHA 對齊，並在通過後自動將 Jira Story 轉為 `Done` 及刪除本地 Active JSON。視覺焦點：請依序查看標註序號 ① 頂部五大強制發佈準備度閘門規格表；② 左下角當 Commit 漂移或閘門未過時的 `blocked: true` 與 `unmet_gates` 攔截輸出；③ 右下角五閘門全數通過後將 Jira Story 轉為 `Done` 並回傳 `active_file_removed: true`。狀態變化：Jira Story 狀態由 `Ready for Release` 轉為最終態 `Done`，且 `.ai-workflow/active/PROJ-101.json` 從本地磁碟永久移除。*
 
-請依序執行以下三步驟完成功能發佈與結案：
+請依序執行以下四步驟完成功能發佈與結案：
 
 1. **步驟一：執行發佈前對帳檢查**
    - 確認五大閘門皆已滿足，且預計發佈之 `--commit`（如 `999beef`）與 `review.reviewed_commit` 及 `qa.tested_commit` 完全一致。
-   - 若功能開發期間有更新全系統常駐活資產（`AGENTS.md`、`docs/shared/engineering-standards.md`、`docs/shared/glossary.md`、`docs/shared/adr/`），確認其已提交至 Git。
-2. **步驟二：執行 `jira_sync.py close-story` 完成結案與暫存清除**
+   - 若功能開發期間有更新全系統常駐活資產（`AGENTS.md`、`docs/shared/engineering-standards.md`、`docs/shared/glossary.md`、`docs/shared/adr/`），確認其已同步更新。
+2. **步驟二：依變更規模同步 HTML 常駐手冊（`docs/manuals/<manual-name>/`）**
+   - 依需求規模分流處理：
+     - **零到一新專案／首版手冊**：先詢問使用者提供 `<manual-name>`，建立獨立目錄 `docs/manuals/<manual-name>/<manual-name>.html`（搭配相對路徑 `./screenshots/` 與 `./diagrams/`，僅產出深色側欄導覽 HTML），並執行三層源碼對帳、四道真實截圖品質閘門與反空殼規格表驗收（純後端無 UI 專案則產出同版型之 API 路由與狀態機 HTML 手冊）。
+     - **新增大塊需求**：確認既有 `docs/manuals/*/` 目錄後，詢問要增量更新既有手冊或新建獨立目錄，僅補拍受影響畫面並局部更新對應章節、目錄與附錄對帳表。
+     - **局部小需求／問題修復**：小需求僅在既有說明或截圖失真時局部替換；一般 Bug 修復與內部重構預設略過（零手冊改動）。
+3. **步驟三：執行 `jira_sync.py close-story` 完成結案與暫存清除**
+   - 明確傳入通過審查與測試之 `--commit`（如 `999beef`），確保更新 `docs/manuals/` 後仍與審查及 QA 錨點一致：
 
 ```bash
 python3 skills/team-release/scripts/jira_sync.py \
@@ -676,11 +682,11 @@ python3 skills/team-release/scripts/jira_sync.py \
   --key "PROJ-101" \
   --version "v1.2.0" \
   --commit "999beef" \
-  --notes "完成訂單 CSV 匯出、403 攔截與空狀態提示；無遷移風險"
+  --notes "完成 CSV 匯出並同步更新 docs/manuals/order-guide/"
 ```
 
-3. **步驟三：產出最終交付報告**
-   - 向團隊回報 Jira Story `PROJ-101` 已轉為 `Done`、發佈版本號 `v1.2.0`、驗證通過之 Commit SHA `999beef`、累計驗證之 AC / Sub-task / TC 數量，並確認 `.ai-workflow/active/PROJ-101.json` 已自動清除。
+4. **步驟四：產出最終交付報告**
+   - 向團隊回報 Jira Story `PROJ-101` 已轉為 `Done`、發佈版本號 `v1.2.0`、驗證通過之 Commit SHA `999beef`、累計驗證之 AC / Sub-task / TC 數量、HTML 手冊同步狀態（`docs/manuals/<manual-name>/<manual-name>.html` 新建／增量更新／略過），並確認 `.ai-workflow/active/PROJ-101.json` 已自動清除。
 
 ### 9.3 `jira_sync.py close-story` 參數與五大發佈閘門規格表
 

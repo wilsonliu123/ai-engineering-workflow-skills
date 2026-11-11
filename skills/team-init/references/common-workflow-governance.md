@@ -28,6 +28,7 @@ Only system-wide rules, project workflow configuration, and long-lived architect
 - `docs/shared/engineering-standards.md` — canonical repository-wide engineering, security, testing, and architecture rules (extracted and deduplicated from `AGENTS.md` by `team-init`).
 - `docs/shared/glossary.md` *(optional, created on demand)* — canonical domain terminology and untranslated product terms.
 - `docs/shared/adr/ADR-<NNN>-<slug>.md` *(optional, created on demand)* — Architecture Decision Records for long-lived, cross-module, or hard-to-reverse technical decisions.
+- `docs/manuals/<manual-name>/<manual-name>.html` *(optional, scale-aware HTML living manual maintained by `team-release`)* — standalone dark-sidebar product/API manual with isolated `./screenshots/` and `./diagrams/` subfolders per user-named manual (`<manual-name>`). Never create per-Story release markdown (`docs/release/`) or duplicate `.md`/`.pdf`/`.docx` manual files unless explicitly asked.
 
 ---
 
@@ -41,7 +42,7 @@ Only system-wide rules, project workflow configuration, and long-lived architect
 | **Station 2** | `team-dev` | `plan` / `implement` | Decompose into `TASK-001..N` (`Sub-task`), implement code & tests, and check off completed tasks/bugs/review findings (Dev Fast-Track guarded to `<= 3` ACs & `low/medium` risk) | `jira_sync.py create-subtasks` / `complete-task` |
 | **Station 3a** | `team-review` | — | Combined Dev Handoff & Code Review against ACs (AC-by-AC traceability), design, `engineering-standards.md`, plus QA external tool/env hints | `jira_sync.py handoff` |
 | **Station 3b** | `team-qa` | `plan` / `verify` | 3-Tier QA (`automated` / `external` / `manual`) planning & verification across remembered **`jira-comment`** or **`qase`** (Qase TestOps) backend; `--all-pass` restricted to `automated` only to prevent false passes | `jira_sync.py record-qa` / `create-bug` |
-| **Station 4** | `team-release` | — | Verify all gates + zero open Bugs, post release summary (with 3-tier QA breakdown), transition Story to `Done`, delete `.ai-workflow/active/<JIRA-KEY>.json` | `jira_sync.py close-story` |
+| **Station 4** | `team-release` | — | Verify all gates + zero open Bugs, run scale-aware HTML Living Manual sync (`docs/manuals/<manual-name>/<manual-name>.html`), post release summary, transition Story to `Done`, delete `.ai-workflow/active/<JIRA-KEY>.json` | `jira_sync.py close-story` |
 
 ### 2.1 Zero-CLI Burden for Humans & Single-Command Entry (`$team-next-step`)
 - **CLI Completely Hidden in Background:** Humans never need to memorize or manually type `jira_sync.py` flags. Users interact in plain natural language (e.g., `"幫我規劃 PROJ-101 訂單匯出"`, `"核准"`, `"繼續下一步"`), and the AI agent assembles and executes `python3 .ai-workflow/bin/jira_sync.py ...` automatically.
