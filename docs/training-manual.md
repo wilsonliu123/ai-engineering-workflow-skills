@@ -474,9 +474,9 @@ python3 skills/team-review/scripts/jira_sync.py \
 
 ## 7. 情境 4：QA 平行測試規劃與多源結果驗證（`team-qa`）
 
-**Station 3b（`team-qa`）** 將傳統繁瑣的測試計畫、執行類型確認、證據收集與驗證報告收斂為兩個精煉模式，並內建**三層混合測試模型（`automated` / `external` / `manual`）**與**防假通過守衛（Anti-False-Pass Guardrail）**：
-- **模式一：`plan`（平行測試案例規劃 + AI 預填 `automated` / `external` / `manual` 三層執行類型）**
-- **模式二：`verify`（本機自動測試執行 + 外部工具報告匯入 + 人工驗證回填 + 自動放行或開立 Bug 單）**
+**Station 3b（`team-qa`）** 將傳統繁瑣的測試計畫、執行類型確認、證據收集與驗證報告收斂為兩個精煉模式，支援一次性選擇並記憶 **`jira-comment`（Jira 評論表格）** 或 **`qase`（Qase TestOps Suite / Case / Test Run 雙向連動）** 後端，並內建**三層混合測試模型（`automated` / `external` / `manual`）**與**防假通過守衛（Anti-False-Pass Guardrail）**：
+- **模式一：`plan`（首次自動詢問並記憶 `jira-comment` 或 `qase` 後端 + 平行測試案例規劃 + AI 預填 `automated` / `external` / `manual` 三層執行類型）**
+- **模式二：`verify`（依記憶之後端自動同步本機自動測試、外部工具報告與人工驗證結果 + Qase Test Run 自動結案 + 自動放行或開立 Bug 單）**
 
 ### 7.1 情境 4A（`team-qa` `plan` 模式）：平行測試規劃與 AI 預填類型一鍵確認
 
@@ -537,6 +537,10 @@ python3 skills/team-qa/scripts/jira_sync.py \
 
 | 參數名稱 | 適用模式 | 必填 / 類型 | 功能說明與輸入規範 | 內建防呆與狀態影響 |
 | :--- | :--- | :--- | :--- | :--- |
+| `--inspect` | 唯讀檢查 | 選填（布林旗標） | 檢查目前專案之 `qa_test_backend` 是否已設定（`requires_qa_backend_choice`）與 Qase 憑證狀態 | 不修改任何檔案；供 AI 在首次執行 `record-qa` 前詢問使用者要選用 `jira-comment` 或 `qase` |
+| `--qa-backend` | `plan` & `verify` | 選填（`jira-comment` / `qase`） | 設定並記憶專案測試案例後端（寫入 `team-config.json` 之 `qa_test_backend`） | 設定一次後永久記憶，後續執行 `plan` 或 `verify` 自動沿用該後端 |
+| `--qase-project-code` | `plan` & `verify` | 選填（字串） | 指定 Qase 專案代號（如 `AP`，預設可同 Jira `project_key`） | 寫入 `team-config.json` 之 `qase.project_code` |
+| `--qase-token` | `plan` & `verify` | 選填（字串） | 設定 Qase API Token（`QASE_API_TOKEN`） | **只會寫入受 `.gitignore` 保護之 `.ai-workflow/credentials.json`（權限 `0600`）**，絕不寫入 `team-config.json` |
 | `--key` | `plan` & `verify` | **必填**（字串） | Jira Story 代號（如 `PROJ-101`） | 讀寫 `.ai-workflow/active/<KEY>.json` 之 `qa` 區塊 |
 | `--mode` | `plan` & `verify` | **必填**（列舉） | 指定執行模式：`plan` 或 `verify` | **QA Fast-Track**：`verify` 模式下若尚未執行過 `plan`（`test_cases` 為空），自動由 `AC-001..N` 1:1 衍生預設之 `TC-001..N` |
 | `--tc` | `plan` | 可重複指定 | 單行測試案例格式：`TC-001:AC-001:<type>:<Title>`（`<type>` 支援 `automated`、`external` 或 `manual`，`<Title>` 為**標題與預期結果**，完整保留標題內所有冒號） | **100% AC 覆蓋防呆**：若規劃的所有 `TC-*` 未完整覆蓋 Story 的每一條 `AC-*`，立即報錯退出 |

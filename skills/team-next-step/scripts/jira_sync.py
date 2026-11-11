@@ -64,6 +64,13 @@ DEFAULT_TEAM_CONFIG = {
         "subtask": "Sub-task",
         "bug": "Bug",
     },
+    "qa_test_backend": "",
+    "qase": {
+        "project_code": "",
+        "base_url": "https://api.qase.io/v1",
+        "app_url": "https://app.qase.io",
+        "jira_integration_type": "jira-cloud",
+    },
 }
 
 DEFAULT_STANDARDS_TEMPLATE = """---
@@ -145,7 +152,7 @@ def _read_credentials_from_dir(wf_dir: Path) -> dict:
         try:
             raw = json.loads(cred_file.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
-                for k in ("jira_base_url", "jira_email", "jira_api_token"):
+                for k in ("jira_base_url", "jira_email", "jira_api_token", "qase_api_token"):
                     if raw.get(k):
                         creds[k] = str(raw[k]).strip()
                 raw_rc = raw.get("role_credentials")
@@ -168,6 +175,7 @@ def _read_credentials_from_dir(wf_dir: Path) -> dict:
                 "JIRA_BASE_URL": "jira_base_url",
                 "JIRA_EMAIL": "jira_email",
                 "JIRA_API_TOKEN": "jira_api_token",
+                "QASE_API_TOKEN": "qase_api_token",
             }
             for line in env_file.read_text(encoding="utf-8").splitlines():
                 s = line.strip()
@@ -193,7 +201,7 @@ def load_jira_credentials(repo_root: Path = None) -> dict:
     main_root = _resolve_main_worktree_root(repo_root)
     if main_root:
         main_creds = _read_credentials_from_dir(get_workflow_dir(main_root))
-        for k in ("jira_base_url", "jira_email", "jira_api_token"):
+        for k in ("jira_base_url", "jira_email", "jira_api_token", "qase_api_token"):
             if main_creds.get(k) and not creds.get(k):
                 creds[k] = main_creds[k]
         for r_key, r_val in (main_creds.get("role_credentials") or {}).items():
@@ -208,8 +216,9 @@ def save_jira_credentials(
     jira_email: str = None,
     jira_token: str = None,
     role_credentials: dict = None,
+    qase_token: str = None,
 ) -> Path:
-    """Save Jira credentials (including per-role tokens) to gitignored .ai-workflow/credentials.json with 0600 permissions."""
+    """Save Jira/Qase credentials (including per-role tokens) to gitignored .ai-workflow/credentials.json with 0600 permissions."""
     wf_dir = get_workflow_dir(repo_root)
     wf_dir.mkdir(parents=True, exist_ok=True)
     cred_path = get_credentials_path(repo_root)
@@ -220,6 +229,8 @@ def save_jira_credentials(
         existing["jira_email"] = jira_email.strip()
     if jira_token is not None:
         existing["jira_api_token"] = jira_token.strip()
+    if qase_token is not None and qase_token.strip():
+        existing["qase_api_token"] = qase_token.strip()
     if isinstance(role_credentials, dict):
         rc_map = existing.setdefault("role_credentials", {})
         for r_key, r_val in role_credentials.items():
@@ -261,6 +272,10 @@ def load_team_config(repo_root: Path) -> dict:
         merged["issue_type_mapping"] = {
             **DEFAULT_TEAM_CONFIG["issue_type_mapping"],
             **data.get("issue_type_mapping", {}),
+        }
+        merged["qase"] = {
+            **DEFAULT_TEAM_CONFIG["qase"],
+            **(data.get("qase") or {}),
         }
         return merged
     except Exception as exc:
@@ -818,6 +833,273 @@ class JiraClient:
         except Exception:
             pass
         return None
+
+
+class QaseClient:
+    """Dependency-free Qase TestOps API v1 client for Suite, Case, External Jira Link, and Test Run sync."""
+
+    def __init__(self, config: dict, offline: bool = False, repo_root: Path = None):
+        self.config = config
+        qase_cfg = config.get("qase") if isinstance(config.get("qase"), dict) else {}
+        self.project_code = (
+            os.environ.get("QASE_PROJECT_CODE")
+            or qase_cfg.get("project_code")
+            or ""
+        ).strip().upper()
+        self.base_url = (
+            os.environ.get("QASE_BASE_URL")
+            or qase_cfg.get("base_url")
+            or "https://api.qase.io/v1"
+        ).strip().rstrip("/")
+        self.app_url = (
+            os.environ.get("QASE_APP_URL")
+            or qase_cfg.get("app_url")
+            or "https://app.qase.io"
+        ).strip().rstrip("/")
+        self.jira_integration_type = (
+            os.environ.get("QASE_JIRA_INTEGRATION_TYPE")
+            or qase_cfg.get("jira_integration_type")
+            or "jira-cloud"
+        ).strip()
+        for label, url_val in (("qase.base_url", self.base_url), ("qase.app_url", self.app_url)):
+            if url_val:
+                scheme = urllib.parse.urlparse(url_val).scheme.lower()
+                if scheme not in ("http", "https"):
+                    raise ValueError(f"Invalid {label} scheme '{scheme}'. Only http and https are allowed.")
+        local_creds = load_jira_credentials(repo_root) if repo_root else {}
+        self.api_token = (
+            os.environ.get("QASE_API_TOKEN")
+            or local_creds.get("qase_api_token")
+            or ""
+        ).strip()
+        self.offline = bool(offline)
+        self.has_credentials = bool(self.project_code and self.api_token)
+
+    def _headers(self) -> dict:
+        return {
+            "Token": self.api_token,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+    def _request(self, method: str, path: str, payload: dict = None) -> dict:
+        url = f"{self.base_url}{path}"
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        req = urllib.request.Request(url, data=body, headers=self._headers(), method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.read().decode("utf-8")
+                parsed = json.loads(raw) if raw.strip() else {}
+                if isinstance(parsed, dict) and parsed.get("status") is False:
+                    raise RuntimeError(
+                        f"Qase API {method} {path} returned status=false: {parsed.get('errorMessage') or parsed}"
+                    )
+                return parsed
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Qase API {method} {path} failed with HTTP {exc.code}: {err_body}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Qase API {method} {path} connection error: {exc.reason}") from exc
+
+    @staticmethod
+    def _automation_code(exec_type: str) -> int:
+        return {"automated": 2, "external": 1, "manual": 0}.get((exec_type or "").lower(), 2)
+
+    def sync_test_plan(self, jira_key: str, story_title: str, qa: dict, normalized_cases: list) -> dict:
+        if self.offline:
+            suite_id = int(qa.get("qase_suite_id") or 1)
+            for idx, c in enumerate(normalized_cases, start=1):
+                c["qase_case_id"] = int(c.get("qase_case_id") or idx)
+            code = self.project_code or "OFFLINE"
+            suite_url = f"{self.app_url}/project/{code}?suite={suite_id}"
+            qa["qase_suite_id"] = suite_id
+            qa["qase_project_code"] = code
+            qa["qase_suite_url"] = suite_url
+            return {
+                "mode": "offline",
+                "project_code": code,
+                "suite_id": suite_id,
+                "suite_url": suite_url,
+                "case_ids": [c["qase_case_id"] for c in normalized_cases],
+            }
+
+        if not self.has_credentials:
+            raise RuntimeError(
+                "qa_test_backend is set to 'qase', but Qase project_code or Qase API token is missing. "
+                "Provide --qase-project-code <CODE> and --qase-token <TOKEN> (or set QASE_API_TOKEN)."
+            )
+
+        code_q = urllib.parse.quote(self.project_code)
+        suite_payload = {
+            "title": f"[{jira_key}] {story_title or jira_key}"[:255],
+            "description": f"Jira Story: {jira_key}",
+        }
+        suite_id = qa.get("qase_suite_id")
+        if suite_id:
+            try:
+                self._request("PATCH", f"/suite/{code_q}/{int(suite_id)}", suite_payload)
+                suite_id = int(suite_id)
+            except RuntimeError as exc:
+                if "HTTP 404" in str(exc):
+                    suite_id = None
+                else:
+                    raise
+        if not suite_id:
+            s_res = self._request("POST", f"/suite/{code_q}", suite_payload)
+            suite_id = int((s_res.get("result") or {}).get("id"))
+
+        to_create = []
+        for c in normalized_cases:
+            case_payload = {
+                "title": f"[{c['id']}][{c['ac_id']}] {c['title']}"[:255],
+                "description": (
+                    f"Jira Story: {jira_key}\n"
+                    f"Acceptance Criterion: {c['ac_id']}\n"
+                    f"Execution Tier: {c['execution_type']}"
+                ),
+                "suite_id": suite_id,
+                "automation": self._automation_code(c.get("execution_type")),
+            }
+            existing_cid = c.get("qase_case_id")
+            if existing_cid:
+                try:
+                    self._request("PATCH", f"/case/{code_q}/{int(existing_cid)}", case_payload)
+                    c["qase_case_id"] = int(existing_cid)
+                    continue
+                except RuntimeError as exc:
+                    if "HTTP 404" not in str(exc):
+                        raise
+            to_create.append((c, case_payload))
+
+        if to_create:
+            b_res = self._request("POST", f"/case/{code_q}/bulk", {"cases": [p for _, p in to_create]})
+            created_ids = (b_res.get("result") or {}).get("ids") or []
+            if len(created_ids) == len(to_create):
+                for (c_obj, _), cid in zip(to_create, created_ids):
+                    c_obj["qase_case_id"] = int(cid)
+            else:
+                for c_obj, c_payload in to_create:
+                    single_res = self._request("POST", f"/case/{code_q}", c_payload)
+                    c_obj["qase_case_id"] = int((single_res.get("result") or {}).get("id"))
+
+        external_link_warning = None
+        links = [
+            {"case_id": int(c["qase_case_id"]), "external_issue_id": jira_key}
+            for c in normalized_cases
+            if c.get("qase_case_id")
+        ]
+        if links:
+            try:
+                self._request(
+                    "POST",
+                    f"/case/{code_q}/external-issue/attach",
+                    {"type": self.jira_integration_type, "links": links},
+                )
+            except RuntimeError as exc:
+                external_link_warning = str(exc)
+
+        suite_url = f"{self.app_url}/project/{self.project_code}?suite={suite_id}"
+        qa["qase_suite_id"] = suite_id
+        qa["qase_project_code"] = self.project_code
+        qa["qase_suite_url"] = suite_url
+        out = {
+            "mode": "live",
+            "project_code": self.project_code,
+            "suite_id": suite_id,
+            "suite_url": suite_url,
+            "case_ids": [int(c["qase_case_id"]) for c in normalized_cases],
+        }
+        if external_link_warning:
+            out["external_link_warning"] = external_link_warning
+        return out
+
+    def sync_verification_run(
+        self,
+        jira_key: str,
+        story_title: str,
+        qa: dict,
+        test_cases: list,
+        tested_commit: str,
+        qa_status: str,
+    ) -> dict:
+        if any(not c.get("qase_case_id") for c in test_cases):
+            self.sync_test_plan(jira_key, story_title, qa, test_cases)
+
+        if self.offline:
+            code = self.project_code or "OFFLINE"
+            run_id = 1
+            run_url = f"{self.app_url}/run/{code}/dashboard/{run_id}"
+            qa["qase_last_run_id"] = run_id
+            qa["qase_last_run_url"] = run_url
+            return {"mode": "offline", "project_code": code, "run_id": run_id, "run_url": run_url}
+
+        if not self.has_credentials:
+            raise RuntimeError(
+                "qa_test_backend is set to 'qase', but Qase project_code or Qase API token is missing."
+            )
+
+        code_q = urllib.parse.quote(self.project_code)
+        case_ids = [int(c["qase_case_id"]) for c in test_cases if c.get("qase_case_id")]
+        run_payload = {
+            "title": f"[{jira_key}] QA Verification ({tested_commit})"[:255],
+            "description": f"Jira Story: {jira_key} | Commit: {tested_commit} | Status: {qa_status}",
+            "cases": case_ids,
+        }
+        r_res = self._request("POST", f"/run/{code_q}", run_payload)
+        run_id = int((r_res.get("result") or {}).get("id"))
+
+        external_link_warning = None
+        try:
+            self._request(
+                "POST",
+                f"/run/{code_q}/external-issue",
+                {
+                    "type": self.jira_integration_type,
+                    "runs": [{"run_id": run_id, "external_issue": jira_key}],
+                },
+            )
+        except RuntimeError as exc:
+            external_link_warning = str(exc)
+
+        status_map = {
+            "pass": "passed",
+            "fail": "failed",
+            "blocked": "blocked",
+            "not-executed": "skipped",
+        }
+        results_payload = []
+        for c in test_cases:
+            if not c.get("qase_case_id"):
+                continue
+            item = {
+                "case_id": int(c["qase_case_id"]),
+                "status": status_map.get(c.get("result", "not-executed"), "skipped"),
+            }
+            if c.get("notes"):
+                item["comment"] = str(c["notes"])
+            results_payload.append(item)
+
+        if results_payload:
+            self._request("POST", f"/result/{code_q}/{run_id}/bulk", {"results": results_payload})
+
+        completed = False
+        if qa_status == "passed":
+            self._request("POST", f"/run/{code_q}/{run_id}/complete", {})
+            completed = True
+
+        run_url = f"{self.app_url}/run/{self.project_code}/dashboard/{run_id}"
+        qa["qase_last_run_id"] = run_id
+        qa["qase_last_run_url"] = run_url
+        out = {
+            "mode": "live",
+            "project_code": self.project_code,
+            "run_id": run_id,
+            "run_url": run_url,
+            "completed": completed,
+        }
+        if external_link_warning:
+            out["external_link_warning"] = external_link_warning
+        return out
 
 
 def _adf_to_plain_text(node) -> str:
@@ -1532,9 +1814,21 @@ def cmd_init(args) -> int:
         custom_itypes = load_json_arg(args.issue_type_mapping_json)
         if isinstance(custom_itypes, dict):
             cfg["issue_type_mapping"].update(custom_itypes)
+    if getattr(args, "qa_backend", None):
+        cfg["qa_test_backend"] = args.qa_backend.strip().lower()
+    qase_cfg = cfg.setdefault("qase", dict(DEFAULT_TEAM_CONFIG["qase"]))
+    if getattr(args, "qase_project_code", None):
+        qase_cfg["project_code"] = args.qase_project_code.strip().upper()
+    if getattr(args, "qase_base_url", None):
+        qase_cfg["base_url"] = args.qase_base_url.strip().rstrip("/")
+    if getattr(args, "qase_app_url", None):
+        qase_cfg["app_url"] = args.qase_app_url.strip().rstrip("/")
+    if getattr(args, "qase_jira_type", None):
+        qase_cfg["jira_integration_type"] = args.qase_jira_type.strip()
 
     jira_email_arg = getattr(args, "jira_email", None)
     jira_token_arg = getattr(args, "jira_token", None)
+    qase_token_arg = getattr(args, "qase_token", None)
     eff_email_to_save = jira_email_arg if jira_email_arg is not None else interactive_email
     eff_token_to_save = jira_token_arg if jira_token_arg is not None else interactive_token
 
@@ -1547,13 +1841,14 @@ def cmd_init(args) -> int:
                 eff_email_to_save = first_rc["jira_email"]
 
     cred_saved_path = None
-    if eff_email_to_save is not None or eff_token_to_save is not None or extracted_role_creds:
+    if eff_email_to_save is not None or eff_token_to_save is not None or extracted_role_creds or qase_token_arg:
         cred_saved_path = save_jira_credentials(
             repo_root,
             jira_url=cfg.get("jira_base_url") or None,
             jira_email=eff_email_to_save,
             jira_token=eff_token_to_save,
             role_credentials=extracted_role_creds if extracted_role_creds else None,
+            qase_token=qase_token_arg,
         )
     elif cfg.get("jira_base_url") and get_credentials_path(repo_root).exists():
         cred_saved_path = save_jira_credentials(
@@ -1872,11 +2167,14 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
     if not test_cases or uncovered_acs:
         owner = resolve_role_person(config, "qa")
         gap_note = f" (missing coverage for {', '.join(uncovered_acs)})" if (test_cases and uncovered_acs) else ""
+        qa_backend_val = (config.get("qa_test_backend") or "").strip()
         return {
             "jira_key": jira_key,
             "current_station": "Station 3b: QA Plan",
             "recommended_skill": "team-qa",
             "recommended_mode": "plan",
+            "qa_test_backend": qa_backend_val,
+            "requires_qa_backend_choice": not bool(qa_backend_val),
             "responsible_role": "qa",
             "responsible_person": owner["name"],
             "reason": f"Code review is approved, but QA test cases (TC-001..N) need planning for {jira_key}{gap_note}.",
@@ -1885,6 +2183,7 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
 
     if qa_status != "passed" or (candidate_commit and tested_commit and tested_commit != candidate_commit):
         owner = resolve_role_person(config, "qa")
+        qa_backend_val = (config.get("qa_test_backend") or "").strip()
         stale_note = (
             f" (candidate commit changed from {tested_commit} to {candidate_commit})"
             if (qa_status == "passed" and tested_commit != candidate_commit)
@@ -1925,6 +2224,8 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             "current_station": "Station 3b: QA Verify",
             "recommended_skill": "team-qa",
             "recommended_mode": "verify",
+            "qa_test_backend": qa_backend_val,
+            "requires_qa_backend_choice": not bool(qa_backend_val),
             "responsible_role": "qa",
             "responsible_person": owner["name"],
             "pending_automated_tcs": pending_automated,
@@ -2787,9 +3088,90 @@ def parse_junit_xml_results(xml_path: Path) -> dict:
     return results
 
 
+def _inspect_qa_state(repo_root: Path, config: dict) -> dict:
+    local_creds = load_jira_credentials(repo_root)
+    role_creds = local_creds.get("role_credentials") or {}
+    qa_rc = role_creds.get("qa") if isinstance(role_creds.get("qa"), dict) else {}
+    qa_person = resolve_role_person(config, "qa")
+    qa_backend = (config.get("qa_test_backend") or "").strip().lower()
+    qase_cfg = config.get("qase") if isinstance(config.get("qase"), dict) else {}
+    qase_code = (os.environ.get("QASE_PROJECT_CODE") or qase_cfg.get("project_code") or "").strip().upper()
+    has_qase_token = bool((os.environ.get("QASE_API_TOKEN") or local_creds.get("qase_api_token") or "").strip())
+    return {
+        "ok": True,
+        "action": "qa-inspect",
+        "qa_test_backend": qa_backend,
+        "qa_backend_configured": bool(qa_backend),
+        "requires_qa_backend_choice": not bool(qa_backend),
+        "qase": {
+            "project_code": qase_code,
+            "base_url": qase_cfg.get("base_url") or "https://api.qase.io/v1",
+            "app_url": qase_cfg.get("app_url") or "https://app.qase.io",
+            "token_configured": has_qase_token,
+        },
+        "qa_role": {
+            "name": qa_person.get("name", ""),
+            "email": qa_person.get("email", ""),
+            "jira_account_id": qa_person.get("jira_account_id", ""),
+            "has_role_token": bool((qa_rc.get("jira_api_token") or "").strip() or os.environ.get("JIRA_API_TOKEN_QA", "").strip()),
+        },
+        "agent_instruction": (
+            "STOP and ask the user whether QA test cases should be managed in 'jira-comment' (Jira comments) or 'qase' (Qase TestOps). "
+            "If 'qase', also confirm Qase Project Code and Qase API Token, then pass --qa-backend to remember the choice."
+            if not qa_backend
+            else f"QA test backend is already remembered as '{qa_backend}'. Proceed using '{qa_backend}' automatically."
+        ),
+    }
+
+
 def cmd_record_qa(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
+
+    if getattr(args, "inspect", False):
+        print(json.dumps(_inspect_qa_state(repo_root, config), ensure_ascii=False, indent=2))
+        return 0
+
+    if not args.key or not args.mode:
+        print("ERROR: --key and --mode {plan,verify} are required unless --inspect is set.", file=sys.stderr)
+        return 1
+
+    # Apply any explicit QA backend / Qase configuration updates (validating Qase credentials before persisting)
+    config_dirty = False
+    if getattr(args, "qa_backend", None):
+        config["qa_test_backend"] = args.qa_backend.strip().lower()
+        config_dirty = True
+    qase_cfg = config.setdefault("qase", dict(DEFAULT_TEAM_CONFIG["qase"]))
+    if getattr(args, "qase_project_code", None):
+        qase_cfg["project_code"] = args.qase_project_code.strip().upper()
+        config_dirty = True
+    if getattr(args, "qase_base_url", None):
+        qase_cfg["base_url"] = args.qase_base_url.strip().rstrip("/")
+        config_dirty = True
+    if getattr(args, "qase_app_url", None):
+        qase_cfg["app_url"] = args.qase_app_url.strip().rstrip("/")
+        config_dirty = True
+    if getattr(args, "qase_jira_type", None):
+        qase_cfg["jira_integration_type"] = args.qase_jira_type.strip()
+        config_dirty = True
+
+    eff_backend = (config.get("qa_test_backend") or "jira-comment").strip().lower()
+    qase_token_arg = getattr(args, "qase_token", None)
+    if qase_token_arg:
+        save_jira_credentials(repo_root, qase_token=qase_token_arg)
+
+    qase_client = QaseClient(config, offline=args.offline, repo_root=repo_root) if eff_backend == "qase" else None
+    if eff_backend == "qase" and not args.offline and not qase_client.has_credentials:
+        print(
+            "ERROR: qa_test_backend is 'qase', but Qase project_code or Qase API token is missing. "
+            "Pass --qase-project-code <CODE> and --qase-token <TOKEN> (stored in .ai-workflow/credentials.json).",
+            file=sys.stderr,
+        )
+        return 1
+
+    if config_dirty and get_config_path(repo_root).exists():
+        get_config_path(repo_root).write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="qa")
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
@@ -2797,7 +3179,13 @@ def cmd_record_qa(args) -> int:
     qa_person = resolve_role_person(config, "qa")
     qa_badge = format_role_badge(config, "qa")
     qa = story.get("qa") or {"status": "planned", "test_cases": []}
+    prior_qase_ids = {
+        str(c.get("id") or "").strip().upper(): c.get("qase_case_id")
+        for c in (qa.get("test_cases") or [])
+        if isinstance(c, dict) and c.get("qase_case_id")
+    }
     qa["owner"] = qa_person["name"]
+    qa["backend"] = eff_backend
     if qa_person.get("email"):
         qa["owner_email"] = qa_person["email"]
 
@@ -2854,10 +3242,10 @@ def cmd_record_qa(args) -> int:
 
         normalized_cases = []
         for idx, c in enumerate(raw_cases, start=1):
-            tc_id = c.get("id") or f"TC-{idx:03d}"
+            tc_id = (c.get("id") or f"TC-{idx:03d}").strip().upper()
             raw_et = str(c.get("execution_type") or "automated").strip().lower()
             exec_type = raw_et if raw_et in ("automated", "external", "manual") else "automated"
-            normalized_cases.append({
+            item_entry = {
                 "id": tc_id,
                 "ac_id": c.get("ac_id") or "AC-001",
                 "title": c.get("title") or tc_id,
@@ -2865,7 +3253,11 @@ def cmd_record_qa(args) -> int:
                 "recommended_by_ai": True,
                 "result": c.get("result") or "not-executed",
                 "notes": c.get("notes") or "",
-            })
+            }
+            preserved_qase_id = c.get("qase_case_id") or prior_qase_ids.get(tc_id)
+            if preserved_qase_id:
+                item_entry["qase_case_id"] = int(preserved_qase_id)
+            normalized_cases.append(item_entry)
 
         uncovered_acs = find_uncovered_story_acs(story, normalized_cases)
         if uncovered_acs:
@@ -2875,44 +3267,58 @@ def cmd_record_qa(args) -> int:
             )
             return 1
 
+        qase_sync_info = None
+        if eff_backend == "qase":
+            qase_sync_info = qase_client.sync_test_plan(
+                jira_key=jira_key,
+                story_title=story.get("title") or jira_key,
+                qa=qa,
+                normalized_cases=normalized_cases,
+            )
+
         qa["test_cases"] = normalized_cases
         qa["status"] = "planned"
         qa["planned_at"] = now_iso()
         story["qa"] = qa
 
-        table_lines = [
-            f"[Station 3b: QA Test Plan — {jira_key}]",
-            f"- **QA Owner**: {qa_badge}",
-            "",
-            "| TC ID | AC ID | Type (AI Pre-filled) | Title |",
-            "|---|---|---|---|",
-        ]
-        for c in normalized_cases:
-            table_lines.append(f"| {c['id']} | {c['ac_id']} | {c['execution_type']} | {c['title']} |")
         qa_acct_id = qa_person.get("jira_account_id") or ""
         if qa_acct_id:
             client.assign_issue(jira_key, qa_acct_id)
-        acting_as_qa_self = client.using_role_token or (
-            bool(client.email and qa_person.get("email"))
-            and client.email.strip().lower() == qa_person["email"].strip().lower()
-        )
-        client.add_comment(
-            jira_key,
-            "\n".join(table_lines),
-            mention_account_id=qa_acct_id if (qa_acct_id and not acting_as_qa_self) else "",
-            mention_name=qa_person.get("name") or "qa",
-        )
+
+        if eff_backend == "qase" and qase_sync_info:
+            comment_lines = [
+                f"[Station 3b: QA Test Plan — {jira_key} (Synced to Qase)]",
+                f"- **QA Owner**: {qa_badge}",
+                f"- **Qase Test Suite**: `{qase_sync_info['project_code']}` Suite #{qase_sync_info['suite_id']} "
+                f"({len(normalized_cases)} Test Cases) — {qase_sync_info['suite_url']}",
+            ]
+            client.add_comment(jira_key, "\n".join(comment_lines))
+        else:
+            table_lines = [
+                f"[Station 3b: QA Test Plan — {jira_key}]",
+                f"- **QA Owner**: {qa_badge}",
+                "",
+                "| TC ID | AC ID | Type (AI Pre-filled) | Title |",
+                "|---|---|---|---|",
+            ]
+            for c in normalized_cases:
+                table_lines.append(f"| {c['id']} | {c['ac_id']} | {c['execution_type']} | {c['title']} |")
+            client.add_comment(jira_key, "\n".join(table_lines))
 
         saved_path = save_active_story(repo_root, jira_key, story, client=client)
-        print(json.dumps({
+        out = {
             "ok": True,
             "action": "record-qa",
             "mode": "plan",
             "jira_key": jira_key,
             "qa_owner": qa_person["name"],
+            "qa_test_backend": eff_backend,
             "tc_count": len(normalized_cases),
             "active_file": str(saved_path.relative_to(repo_root)),
-        }, ensure_ascii=False, indent=2))
+        }
+        if qase_sync_info is not None:
+            out["qase_sync"] = qase_sync_info
+        print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
 
     # verify mode (supports QA Fast-Track auto-deriving TC-001..N from AC-001..N when test_cases is empty)
@@ -3039,6 +3445,17 @@ def cmd_record_qa(args) -> int:
     else:
         qa_status = "passed"
 
+    qase_sync_info = None
+    if eff_backend == "qase":
+        qase_sync_info = qase_client.sync_verification_run(
+            jira_key=jira_key,
+            story_title=story.get("title") or jira_key,
+            qa=qa,
+            test_cases=test_cases,
+            tested_commit=tested_commit,
+            qa_status=qa_status,
+        )
+
     qa["status"] = qa_status
     qa["tested_commit"] = tested_commit
     qa["counts"] = counts
@@ -3046,18 +3463,30 @@ def cmd_record_qa(args) -> int:
     qa["verified_at"] = now_iso()
     story["qa"] = qa
 
-    table_lines = [
-        f"[Station 3b: QA Verification Report — {qa_status.upper()}]",
-        f"- **QA Owner**: {qa_badge}",
-        f"- Tested Commit: `{tested_commit}`",
-        f"- Summary Counts: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}",
-        f"- Execution Breakdown: automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}",
-        "",
-        "| TC ID | AC ID | Type | Result |",
-        "|---|---|---|---|",
-    ]
-    for c in test_cases:
-        table_lines.append(f"| {c['id']} | {c['ac_id']} | {c['execution_type']} | **{c['result']}** |")
+    if eff_backend == "qase" and qase_sync_info:
+        report_lines = [
+            f"[Station 3b: QA Verification Report — {qa_status.upper()} (Synced to Qase)]",
+            f"- **QA Owner**: {qa_badge}",
+            f"- **Tested Commit**: `{tested_commit}`",
+            f"- **Summary Counts**: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']} "
+            f"(automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)})",
+            f"- **Qase Test Run**: `{qase_sync_info['project_code']}` Run #{qase_sync_info['run_id']} — {qase_sync_info['run_url']}",
+        ]
+        report_md = "\n".join(report_lines)
+    else:
+        table_lines = [
+            f"[Station 3b: QA Verification Report — {qa_status.upper()}]",
+            f"- **QA Owner**: {qa_badge}",
+            f"- Tested Commit: `{tested_commit}`",
+            f"- Summary Counts: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}",
+            f"- Execution Breakdown: automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}",
+            "",
+            "| TC ID | AC ID | Type | Result |",
+            "|---|---|---|---|",
+        ]
+        for c in test_cases:
+            table_lines.append(f"| {c['id']} | {c['ac_id']} | {c['execution_type']} | **{c['result']}** |")
+        report_md = "\n".join(table_lines)
 
     handoff_info = None
     if qa_status == "passed":
@@ -3068,18 +3497,19 @@ def cmd_record_qa(args) -> int:
             from_role="qa",
             to_role="release_manager",
             status_key="ready_for_release",
-            comment_md="\n".join(table_lines),
+            comment_md=report_md,
         )
     else:
-        client.add_comment(jira_key, "\n".join(table_lines))
+        client.add_comment(jira_key, report_md)
 
     saved_path = save_active_story(repo_root, jira_key, story, client=client)
-    print(json.dumps({
+    out = {
         "ok": True,
         "action": "record-qa",
         "mode": "verify",
         "jira_key": jira_key,
         "qa_owner": qa_person["name"],
+        "qa_test_backend": eff_backend,
         "qa_status": qa_status,
         "fast_track": fast_tracked_qa,
         "tested_commit": tested_commit,
@@ -3089,7 +3519,10 @@ def cmd_record_qa(args) -> int:
         "pending_manual_tcs": pending_manual_tcs,
         "handoff": handoff_info,
         "active_file": str(saved_path.relative_to(repo_root)),
-    }, ensure_ascii=False, indent=2))
+    }
+    if qase_sync_info is not None:
+        out["qase_sync"] = qase_sync_info
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -3302,6 +3735,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--role-tokens-json", help="JSON string or file mapping roles to Jira API tokens (stored in gitignored .ai-workflow/credentials.json)")
     p_init.add_argument("--status-mapping-json", help="JSON string or file mapping workflow states to Jira statuses")
     p_init.add_argument("--issue-type-mapping-json", help="JSON string or file mapping story/subtask/bug to Jira issue types")
+    p_init.add_argument("--qa-backend", choices=["jira-comment", "qase"], help="Optional remembered QA test backend ('jira-comment' or 'qase')")
+    p_init.add_argument("--qase-project-code", help="Optional Qase project code (e.g. AP)")
+    p_init.add_argument("--qase-token", help="Optional Qase API token (stored in gitignored .ai-workflow/credentials.json)")
+    p_init.add_argument("--qase-base-url", help="Optional Qase API v1 base URL (default: https://api.qase.io/v1)")
+    p_init.add_argument("--qase-app-url", help="Optional Qase web app URL (default: https://app.qase.io)")
+    p_init.add_argument("--qase-jira-type", help="Optional Qase Jira external issue integration type (default: jira-cloud)")
     p_init.add_argument("--agents-md", default="AGENTS.md", help="Relative path to AGENTS.md")
     p_init.add_argument("--standards-md", default="docs/shared/engineering-standards.md", help="Relative path to engineering-standards.md")
     p_init.set_defaults(func=cmd_init)
@@ -3368,9 +3807,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_handoff.set_defaults(func=cmd_handoff)
 
     # 7. record-qa
-    p_qa = sub.add_parser("record-qa", help="Record QA test plan (plan) or verification results (verify)")
-    p_qa.add_argument("--key", required=True, help="Jira Story key")
-    p_qa.add_argument("--mode", choices=["plan", "verify"], required=True, help="QA mode: plan or verify")
+    p_qa = sub.add_parser("record-qa", help="Record QA test plan (plan) or verification results (verify) via Jira comments or Qase")
+    p_qa.add_argument("--inspect", action="store_true", help="Inspect current remembered QA backend ('jira-comment' vs 'qase') and Qase credential readiness")
+    p_qa.add_argument("--key", default=None, help="Jira Story key (required unless --inspect)")
+    p_qa.add_argument("--mode", choices=["plan", "verify"], default=None, help="QA mode: plan or verify (required unless --inspect)")
+    p_qa.add_argument("--qa-backend", choices=["jira-comment", "qase"], help="Choose and remember QA backend in team-config.json ('jira-comment' or 'qase')")
+    p_qa.add_argument("--qase-project-code", help="Qase project code (persisted in team-config.json)")
+    p_qa.add_argument("--qase-token", help="Qase API token (persisted in gitignored .ai-workflow/credentials.json, mode 0600)")
+    p_qa.add_argument("--qase-base-url", help="Qase API v1 base URL override (default: https://api.qase.io/v1)")
+    p_qa.add_argument("--qase-app-url", help="Qase web app URL override (default: https://app.qase.io)")
+    p_qa.add_argument("--qase-jira-type", help="Qase external Jira integration type (default: jira-cloud)")
     p_qa.add_argument("--cases-json", help="JSON string or file with test cases for plan mode")
     p_qa.add_argument("--tc", action="append", help="Test case 'TC-001:AC-001:automated|external|manual:Title'")
     p_qa.add_argument("--junit-xml", help="Path to JUnit XML report for verify mode")

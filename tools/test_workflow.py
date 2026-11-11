@@ -181,6 +181,121 @@ class MockJiraHandler(BaseHTTPRequestHandler):
         self._send_json(204, {})
 
 
+class MockQaseHandler(BaseHTTPRequestHandler):
+    requests_log = []
+    suites = {}
+    cases = {}
+    runs = {}
+    next_suite_id = 10
+    next_case_id = 100
+    next_run_id = 500
+    expected_token = "qase-secret-123"
+    fail_external_issue = False
+
+    def log_message(self, format, *args):
+        pass
+
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode("utf-8") if length > 0 else ""
+        return json.loads(raw) if raw else {}
+
+    def _send_json(self, code: int, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _check_auth(self) -> bool:
+        tok = self.headers.get("Token", "")
+        if tok != self.expected_token:
+            self._send_json(401, {"status": False, "errorMessage": "Invalid API token"})
+            return False
+        return True
+
+    def do_GET(self):
+        self.requests_log.append(("GET", self.path, None, dict(self.headers)))
+        if not self._check_auth():
+            return
+        if self.path.startswith("/v1/project/"):
+            code = self.path.split("/v1/project/", 1)[1].split("?")[0]
+            self._send_json(200, {"status": True, "result": {"code": code, "title": code}})
+        else:
+            self._send_json(200, {"status": True, "result": {}})
+
+    def do_POST(self):
+        data = self._read_json()
+        self.requests_log.append(("POST", self.path, data, dict(self.headers)))
+        if not self._check_auth():
+            return
+        if self.path.startswith("/v1/suite/"):
+            sid = MockQaseHandler.next_suite_id
+            MockQaseHandler.next_suite_id += 1
+            MockQaseHandler.suites[sid] = data
+            self._send_json(200, {"status": True, "result": {"id": sid}})
+        elif self.path.endswith("/external-issue/attach") or self.path.endswith("/external-issue"):
+            if MockQaseHandler.fail_external_issue:
+                self._send_json(422, {"status": False, "errorMessage": "Jira integration not configured"})
+            else:
+                self._send_json(200, {"status": True, "result": {}})
+        elif self.path.startswith("/v1/case/") and self.path.endswith("/bulk"):
+            ids = []
+            for item in data.get("cases") or []:
+                cid = MockQaseHandler.next_case_id
+                MockQaseHandler.next_case_id += 1
+                MockQaseHandler.cases[cid] = item
+                ids.append(cid)
+            self._send_json(200, {"status": True, "result": {"ids": ids}})
+        elif self.path.startswith("/v1/case/"):
+            cid = MockQaseHandler.next_case_id
+            MockQaseHandler.next_case_id += 1
+            MockQaseHandler.cases[cid] = data
+            self._send_json(200, {"status": True, "result": {"id": cid}})
+        elif self.path.startswith("/v1/run/") and self.path.endswith("/complete"):
+            rid = int(self.path.split("/v1/run/", 1)[1].split("/")[1])
+            if rid in MockQaseHandler.runs:
+                MockQaseHandler.runs[rid]["completed"] = True
+            self._send_json(200, {"status": True, "result": {}})
+        elif self.path.startswith("/v1/run/"):
+            rid = MockQaseHandler.next_run_id
+            MockQaseHandler.next_run_id += 1
+            MockQaseHandler.runs[rid] = {"payload": data, "results": [], "completed": False}
+            self._send_json(200, {"status": True, "result": {"id": rid}})
+        elif self.path.startswith("/v1/result/") and self.path.endswith("/bulk"):
+            rid = int(self.path.split("/v1/result/", 1)[1].split("/")[1])
+            if rid in MockQaseHandler.runs:
+                MockQaseHandler.runs[rid]["results"].extend(data.get("results") or [])
+            self._send_json(200, {"status": True, "result": {}})
+        else:
+            self._send_json(200, {"status": True, "result": {}})
+
+    def do_PATCH(self):
+        data = self._read_json()
+        self.requests_log.append(("PATCH", self.path, data, dict(self.headers)))
+        if not self._check_auth():
+            return
+        if self.path.startswith("/v1/case/"):
+            parts = self.path.split("/v1/case/", 1)[1].split("/")
+            cid = int(parts[1])
+            if cid not in MockQaseHandler.cases:
+                self._send_json(404, {"status": False, "errorMessage": "Case not found"})
+                return
+            MockQaseHandler.cases[cid].update(data)
+            self._send_json(200, {"status": True, "result": {"id": cid}})
+        elif self.path.startswith("/v1/suite/"):
+            parts = self.path.split("/v1/suite/", 1)[1].split("/")
+            sid = int(parts[1])
+            if sid not in MockQaseHandler.suites:
+                self._send_json(404, {"status": False, "errorMessage": "Suite not found"})
+                return
+            MockQaseHandler.suites[sid].update(data)
+            self._send_json(200, {"status": True, "result": {"id": sid}})
+        else:
+            self._send_json(200, {"status": True, "result": {}})
+
+
 class WorkflowTestSuite(unittest.TestCase):
 
     def test_01_skill_bundle_structure_and_shared_files(self):
@@ -1376,6 +1491,214 @@ class WorkflowTestSuite(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_11_qa_self_mention_fix_and_qase_backend_persistence_and_sync(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+        MockQaseHandler.requests_log.clear()
+        MockQaseHandler.suites.clear()
+        MockQaseHandler.cases.clear()
+        MockQaseHandler.runs.clear()
+        MockQaseHandler.next_suite_id = 10
+        MockQaseHandler.next_case_id = 100
+        MockQaseHandler.next_run_id = 500
+        MockQaseHandler.expected_token = "qase-secret-123"
+        MockQaseHandler.fail_external_issue = False
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        qase_srv = HTTPServer(("127.0.0.1", 0), MockQaseHandler)
+        qase_port = qase_srv.server_port
+
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_qase = threading.Thread(target=qase_srv.serve_forever, daemon=True)
+        t_jira.start()
+        t_qase.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                roles_input = {
+                    "pm": {"name": "Alice", "email": "alice@team.io"},
+                    "tech_lead": {"name": "Alice", "email": "alice@team.io"},
+                    "developer": {"name": "Bob", "email": "bob@team.io", "api_token": "dev-token-bob"},
+                    "reviewer": {"name": "Alice", "email": "alice@team.io"},
+                    "qa": {"name": "Carol", "email": "carol@team.io", "api_token": "qa-token-carol"},
+                    "release_manager": {"name": "Alice", "email": "alice@team.io"},
+                }
+                init_res = run_cli(
+                    root, "init",
+                    "--project-key", "AP",
+                    "--jira-url", f"http://127.0.0.1:{jira_port}",
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "alice-tok-111",
+                    "--roles-json", json.dumps(roles_input),
+                )
+                self.assertEqual(init_res.returncode, 0, init_res.stderr)
+
+                # S2: Before choosing qa_test_backend, record-qa --inspect reports requires_qa_backend_choice=True
+                qa_insp = run_cli(root, "record-qa", "--inspect")
+                self.assertEqual(qa_insp.returncode, 0, qa_insp.stderr)
+                qa_insp_out = json.loads(qa_insp.stdout)
+                self.assertFalse(qa_insp_out["qa_backend_configured"])
+                self.assertTrue(qa_insp_out["requires_qa_backend_choice"])
+                self.assertEqual(qa_insp_out["qa_test_backend"], "")
+
+                # Create Story AP-1
+                s1 = run_cli(
+                    root, "sync-story",
+                    "--key", "AP-1",
+                    "--title", "Qase & Clean QA Attribution",
+                    "--ac", "AC-001:User login",
+                    "--ac", "AC-002:Guest 401 guard",
+                    "--status", "approved",
+                    "--create",
+                )
+                self.assertEqual(s1.returncode, 0, s1.stderr)
+                # Fast-track dev + review so status reaches Station 3b
+                c1 = run_cli(
+                    root, "complete-task",
+                    "--key", "AP-1",
+                    "--task-id", "TASK-001",
+                    "--commit", "abc7777",
+                    "--files", "auth.py",
+                    "--test-result", "pytest: 2 passed",
+                )
+                self.assertEqual(c1.returncode, 0, c1.stderr)
+                h1 = run_cli(root, "handoff", "--key", "AP-1", "--review-status", "approved", "--commit", "abc7777")
+                self.assertEqual(h1.returncode, 0, h1.stderr)
+
+                st_qa = json.loads(run_cli(root, "status", "--key", "AP-1").stdout)
+                self.assertEqual(st_qa["recommended_skill"], "team-qa")
+                self.assertTrue(st_qa["requires_qa_backend_choice"])
+
+                # S1: In jira-comment mode, QA Test Plan must NEVER self-mention "@Carol 請接手下一階段工作："
+                MockJiraHandler.requests_log.clear()
+                plan_jc = run_cli(
+                    root, "record-qa",
+                    "--key", "AP-1",
+                    "--mode", "plan",
+                    "--qa-backend", "jira-comment",
+                    "--tc", "TC-001:AC-001:automated:Login happy path",
+                    "--tc", "TC-002:AC-002:automated:Guest 401 guard",
+                )
+                self.assertEqual(plan_jc.returncode, 0, plan_jc.stderr)
+                jc_comments = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1].endswith("/comment")]
+                self.assertEqual(len(jc_comments), 1)
+                jc_body_str = json.dumps(jc_comments[0][2], ensure_ascii=False)
+                self.assertNotIn("請接手下一階段工作", jc_body_str)
+                self.assertNotIn("@Carol", jc_body_str)
+                self.assertIn("[Station 3b: QA Test Plan — AP-1]", jc_body_str)
+
+                # Verify jira-comment choice was persisted to team-config.json
+                cfg_after_jc = json.loads((root / ".ai-workflow/team-config.json").read_text(encoding="utf-8"))
+                self.assertEqual(cfg_after_jc["qa_test_backend"], "jira-comment")
+
+                # S5a: Switching to qase WITHOUT token must fail closed when not offline
+                bad_qase = run_cli(
+                    root, "record-qa",
+                    "--key", "AP-1",
+                    "--mode", "plan",
+                    "--qa-backend", "qase",
+                    "--qase-project-code", "AP",
+                    "--qase-base-url", f"http://127.0.0.1:{qase_port}/v1",
+                    "--tc", "TC-001:AC-001:automated:Login happy path",
+                    "--tc", "TC-002:AC-002:automated:Guest 401 guard",
+                )
+                self.assertNotEqual(bad_qase.returncode, 0)
+                # Failed qase switch must NOT corrupt persisted qa_test_backend in team-config.json
+                self.assertEqual(
+                    json.loads((root / ".ai-workflow/team-config.json").read_text(encoding="utf-8"))["qa_test_backend"],
+                    "jira-comment",
+                )
+
+                # S3: Choose `qase` with valid token & project code -> persists config & token, creates Suite + Bulk Cases + Jira attach
+                MockJiraHandler.requests_log.clear()
+                MockQaseHandler.requests_log.clear()
+                plan_qase = run_cli(
+                    root, "record-qa",
+                    "--key", "AP-1",
+                    "--mode", "plan",
+                    "--qa-backend", "qase",
+                    "--qase-project-code", "AP",
+                    "--qase-base-url", f"http://127.0.0.1:{qase_port}/v1",
+                    "--qase-app-url", "https://app.qase.io",
+                    "--qase-token", "qase-secret-123",
+                    "--tc", "TC-001:AC-001:automated:Login happy path",
+                    "--tc", "TC-002:AC-002:manual:Guest 401 modal visual check",
+                )
+                self.assertEqual(plan_qase.returncode, 0, plan_qase.stderr)
+                pq_out = json.loads(plan_qase.stdout)
+                self.assertEqual(pq_out["qa_test_backend"], "qase")
+                self.assertEqual(pq_out["qase_sync"]["suite_id"], 10)
+                self.assertEqual(pq_out["qase_sync"]["case_ids"], [100, 101])
+
+                # Secret hygiene: qase-secret-123 must NEVER appear in team-config.json, ONLY in credentials.json
+                cfg_raw = (root / ".ai-workflow/team-config.json").read_text(encoding="utf-8")
+                self.assertNotIn("qase-secret-123", cfg_raw)
+                cfg_qase = json.loads(cfg_raw)
+                self.assertEqual(cfg_qase["qa_test_backend"], "qase")
+                self.assertEqual(cfg_qase["qase"]["project_code"], "AP")
+                cred_qase = json.loads((root / ".ai-workflow/credentials.json").read_text(encoding="utf-8"))
+                self.assertEqual(cred_qase["qase_api_token"], "qase-secret-123")
+
+                # Verify Jira comment in qase mode is concise (contains Qase Suite URL, no self-mention, no table spam)
+                qase_jc = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1].endswith("/comment")]
+                self.assertEqual(len(qase_jc), 1)
+                qase_jc_str = json.dumps(qase_jc[0][2], ensure_ascii=False)
+                self.assertIn("https://app.qase.io/project/AP?suite=10", qase_jc_str)
+                self.assertNotIn("請接手下一階段工作", qase_jc_str)
+                self.assertNotIn("tableHeader", qase_jc_str)
+
+                # S3b & S5b: Re-run plan WITHOUT --qa-backend flags (also simulate external-issue 422 warning):
+                # Must remember `qase` automatically, PATCH existing 100/101, bulk-create only new TC-003 (102), and survive 422 external-issue warning!
+                MockQaseHandler.requests_log.clear()
+                MockQaseHandler.fail_external_issue = True
+                replan_qase = run_cli(
+                    root, "record-qa",
+                    "--key", "AP-1",
+                    "--mode", "plan",
+                    "--tc", "TC-001:AC-001:automated:Login happy path updated",
+                    "--tc", "TC-002:AC-002:manual:Guest 401 modal visual check",
+                    "--tc", "TC-003:AC-002:external:Playwright E2E guest redirect",
+                )
+                self.assertEqual(replan_qase.returncode, 0, replan_qase.stderr)
+                rp_out = json.loads(replan_qase.stdout)
+                self.assertEqual(rp_out["qa_test_backend"], "qase")
+                self.assertEqual(rp_out["qase_sync"]["case_ids"], [100, 101, 102])
+                self.assertTrue(rp_out["qase_sync"].get("external_link_warning"))
+                patch_paths = [r[1] for r in MockQaseHandler.requests_log if r[0] == "PATCH" and r[1].startswith("/v1/case/")]
+                self.assertEqual(sorted(patch_paths), ["/v1/case/AP/100", "/v1/case/AP/101"])
+                bulk_posts = [r for r in MockQaseHandler.requests_log if r[0] == "POST" and r[1] == "/v1/case/AP/bulk"]
+                self.assertEqual(len(bulk_posts), 1)
+                self.assertEqual(len(bulk_posts[0][2]["cases"]), 1)
+
+                # S4: Verify mode WITHOUT --qa-backend flags automatically creates Qase Test Run, submits bulk results, and completes run!
+                MockQaseHandler.fail_external_issue = False
+                MockQaseHandler.requests_log.clear()
+                ver_qase = run_cli(
+                    root, "record-qa",
+                    "--key", "AP-1",
+                    "--mode", "verify",
+                    "--commit", "abc7777",
+                    "--all-pass",
+                    "--result", "TC-002=pass:Visual check OK",
+                    "--result", "TC-003=pass:Playwright green",
+                )
+                self.assertEqual(ver_qase.returncode, 0, ver_qase.stderr)
+                vq_out = json.loads(ver_qase.stdout)
+                self.assertEqual(vq_out["qa_status"], "passed")
+                self.assertEqual(vq_out["qa_test_backend"], "qase")
+                self.assertEqual(vq_out["qase_sync"]["run_id"], 500)
+                self.assertTrue(MockQaseHandler.runs[500]["completed"])
+                self.assertEqual(len(MockQaseHandler.runs[500]["results"]), 3)
+                self.assertTrue(all(r["status"] == "passed" for r in MockQaseHandler.runs[500]["results"]))
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+            qase_srv.shutdown()
+            qase_srv.server_close()
 
 
 if __name__ == "__main__":

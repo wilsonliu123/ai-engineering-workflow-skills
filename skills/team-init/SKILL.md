@@ -69,8 +69,9 @@ If any of the following items have not been explicitly provided or confirmed by 
    - **為什麼需要確認各角色的 API Token？** Jira REST API v3 的留言（Comment）與狀態變更發送人頭像，永遠取決於當次 HTTP 請求所使用的 API Token 帳號。為不同人員擔任的角色配置各自的 API Token 後，`team-spec`（`pm`）、`team-dev`（`developer`）、`team-review`（`reviewer`）、`team-qa`（`qa`）、`team-release`（`release_manager`）在寫入 Jira 評論與交接時，就會**直接以該角色成員本人的 Jira 帳號身分發送**，且初始化時會自動透過各角色的 Token 呼叫 `/rest/api/3/myself` 精準綁定其 `jira_account_id`。
    - **安全儲存承諾**：所有 API Token（包含預設 Token 與各角色專屬 `role_credentials`）皆**只會寫入受 `.gitignore` 保護的 `.ai-workflow/credentials.json`（權限 `0600`）**；即便在 `--roles-json` 中傳入 `api_token`，`jira_sync.py init` 也會自動將其剝離轉存至 `credentials.json`，**絕不會寫入 Git 追蹤的 `.ai-workflow/team-config.json`**。
    - **一人兼任多角色自動共用**：若同一位成員（相同 Email）兼任多個角色，只需提供一次該成員的 API Token，系統會自動在同 Email 的角色間共用 Token，並在相鄰站點為同一人時標記 `auto-consolidated`（同時仍會將 Jira 單據 `Assignee` 指派給該成員，避免單據顯示為 `Unassigned`）。
-4. **Jira 狀態與單據類型映射（選填確認）**
+4. **Jira 狀態、單據類型映射與選填 QA 測試管理後端（選填確認）**
    - 列出預設狀態映射（`To Do`、`In Progress`、`In Review`、`In QA`、`Ready for Release`、`Done`）與單據類型（`Story`、`Sub-task`、`Bug`），詢問是否直接沿用預設值或需自訂。
+   - 選填確認團隊的 QA 測試案例管理方式（`--qa-backend`）：直接放在 **Jira 評論（`jira-comment`）** 或同步至 **Qase TestOps（`qase`，搭配 `--qase-project-code` 與 `--qase-token`）**。若初始化時尚未決定可先留空，首次執行 `$team-qa` 時會自動詢問一次並記憶於 `team-config.json`。
 
 **WAIT for the user's response before proceeding to Step 3.**
 

@@ -7,9 +7,28 @@ description: Use when planning QA test cases (TC-001..N) mapped to acceptance cr
 
 ## Overview
 
-Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), and final QA assessment into two streamlined modes: `plan` and `verify`. Syncs the Test Plan table, AC/TC Verification table, and any linked `Bug` tickets directly to Jira and `.ai-workflow/active/<JIRA-KEY>.json` using the configured `qa` role identity and per-role Jira API token (`role_credentials.qa` in `.ai-workflow/credentials.json`, or fallback credentials with explicit `QA Owner` attribution and assignee assignment).
+Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), and final QA assessment into two streamlined modes: `plan` and `verify`. Supports **two remembered QA backends** (`qa_test_backend` in `.ai-workflow/team-config.json`):
+- **`jira-comment`:** Stores the full Test Plan and AC/TC Verification tables directly in Jira Story comments.
+- **`qase`:** Synchronizes Test Suites, Test Cases (`TC-001..N`), Test Runs, bulk execution results, and Jira External Issue links directly to **Qase TestOps** (`https://api.qase.io/v1`), while posting a concise 3-line summary and Qase Suite/Run link on the Jira Story.
+
+Uses the configured `qa` role identity and per-role Jira API token (`role_credentials.qa` in `.ai-workflow/credentials.json`, without self-`@mention`ing QA during `plan`), and stores `qase_api_token` exclusively in gitignored `.ai-workflow/credentials.json` (`0600`).
 
 Read `references/common-workflow-governance.md` and `references/qa-method.md` before running.
+
+## Pre-Flight Gate: One-Time QA Backend Choice (`jira-comment` vs `qase`)
+
+Before running `record-qa` (`plan` or `verify`), inspect the current QA backend configuration:
+
+```bash
+python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "<JIRA-KEY>"]
+```
+
+- **If `requires_qa_backend_choice` is `true` (or if `qa_test_backend` is `"qase"` and `qase_has_token` is `false` in live mode):**
+  **STOP and ask the user once** before executing `record-qa`:
+  1. 請問專案的測試案例（Test Cases）與測試執行紀錄要放在 **Jira 評論（`jira-comment`）** 還是同步至 **Qase TestOps（`qase`）**？（確認後會記憶在 `.ai-workflow/team-config.json`，後續 `plan` 與 `verify` 自動沿用，不再重複詢問。）
+  2. 若選擇 **`qase`**：請一併確認 **Qase Project Code**（例如 `AP`，若與 Jira `project_key` 相同可直接沿用）與 **Qase API Token**（只會安全寫入受 `.gitignore` 保護的 `.ai-workflow/credentials.json`，權限 `0600`）。
+- **Once confirmed:** Pass `--qa-backend <jira-comment|qase>` (and `--qase-project-code "<CODE>" --qase-token "<TOKEN>"` when `qase` is chosen) on your `record-qa` call. `jira_sync.py` persists the choice in `.ai-workflow/team-config.json` and `.ai-workflow/credentials.json`.
+- **If `qa_backend_configured` is already `true`:** Do **not** ask again — proceed directly using the remembered `qa_test_backend` unless the user explicitly asks to switch backends.
 
 ## Explicit Modes, 3-Tier Execution Model & Anti-False-Pass Guardrail
 
@@ -51,11 +70,13 @@ Read `references/common-workflow-governance.md` and `references/qa-method.md` be
    python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa \
      --key "<JIRA-KEY>" \
      --mode plan \
+     [--qa-backend "<jira-comment|qase>"] \
+     [--qase-project-code "<QASE_CODE>" --qase-token "<QASE_API_TOKEN>"] \
      --tc "TC-001:AC-001:automated:<Title and expected outcome>" \
      --tc "TC-002:AC-002:external:<Title and external tool/env requirement>" \
      --tc "TC-003:AC-003:manual:<Title and human check steps>"
    ```
-   *(Colons inside `<Title and expected outcome>` are preserved automatically. Or pass `--cases-json '<JSON array>'`.)*
+   *(Colons inside `<Title and expected outcome>` are preserved automatically. Or pass `--cases-json '<JSON array>'`. When `qa_test_backend == "qase"`, `record-qa --mode plan` idempotently creates/updates the Qase Suite `<JIRA-KEY>` and Test Cases, links `<JIRA-KEY>` via Qase External Issue integration when enabled, stores `qase_suite_id` and per-TC `qase_case_id` in `<JIRA-KEY>.json`, and posts a clean summary + Qase Suite URL on Jira.)*
 
 ## Mode 2: `verify` — 3-Tier Result Intake, Anti-False-Pass & Bug Loop
 
@@ -94,10 +115,12 @@ Read `references/common-workflow-governance.md` and `references/qa-method.md` be
      ```
      `create-bug` automatically links the Bug to `<JIRA-KEY>`, transitions the Story back to `In Progress`, and notifies/reassigns the `developer` role from `team-config.json` with `@mention` so `$team-dev` (`implement` mode) can fix it.
    - **If All Tests Pass (`qa_status: "passed"` and 0 open Bugs):**
-     `record-qa --mode verify` automatically posts the passing AC/TC Verification Table to Jira and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if `same_person: true`, where AI can proactively auto-chain into `$team-release`).
+     `record-qa --mode verify` automatically records the verification results (creating a Qase Test Run, submitting bulk results, and completing the Run when `qa_test_backend == "qase"`, or posting the full AC/TC table when `qa_test_backend == "jira-comment"`) and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if `same_person: true`, where AI can proactively auto-chain into `$team-release`).
 
 ## Red Flags — STOP
 
+- Running `record-qa` when `requires_qa_backend_choice` is `true` without asking the user to choose `jira-comment` vs `qase` first.
+- Writing `QASE_API_TOKEN` or `JIRA_API_TOKEN` into Git-tracked `.ai-workflow/team-config.json` (tokens belong exclusively in gitignored `.ai-workflow/credentials.json`).
 - Marking a test `pass` without an actual test run report or explicit human QA result.
 - Asking the human one message per test case just to choose `automated` vs. `manual`.
 - Recommending `team-release` while any `TC-*` is `fail`, `blocked`, `not-executed`, or while any `Bug` is `open`.

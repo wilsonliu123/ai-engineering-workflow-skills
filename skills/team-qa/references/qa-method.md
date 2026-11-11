@@ -35,7 +35,20 @@
 
 ---
 
-## 3. Closed-Loop Defect Routing (`create-bug`)
+## 3. Dual QA Backend (`jira-comment` vs `qase`)
+
+`team-qa` remembers the project's chosen test management backend in `.ai-workflow/team-config.json` (`qa_test_backend`):
+
+1. **`jira-comment` Mode:**
+   - Posts the full Markdown Test Plan table (`plan` mode) and AC/TC Verification table (`verify` mode) directly as rich ADF comments on the Jira Story.
+2. **`qase` Mode (Qase TestOps API v1):**
+   - Stores non-secret metadata (`qase.project_code`, `qase.base_url`, `qase.app_url`, `qase.jira_integration_type`) in `.ai-workflow/team-config.json` and stores `qase_api_token` exclusively in gitignored `.ai-workflow/credentials.json` (`0600`).
+   - **`plan` Mode:** Idempotently creates or updates a Qase Suite for `<JIRA-KEY>`, updates existing cases via `PATCH /v1/case/{code}/{id}` when `qase_case_id` is already recorded, bulk-creates new cases via `POST /v1/case/{code}/bulk` (mapping `automated -> 2`, `external -> 1`, `manual -> 0`), attaches cases to the Jira issue via `POST /v1/case/{code}/external-issue/attach` (recording a non-blocking warning if Qase's Jira integration app is not enabled), and posts a concise 3-line summary + Qase Suite URL on Jira.
+   - **`verify` Mode:** Ensures all test cases exist in Qase (including QA Fast-Track stories), creates a Qase Test Run (`POST /v1/run/{code}`), links the run to Jira (`POST /v1/run/{code}/external-issue`), submits bulk results (`POST /v1/result/{code}/{run_id}/bulk`), completes the run (`POST /v1/run/{code}/{run_id}/complete`) when `qa_status == "passed"`, and posts a concise verification summary + Qase Run URL on Jira.
+
+---
+
+## 4. Closed-Loop Defect Routing (`create-bug`)
 
 When any test case fails during `verify` mode:
 1. Run `jira_sync.py create-bug` with `--tc-id`, `--ac-id`, `--title`, `--severity`, `--steps`, `--expected`, `--actual`, and `--commit`.

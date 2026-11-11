@@ -4,6 +4,13 @@
   "jira_base_url": "https://your-org.atlassian.net",
   "sync_mode": "auto",
   "notification_channel": "jira",
+  "qa_test_backend": "",
+  "qase": {
+    "project_code": "",
+    "base_url": "https://api.qase.io/v1",
+    "app_url": "https://app.qase.io",
+    "jira_integration_type": "jira-cloud"
+  },
   "roles": {
     "pm": {
       "name": "Alice Chen",
