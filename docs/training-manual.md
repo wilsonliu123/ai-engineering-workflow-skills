@@ -638,8 +638,10 @@ python3 skills/team-qa/scripts/jira_sync.py \
 
 | 參數名稱 | 必填 / 預設值 | 功能說明與輸入規範 | 內建防呆與狀態影響 |
 | :--- | :--- | :--- | :--- |
-| `--key` | **必填**（字串） | 母單 Jira Story 代號（如 `PROJ-101`） | 將新建之 Bug 記錄寫入 `story.bugs` 陣列 |
-| `--tc-id` | **必填**（字串） | 失敗之測試案例編號（如 `TC-002`） | 自動將 `qa.test_cases` 中對應之 `TC-002` 結果標為 `fail`，並將 `qa.status` 標為 `failed` |
+| `--key` | Story 模式必填（字串） | 母單 Jira Story 代號（如 `PROJ-101`）；若搭配 `--standalone --adopt` 則為既有獨立 `Bug` 單號 | 將新建之 Bug 寫入 `story.bugs`，或以 `standalone_bug` 納管既有獨立報修單（保留原報修描述不覆寫） |
+| `--standalone` / `--adopt` | 選填（布林旗標） | `report` 報修模式：建立或接手無母單之獨立線上／用戶報修 `Bug` | 免走 `team-spec` 且不建立多餘 Jira `Sub-task`，直接走 `team-dev -> team-review -> team-qa -> team-release` 輕量閉環 |
+| `--tc-id` | 選填（字串） | 失敗之測試案例編號（如 `TC-002`）；若測試中發現非既有案例之額外問題可省略 | 省略時自動新增 `TC-EXP-001`（預設 `manual`）且**不污染既有已通過之 `TC-001..N`** |
+| `--attach` | 可重複指定 | 失敗截圖、螢幕錄影（`.webm`/`.mp4`）或診斷日誌路徑 | 驗收檔案安全後自動上傳至 Jira `Bug` 附件；若後端為 `qase` 同步上傳並建立 Qase Defect |
 | `--ac-id` | 選填（字串） | 受影響之驗收條件編號（如 `AC-002`） | 寫入 Bug 描述以維持 `BUG -> TC -> AC` 三層雙向追溯 |
 | `--title` | **必填**（字串） | 簡明缺陷標題 | 在 Jira 建立標題為 `[<STORY-KEY>][<TC-ID>] <Title>` 之 `Bug` Issue |
 | `--severity` | 選填（預設 `major`） | 嚴重度：`blocker`、`major`、`minor` | 記錄於 Bug 單描述與本地 JSON |
@@ -837,8 +839,8 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 | `create-subtasks` | `team-dev` (`plan`, Station 2) | `--key`, `--tasks-json`, `--task`, `--assignee`, `--task-assignee`, `--proceed-at-risk` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json` (`tasks`), 建立 Jira `Sub-task` 並依專長/指定自動指派各子任務經辦人（Assignee） |
 | `complete-task` | `team-dev` (`implement`, Station 2) | `--key`, `--task-id`, `--commit`, `--files`, `--test-result` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`（支援多 ID、Dev Fast-Track 自動指派、Git 自動偵測）, Jira `Sub-task`/`Bug` 繁體中文打卡並轉 `Done` |
 | `handoff` | `team-review` (Station 3a) | `--key`, `--from-role`, `--to-role`, `--to-assignee`, `--review-status`, `--commit`, `--summary`, `--findings-json`, `--target-status` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`（多人 `reviewer` 自動避開作者選取同儕審查）, Jira 狀態轉換、Assignee 指派與繁體中文 `@mention` 評論 |
-| `record-qa` | `team-qa` (`plan`/`verify`, Station 3b) | `--inspect`, `--key`, `--mode`, `--qa-owner`, `--to-assignee`, `--qa-backend`, `--qase-*`, `--cases-json`, `--tc`, `--junit-xml`, `--results-json`, `--result`, `--all-pass`, `--commit` | `team-config.json`, `active/<KEY>.json`, JUnit XML / JSON 報告 | `.ai-workflow/active/<KEY>.json` (`qa`, `handoffs`), Jira 繁體中文測試計畫評論 / Qase 同步與 `Ready for Release` 交接 |
-| `create-bug` | `team-qa` (`verify`, Station 3b) | `--key`, `--tc-id`, `--ac-id`, `--to-assignee`, `--title`, `--severity`, `--steps`, `--expected`, `--actual`, `--commit` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json` (`bugs`), Jira 新建 `Bug`、自動追溯指派給負責該模組之 `developer`、建立 `Blocks` 關聯並退回修復 |
+| `record-qa` | `team-qa` (`plan`/`verify`, Station 3b) | `--inspect`, `--key`, `--mode`, `--qa-owner`, `--to-assignee`, `--qa-backend`, `--qase-*`, `--cases-json`, `--tc`, `--junit-xml`, `--results-json`, `--result`, `--tc-attach`, `--all-pass`, `--commit` | `team-config.json`, `active/<KEY>.json`, JUnit XML / JSON 報告 | `.ai-workflow/active/<KEY>.json` (`qa`, `handoffs`), Jira 繁體中文測試計畫評論 / Qase 同步（含媒體附件與獨立報修 Qase Defect 結案）與 `Ready for Release` 交接 |
+| `create-bug` | `team-qa` (`verify`/`report`, Station 3b) | `--key`, `--standalone`, `--adopt`, `--tc-id`, `--execution-type`, `--qa-backend`, `--ac-id`, `--to-assignee`, `--title`, `--severity`, `--steps`, `--expected`, `--actual`, `--attach`, `--commit` | `team-config.json`, `active/<KEY>.json` | 支援計畫內失敗、探索性額外問題（`TC-EXP-###`）與獨立線上報修單（`standalone_bug`），同步上傳 Jira 附件與 Qase Defect 並指派 `developer` |
 | `close-story` | `team-release` (Station 4) | `--key`, `--version`, `--commit`, `--notes` | `team-config.json`, `active/<KEY>.json` | 先執行 Jira 雙向對帳再驗證五大發佈閘門、發佈繁體中文結案摘要、將 Jira `Story` 轉為 `Done`、**刪除 `.ai-workflow/active/<KEY>.json`** |
 
 ### 13.2 附錄 B：視覺圖表與截圖資產驗收清單

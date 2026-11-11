@@ -69,12 +69,13 @@ If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-
 
    ```bash
    python3 .ai-workflow/bin/jira_sync.py --repo-root . complete-task \
-     --key "<JIRA-KEY>" \
+     --key "<JIRA-KEY-OR-STANDALONE-BUG-KEY>" \
      --task-id "<TASK-001 | BUG-KEY | REV-001,REV-002>" \
      --test-result "<executed test command and pass summary>" \
      [--commit "<git-commit-sha>"] \
      [--files "<comma-separated-changed-files>"]
    ```
+   *(For a standalone production Bug `issue_kind == "standalone_bug"`, `--task-id` defaults to `TASK-001` and also accepts `<BUG-KEY>` itself; `complete-task` posts the fix & regression-test comment on `<BUG-KEY>` without prematurely closing `<BUG-KEY>` before Code Review, QA, and Release.)*
 
 6. **Advance or Auto-Chain to `team-review`:**
    - If `remaining_tasks` or `remaining_bugs` remain non-empty, continue to the next item.

@@ -872,7 +872,7 @@ class JiraClient:
         return ""
 
     def search_active_stories(self, project_key: str, bug_type_name: str = "Bug", max_results: int = 20) -> list:
-        """Discover non-Done parent Stories in Jira via POST /rest/api/3/search/jql (fallback /rest/api/3/search)."""
+        """Discover non-Done parent Stories and unlinked standalone Bugs in Jira via POST /rest/api/3/search/jql."""
         if not self.is_live or not (project_key or "").strip():
             return []
         proj = project_key.strip()
@@ -880,7 +880,7 @@ class JiraClient:
         payload = {
             "jql": jql,
             "maxResults": max_results,
-            "fields": ["summary", "status", "issuetype", "parent", "assignee"],
+            "fields": ["summary", "status", "issuetype", "parent", "assignee", "issuelinks"],
         }
         try:
             res = self._request("POST", "/rest/api/3/search/jql", payload)
@@ -892,7 +892,47 @@ class JiraClient:
         issues = (res or {}).get("issues") if isinstance(res, dict) else []
         if not isinstance(issues, list):
             return []
-        excluded_types = {"sub-task", "subtask", "子任務", (bug_type_name or "bug").strip().lower(), "epic"}
+        sub_or_epic_types = {"sub-task", "subtask", "子任務", "epic"}
+        bug_types = {"bug", "缺陷", (bug_type_name or "bug").strip().lower()}
+
+        # Collect any Bug keys linked to non-Bug parent Stories/Tasks so Story-owned child Bugs are not duplicated
+        linked_child_bug_keys = set()
+        for iss in issues:
+            if not isinstance(iss, dict):
+                continue
+            key = (iss.get("key") or "").strip().upper()
+            fields = iss.get("fields") or {}
+            itype = fields.get("issuetype") or {}
+            if itype.get("subtask") is True:
+                continue
+            itype_name = (itype.get("name") or "").strip().lower()
+            if itype_name in sub_or_epic_types:
+                continue
+            if itype_name not in bug_types:
+                for link in fields.get("issuelinks") or []:
+                    if not isinstance(link, dict):
+                        continue
+                    for side in ("inwardIssue", "outwardIssue"):
+                        linked = link.get(side) or {}
+                        lk = str(linked.get("key") or "").strip().upper()
+                        if lk:
+                            linked_child_bug_keys.add(lk)
+            else:
+                parent = fields.get("parent")
+                if isinstance(parent, dict) and parent.get("key"):
+                    p_type = str((((parent.get("fields") or {}).get("issuetype") or {}).get("name")) or "").strip().lower()
+                    if p_type != "epic":
+                        linked_child_bug_keys.add(key)
+                for link in fields.get("issuelinks") or []:
+                    if not isinstance(link, dict):
+                        continue
+                    for side in ("inwardIssue", "outwardIssue"):
+                        linked = link.get(side) or {}
+                        l_fields = linked.get("fields") or {}
+                        l_type = str(((l_fields.get("issuetype") or {}).get("name")) or "").strip().lower()
+                        if linked.get("key") and l_type not in bug_types and l_type not in sub_or_epic_types:
+                            linked_child_bug_keys.add(key)
+
         found_keys = []
         for iss in issues:
             if not isinstance(iss, dict):
@@ -905,7 +945,9 @@ class JiraClient:
             if itype.get("subtask") is True:
                 continue
             itype_name = (itype.get("name") or "").strip().lower()
-            if itype_name in excluded_types:
+            if itype_name in sub_or_epic_types:
+                continue
+            if itype_name in bug_types and key in linked_child_bug_keys:
                 continue
             if key not in found_keys:
                 found_keys.append(key)
@@ -1143,6 +1185,22 @@ class JiraClient:
         except Exception:
             pass
         return bug_key
+
+    def create_standalone_bug(self, summary: str, description_md: str, fallback_key: str = "") -> str:
+        proj_key = self.config.get("project_key") or "PROJ"
+        if not self.is_live:
+            return fallback_key or f"{proj_key}-BUG-1"
+        bug_type = (self.config.get("issue_type_mapping") or {}).get("bug") or "Bug"
+        payload = {
+            "fields": {
+                "project": {"key": proj_key},
+                "summary": summary,
+                "description": self.text_to_adf(description_md),
+                "issuetype": {"name": bug_type},
+            }
+        }
+        res = self._request("POST", "/rest/api/3/issue", payload)
+        return res.get("key") or fallback_key or f"{proj_key}-BUG-1"
 
     def add_comment(self, issue_key: str, body_md: str, mention_account_id: str = "", mention_name: str = "") -> dict:
         adf = self.text_to_adf(
@@ -2013,7 +2071,7 @@ def reconcile_story_with_jira(
             delta["subtasks_added"].append(sub_key)
             changed = True
 
-    # 4. Reconcile Linked Bugs (`fields.issuelinks`)
+    # 4. Reconcile Linked Bugs (`fields.issuelinks`) — only for parent Stories, not standalone bugs
     bugs = story.setdefault("bugs", [])
     by_bug_key = {
         str(b.get("bug_key") or "").strip().upper(): b
@@ -2021,7 +2079,8 @@ def reconcile_story_with_jira(
         if isinstance(b, dict) and b.get("bug_key")
     }
     configured_bug_type = ((config.get("issue_type_mapping") or {}).get("bug") or "bug").strip().lower()
-    for link in fields.get("issuelinks") or []:
+    iss_links = (fields.get("issuelinks") or []) if story.get("issue_kind") != "standalone_bug" else []
+    for link in iss_links:
         if not isinstance(link, dict):
             continue
         linked = link.get("inwardIssue") or link.get("outwardIssue") or {}
@@ -2077,9 +2136,14 @@ def reconcile_story_with_jira(
             delta["bugs_added"].append(b_key)
             changed = True
 
-    # 5. Story Description Drift Guard & Manual AC Import
+    # 5. Story Description Drift Guard & Manual AC Import (skipped when preserving original bug report)
     raw_desc = fields.get("description")
-    if raw_desc is not None and story.get("last_synced_description_hash"):
+    if (
+        raw_desc is not None
+        and story.get("last_synced_description_hash")
+        and not story.get("preserve_remote_description")
+        and story.get("issue_kind") != "standalone_bug"
+    ):
         remote_plain = _adf_to_plain_text(raw_desc).strip()
         if remote_plain:
             rem_hash = _compute_description_hash(remote_plain)
@@ -2143,98 +2207,160 @@ def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str
         # 2. Structural reconstruction from Jira fields
         summary = (fields.get("summary") or clean_key).strip()
         status_name = ((fields.get("status") or {}).get("name") or "").strip()
-        acs = []
-        for m in re.finditer(r"(AC-\d+)\s*\*{0,2}\s*[:：]\s*(.+)", desc_text or ""):
-            ac_id = m.group(1).strip().upper()
-            ac_desc = m.group(2).strip()
-            if ac_desc and not any(a["id"] == ac_id for a in acs):
-                acs.append({"id": ac_id, "description": ac_desc})
-        if not acs and status_name.lower() not in ("", "to do", "todo"):
-            acs = [{"id": "AC-001", "description": summary}]
-
-        spec_status = "approved" if (acs or status_name.lower() not in ("", "to do", "todo")) else "draft"
-        tasks = []
-        for idx, sub in enumerate(fields.get("subtasks") or [], start=1):
-            sub_key = sub.get("key") or f"{clean_key}-SUB-{idx}"
-            sub_fields = sub.get("fields") or {}
-            sub_sum = (sub_fields.get("summary") or f"TASK-{idx:03d}").strip()
-            sub_st_raw = ((sub_fields.get("status") or {}).get("name") or "").strip()
-            tm = re.search(r"(TASK-\d+)", sub_sum, re.IGNORECASE)
-            t_id = tm.group(1).upper() if tm else f"TASK-{idx:03d}"
-            clean_title = re.sub(r"^\[?TASK-\d+\]?\s*:?\s*", "", sub_sum, flags=re.IGNORECASE).strip() or sub_sum
-            is_done = _is_jira_status_done(sub_st_raw, client.config)
-            tasks.append({
-                "id": t_id,
-                "jira_subtask_key": sub_key,
-                "title": clean_title,
-                "ac_coverage": [a["id"] for a in acs] if acs else ["AC-001"],
-                "depends_on": [],
-                "files": [],
-                "verification": "Run automated tests",
-                "status": "completed" if is_done else "pending",
-                "last_synced_jira_status": sub_st_raw or ("Done" if is_done else "To Do"),
-                "commit": "HEAD" if is_done else None,
-                "changed_files": [],
-                "test_result": "Hydrated from Jira" if is_done else None,
-                "completed_at": now_iso() if is_done else None,
-            })
-
-        bugs = []
-        for idx, link in enumerate(fields.get("issuelinks") or [], start=1):
-            linked = link.get("inwardIssue") or link.get("outwardIssue") or {}
-            l_fields = linked.get("fields") or {}
-            l_type = ((l_fields.get("issuetype") or {}).get("name") or "").lower()
-            if l_type in ("bug", "缺陷") or "BUG" in (linked.get("key") or ""):
-                b_key = linked.get("key") or f"{clean_key}-BUG-{idx}"
-                b_st_raw = ((l_fields.get("status") or {}).get("name") or "").strip()
-                b_done = _is_jira_status_done(b_st_raw, client.config)
-                bugs.append({
-                    "bug_key": b_key,
-                    "tc_id": "TC-001",
-                    "ac_id": "AC-001",
-                    "title": l_fields.get("summary") or b_key,
+        itype_name = (((fields.get("issuetype") or {}).get("name")) or "").strip().lower()
+        cfg_bug_type = (((client.config or {}).get("issue_type_mapping") or {}).get("bug") or "bug").strip().lower()
+        if itype_name in ("bug", "缺陷", cfg_bug_type):
+            is_done_already = _is_jira_status_done(status_name, client.config)
+            story = {
+                "jira_key": clean_key,
+                "issue_kind": "standalone_bug",
+                "preserve_remote_description": True,
+                "title": summary,
+                "scope_in": summary,
+                "scope_out": "N/A",
+                "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+                "risk_level": "medium",
+                "acceptance_criteria": [{"id": "AC-001", "description": f"修復報修問題：{summary}"}],
+                "design": {"summary": "Standalone bug report hydrated from Jira (original description preserved)."},
+                "bug_report": {
                     "severity": "major",
-                    "steps": "Hydrated from Jira issueLink",
-                    "expected": "Pass",
-                    "actual": "Fail",
-                    "reported_commit": "HEAD",
-                    "status": "completed" if b_done else "open",
-                    "last_synced_jira_status": b_st_raw or ("Done" if b_done else "To Do"),
-                    "created_at": now_iso(),
+                    "steps": (desc_text or summary).strip(),
+                    "expected": f"修復報修問題：{summary}",
+                    "actual": summary,
+                },
+                "spec_status": "approved",
+                "jira_status": status_name or "To Do",
+                "tasks": [
+                    {
+                        "id": "TASK-001",
+                        "jira_subtask_key": None,
+                        "title": f"修復報修問題：{summary}",
+                        "ac_coverage": ["AC-001"],
+                        "depends_on": [],
+                        "files": [],
+                        "verification": "Run regression tests & verify bug steps",
+                        "status": "completed" if is_done_already else "pending",
+                        "last_synced_jira_status": status_name or "To Do",
+                        "commit": "HEAD" if is_done_already else None,
+                        "changed_files": [],
+                        "test_result": "Hydrated from Jira" if is_done_already else None,
+                        "completed_at": now_iso() if is_done_already else None,
+                    }
+                ],
+                "bugs": [],
+                "qa": {
+                    "status": "passed" if is_done_already else "planned",
+                    "test_cases": [
+                        {
+                            "id": "TC-001",
+                            "ac_id": "AC-001",
+                            "title": f"回歸驗證：{summary}",
+                            "execution_type": "manual",
+                            "recommended_by_ai": True,
+                            "result": "pass" if is_done_already else "not-executed",
+                        }
+                    ],
+                },
+            }
+            if status_name.lower() in ("in qa", "ready for release") or is_done_already:
+                story["review"] = {"status": "approved", "reviewed_commit": "HEAD", "findings": []}
+            if status_name.lower() == "ready for release" or is_done_already:
+                story["qa"]["status"] = "passed"
+                story["qa"]["tested_commit"] = "HEAD"
+                story["qa"]["test_cases"][0]["result"] = "pass"
+        else:
+            acs = []
+            for m in re.finditer(r"(AC-\d+)\s*\*{0,2}\s*[:：]\s*(.+)", desc_text or ""):
+                ac_id = m.group(1).strip().upper()
+                ac_desc = m.group(2).strip()
+                if ac_desc and not any(a["id"] == ac_id for a in acs):
+                    acs.append({"id": ac_id, "description": ac_desc})
+            if not acs and status_name.lower() not in ("", "to do", "todo"):
+                acs = [{"id": "AC-001", "description": summary}]
+
+            spec_status = "approved" if (acs or status_name.lower() not in ("", "to do", "todo")) else "draft"
+            tasks = []
+            for idx, sub in enumerate(fields.get("subtasks") or [], start=1):
+                sub_key = sub.get("key") or f"{clean_key}-SUB-{idx}"
+                sub_fields = sub.get("fields") or {}
+                sub_sum = (sub_fields.get("summary") or f"TASK-{idx:03d}").strip()
+                sub_st_raw = ((sub_fields.get("status") or {}).get("name") or "").strip()
+                tm = re.search(r"(TASK-\d+)", sub_sum, re.IGNORECASE)
+                t_id = tm.group(1).upper() if tm else f"TASK-{idx:03d}"
+                clean_title = re.sub(r"^\[?TASK-\d+\]?\s*:?\s*", "", sub_sum, flags=re.IGNORECASE).strip() or sub_sum
+                is_done = _is_jira_status_done(sub_st_raw, client.config)
+                tasks.append({
+                    "id": t_id,
+                    "jira_subtask_key": sub_key,
+                    "title": clean_title,
+                    "ac_coverage": [a["id"] for a in acs] if acs else ["AC-001"],
+                    "depends_on": [],
+                    "files": [],
+                    "verification": "Run automated tests",
+                    "status": "completed" if is_done else "pending",
+                    "last_synced_jira_status": sub_st_raw or ("Done" if is_done else "To Do"),
+                    "commit": "HEAD" if is_done else None,
+                    "changed_files": [],
+                    "test_result": "Hydrated from Jira" if is_done else None,
+                    "completed_at": now_iso() if is_done else None,
                 })
 
-        story = {
-            "jira_key": clean_key,
-            "title": summary,
-            "scope_in": summary,
-            "scope_out": "N/A",
-            "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
-            "risk_level": "medium",
-            "acceptance_criteria": acs,
-            "design": {"summary": "Hydrated from remote Jira issue."},
-            "spec_status": spec_status,
-            "jira_status": status_name or "In Progress",
-            "tasks": tasks,
-            "bugs": bugs,
-        }
-        if status_name.lower() in ("in qa", "ready for release", "done"):
-            story["review"] = {"status": "approved", "reviewed_commit": "HEAD", "findings": []}
-        if status_name.lower() in ("ready for release", "done"):
-            story["qa"] = {
-                "status": "passed",
-                "tested_commit": "HEAD",
-                "test_cases": [
-                    {
-                        "id": f"TC-{idx:03d}",
-                        "ac_id": ac["id"],
-                        "title": ac["description"],
-                        "execution_type": "automated",
-                        "recommended_by_ai": True,
-                        "result": "pass",
-                    }
-                    for idx, ac in enumerate(acs, start=1)
-                ],
+            bugs = []
+            for idx, link in enumerate(fields.get("issuelinks") or [], start=1):
+                linked = link.get("inwardIssue") or link.get("outwardIssue") or {}
+                l_fields = linked.get("fields") or {}
+                l_type = ((l_fields.get("issuetype") or {}).get("name") or "").lower()
+                if l_type in ("bug", "缺陷") or "BUG" in (linked.get("key") or ""):
+                    b_key = linked.get("key") or f"{clean_key}-BUG-{idx}"
+                    b_st_raw = ((l_fields.get("status") or {}).get("name") or "").strip()
+                    b_done = _is_jira_status_done(b_st_raw, client.config)
+                    bugs.append({
+                        "bug_key": b_key,
+                        "tc_id": "TC-001",
+                        "ac_id": "AC-001",
+                        "title": l_fields.get("summary") or b_key,
+                        "severity": "major",
+                        "steps": "Hydrated from Jira issueLink",
+                        "expected": "Pass",
+                        "actual": "Fail",
+                        "reported_commit": "HEAD",
+                        "status": "completed" if b_done else "open",
+                        "last_synced_jira_status": b_st_raw or ("Done" if b_done else "To Do"),
+                        "created_at": now_iso(),
+                    })
+
+            story = {
+                "jira_key": clean_key,
+                "title": summary,
+                "scope_in": summary,
+                "scope_out": "N/A",
+                "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+                "risk_level": "medium",
+                "acceptance_criteria": acs,
+                "design": {"summary": "Hydrated from remote Jira issue."},
+                "spec_status": spec_status,
+                "jira_status": status_name or "In Progress",
+                "tasks": tasks,
+                "bugs": bugs,
             }
+            if status_name.lower() in ("in qa", "ready for release", "done"):
+                story["review"] = {"status": "approved", "reviewed_commit": "HEAD", "findings": []}
+            if status_name.lower() in ("ready for release", "done"):
+                story["qa"] = {
+                    "status": "passed",
+                    "tested_commit": "HEAD",
+                    "test_cases": [
+                        {
+                            "id": f"TC-{idx:03d}",
+                            "ac_id": ac["id"],
+                            "title": ac["description"],
+                            "execution_type": "automated",
+                            "recommended_by_ai": True,
+                            "result": "pass",
+                        }
+                        for idx, ac in enumerate(acs, start=1)
+                    ],
+                }
 
     story, _ = reconcile_story_with_jira(
         client=client,
@@ -3797,6 +3923,14 @@ def cmd_status(args) -> int:
 
     if client.is_live:
         existing_local_keys = {f.stem.upper() for f in active_files}
+        for af in active_files:
+            try:
+                st_tmp = json.loads(af.read_text(encoding="utf-8"))
+                for b_item in st_tmp.get("bugs") or []:
+                    if isinstance(b_item, dict) and b_item.get("bug_key"):
+                        existing_local_keys.add(str(b_item["bug_key"]).strip().upper())
+            except Exception:
+                pass
         bug_type = (config.get("issue_type_mapping") or {}).get("bug", "Bug")
         try:
             remote_keys = client.search_active_stories(config.get("project_key", ""), bug_type_name=bug_type)
@@ -3807,6 +3941,9 @@ def cmd_status(args) -> int:
                 rem_st = hydrate_story_from_remote(client, repo_root, rk)
                 if rem_st is not None:
                     discovered_from_jira.append(rk)
+                    for b_item in rem_st.get("bugs") or []:
+                        if isinstance(b_item, dict) and b_item.get("bug_key"):
+                            existing_local_keys.add(str(b_item["bug_key"]).strip().upper())
         if discovered_from_jira:
             active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
             hydrated_from_source = "jira"
@@ -3894,10 +4031,24 @@ def cmd_pull(args) -> int:
     discovered = []
     if client.is_live:
         bug_type = (config.get("issue_type_mapping") or {}).get("bug", "Bug")
-        existing_keys = {f.stem.upper() for f in (active_dir.glob("*.json") if active_dir.exists() else [])}
+        existing_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+        existing_keys = {f.stem.upper() for f in existing_files}
+        for af in existing_files:
+            try:
+                st_tmp = json.loads(af.read_text(encoding="utf-8"))
+                for b_item in st_tmp.get("bugs") or []:
+                    if isinstance(b_item, dict) and b_item.get("bug_key"):
+                        existing_keys.add(str(b_item["bug_key"]).strip().upper())
+            except Exception:
+                pass
         for rk in client.search_active_stories(config.get("project_key", ""), bug_type_name=bug_type):
-            if rk.upper() not in existing_keys and hydrate_story_from_remote(client, repo_root, rk) is not None:
-                discovered.append(rk)
+            if rk.upper() not in existing_keys:
+                rem_st = hydrate_story_from_remote(client, repo_root, rk)
+                if rem_st is not None:
+                    discovered.append(rk)
+                    for b_item in rem_st.get("bugs") or []:
+                        if isinstance(b_item, dict) and b_item.get("bug_key"):
+                            existing_keys.add(str(b_item["bug_key"]).strip().upper())
     results = {}
     for af in sorted(active_dir.glob("*.json")) if active_dir.exists() else []:
         st = json.loads(af.read_text(encoding="utf-8"))
@@ -4615,6 +4766,15 @@ def cmd_complete_task(args) -> int:
                 matched_item = t
                 break
 
+        if (
+            matched_item is None
+            and story.get("issue_kind") == "standalone_bug"
+            and target_id.strip().upper() == jira_key.upper()
+            and (story.get("tasks") or [])
+        ):
+            matched_item = story["tasks"][0]
+            item_kind = "task"
+
         if matched_item is None:
             for b in story.get("bugs") or []:
                 if b.get("bug_key") == target_id or b.get("id") == target_id:
@@ -4681,6 +4841,9 @@ def cmd_complete_task(args) -> int:
             client.add_comment(jira_issue_key, comment_md)
             client.transition_issue(jira_issue_key, done_status)
             matched_item["last_synced_jira_status"] = done_status
+        elif story.get("issue_kind") == "standalone_bug" and item_kind == "task":
+            # Standalone Bug has no Jira Sub-task: post fix comment directly on the Bug WITHOUT prematurely marking Done
+            client.add_comment(jira_key, comment_md)
 
         if item_kind == "bug" and matched_item.get("qase_defect_id"):
             eff_qa_backend = (
@@ -5418,6 +5581,15 @@ def cmd_record_qa(args) -> int:
 
     handoff_info = None
     if qa_status == "passed":
+        if story.get("issue_kind") == "standalone_bug":
+            bug_rep = story.get("bug_report")
+            if isinstance(bug_rep, dict) and bug_rep.get("qase_defect_id") and eff_backend == "qase" and qase_client is not None:
+                try:
+                    q_res = qase_client.resolve_defect(int(bug_rep["qase_defect_id"]))
+                    if q_res.get("resolved"):
+                        bug_rep["qase_defect_resolved"] = True
+                except Exception:
+                    pass
         handoff_info = execute_role_handoff(
             client=client,
             config=config,
@@ -5428,6 +5600,33 @@ def cmd_record_qa(args) -> int:
             comment_md=report_md,
             from_person_override=qa_person,
             to_assignee=getattr(args, "to_assignee", None),
+        )
+    elif qa_status == "failed" and story.get("issue_kind") == "standalone_bug":
+        # Standalone Bug failed regression retest: attach failure evidence directly onto the Bug, reopen TASK-001, and hand back to Developer without nested Bug tickets
+        fail_vfiles = []
+        seen_fail_shas = set()
+        for vfs in tc_validated_attachments.values():
+            for vf in vfs:
+                if vf["sha256"] not in seen_fail_shas:
+                    fail_vfiles.append(vf)
+                    seen_fail_shas.add(vf["sha256"])
+        if fail_vfiles:
+            att_res = safe_add_jira_attachments(client, jira_key, fail_vfiles)
+            if att_res.get("uploaded"):
+                story.setdefault("bug_report", {}).setdefault("attachments", []).extend(att_res["uploaded"])
+        for t_item in story.get("tasks") or []:
+            t_item["status"] = "pending"
+        bug_dev = resolve_story_role_person(config, story, "developer")
+        handoff_info = execute_role_handoff(
+            client=client,
+            config=config,
+            story=story,
+            from_role="qa",
+            to_role="developer",
+            status_key="in_progress",
+            comment_md=report_md,
+            from_person_override=qa_person,
+            to_assignee=getattr(args, "to_assignee", None) or bug_dev.get("email") or bug_dev.get("jira_account_id") or None,
         )
     else:
         client.add_comment(jira_key, report_md)
@@ -5514,24 +5713,289 @@ def cmd_create_bug(args) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    zh = is_zh_tw(config)
+    is_standalone = bool(getattr(args, "standalone", False) or getattr(args, "adopt", False))
+    exec_type_arg = (getattr(args, "execution_type", None) or "manual").strip().lower()
+
+    # -----------------------------------------------------------------------
+    # Branch A: Standalone Production / User-Reported Bug (`--standalone` / `--adopt`)
+    # -----------------------------------------------------------------------
+    if is_standalone:
+        adopt_existing = bool(getattr(args, "adopt", False))
+        if adopt_existing and not getattr(args, "key", None):
+            print("ERROR: --adopt requires --key <BUG-KEY> naming the existing Jira Bug ticket.", file=sys.stderr)
+            return 1
+
+        eff_backend = (
+            getattr(args, "qa_backend", None)
+            or config.get("qa_test_backend")
+            or "jira-comment"
+        ).strip().lower()
+        qase_client = QaseClient(config, offline=args.offline, repo_root=repo_root) if eff_backend == "qase" else None
+        if eff_backend == "qase" and not args.offline and not qase_client.has_credentials:
+            print(
+                "ERROR: qa_test_backend is 'qase', but Qase project_code or Qase API token is missing.",
+                file=sys.stderr,
+            )
+            return 1
+
+        qa_person = resolve_acting_person(config, "qa", client=client)
+        bug_dev = (
+            find_member_in_role(config, "developer", args.to_assignee)
+            if getattr(args, "to_assignee", None)
+            else None
+        ) or resolve_role_person(config, "developer")
+        tested_commit = (args.commit or _detect_git_head_commit(repo_root) or "HEAD").strip()
+
+        remote_summary = ""
+        remote_desc_plain = ""
+        if adopt_existing and client.is_live:
+            clean_adopt_key = validate_jira_key(args.key)
+            try:
+                rem_iss = client.get_issue(clean_adopt_key)
+                r_fields = (rem_iss or {}).get("fields") or {}
+                remote_summary = (r_fields.get("summary") or "").strip()
+                remote_desc_plain = _adf_to_plain_text(r_fields.get("description")).strip()
+            except Exception as exc:
+                print(f"ERROR: Failed to fetch existing Jira Bug {clean_adopt_key}: {exc}", file=sys.stderr)
+                return 1
+
+        eff_title = (args.title or remote_summary or "").strip()
+        eff_steps = (args.steps or remote_desc_plain or eff_title or "").strip()
+        eff_expected = (args.expected or (f"修復報修問題：{eff_title}" if eff_title else "")).strip()
+        eff_actual = (args.actual or eff_title or "").strip()
+
+        if not adopt_existing and (not eff_title or not args.steps or not args.expected or not args.actual):
+            print(
+                "ERROR: --title, --steps, --expected, and --actual are required when creating a new standalone Bug.",
+                file=sys.stderr,
+            )
+            return 1
+        if not eff_title:
+            print("ERROR: Bug title could not be determined (provide --title).", file=sys.stderr)
+            return 1
+
+        if adopt_existing:
+            bug_key = validate_jira_key(args.key)
+        else:
+            proj_key = config.get("project_key") or "PROJ"
+            if getattr(args, "key", None):
+                fallback_key = validate_jira_key(args.key)
+            else:
+                active_dir = get_active_dir(repo_root)
+                idx_b = 1
+                while (active_dir / f"{proj_key}-BUG-{idx_b}.json").exists():
+                    idx_b += 1
+                fallback_key = f"{proj_key}-BUG-{idx_b}"
+
+            if zh:
+                desc_md = (
+                    f"報修類型：獨立線上／巡檢缺陷\n"
+                    f"回報人員：{format_person_badge('qa', qa_person)}\n"
+                    f"指派修復人員：{format_person_badge('developer', bug_dev)}\n"
+                    f"嚴重等級：{args.severity}\n"
+                    f"發現 Commit：{tested_commit}\n\n"
+                    f"### 重現步驟\n{eff_steps}\n\n"
+                    f"### 預期結果\n{eff_expected}\n\n"
+                    f"### 實際結果\n{eff_actual}"
+                )
+                if explicit_validated:
+                    att_bullets = "\n".join(f"- `{vf['filename']}` ({vf['size']} bytes)" for vf in explicit_validated)
+                    desc_md += f"\n\n### 附件證據\n{att_bullets}"
+            else:
+                desc_md = (
+                    f"Bug Type: Standalone Production / Exploratory Defect\n"
+                    f"Reported By: {format_person_badge('qa', qa_person)}\n"
+                    f"Assigned Developer: {format_person_badge('developer', bug_dev)}\n"
+                    f"Severity: {args.severity}\n"
+                    f"Reported Commit: {tested_commit}\n\n"
+                    f"### Reproduction Steps\n{eff_steps}\n\n"
+                    f"### Expected Result\n{eff_expected}\n\n"
+                    f"### Actual Result\n{eff_actual}"
+                )
+                if explicit_validated:
+                    att_bullets = "\n".join(f"- `{vf['filename']}` ({vf['size']} bytes)" for vf in explicit_validated)
+                    desc_md += f"\n\n### Attachments\n{att_bullets}"
+
+            bug_key = client.create_standalone_bug(eff_title, desc_md, fallback_key=fallback_key)
+
+        if bug_dev.get("jira_account_id"):
+            safe_assign_issue(client, bug_key, bug_dev["jira_account_id"])
+
+        jira_att_res = safe_add_jira_attachments(client, bug_key, explicit_validated)
+        uploaded_jira_atts = jira_att_res.get("uploaded") or []
+        attachment_warning = jira_att_res.get("warning")
+
+        qa_block = {
+            "status": "planned",
+            "qa_test_backend": eff_backend,
+            "planned_at": now_iso(),
+            "test_cases": [
+                {
+                    "id": "TC-001",
+                    "ac_id": "AC-001",
+                    "title": f"回歸驗證：{eff_title}",
+                    "execution_type": exec_type_arg,
+                    "recommended_by_ai": True,
+                    "result": "not-executed",
+                    "notes": eff_steps,
+                }
+            ],
+        }
+        qase_defect_info = None
+        if eff_backend == "qase" and qase_client is not None:
+            qase_client.sync_test_plan(
+                jira_key=bug_key,
+                story_title=eff_title,
+                qa=qa_block,
+                normalized_cases=qa_block["test_cases"],
+            )
+            qase_hashes, _, att_cache = qase_client.upload_attachments(explicit_validated, existing_cache={})
+            if att_cache:
+                qa_block["qase_attachment_cache"] = att_cache
+            qase_actual = (
+                f"Jira Standalone Bug: {bug_key} (Commit: {tested_commit})\n"
+                f"Steps:\n{eff_steps}\n\nExpected:\n{eff_expected}\n\nActual:\n{eff_actual}"
+            )
+            qase_defect_info = qase_client.create_defect(
+                title=f"[{bug_key}] {eff_title}",
+                actual_result=qase_actual,
+                severity=args.severity,
+                attachment_hashes=qase_hashes,
+            )
+
+        bug_report_meta = {
+            "severity": args.severity,
+            "steps": eff_steps,
+            "expected": eff_expected,
+            "actual": eff_actual,
+            "reported_commit": tested_commit,
+        }
+        if uploaded_jira_atts:
+            bug_report_meta["attachments"] = uploaded_jira_atts
+        if qase_defect_info is not None:
+            if qase_defect_info.get("defect_id"):
+                bug_report_meta["qase_defect_id"] = qase_defect_info["defect_id"]
+            if qase_defect_info.get("attachments"):
+                bug_report_meta["qase_attachment_hashes"] = qase_defect_info["attachments"]
+
+        todo_status = config.get("status_mapping", {}).get("todo", "To Do")
+        task_item = {
+            "id": "TASK-001",
+            "jira_subtask_key": None,
+            "title": f"修復報修問題：{eff_title}",
+            "ac_coverage": ["AC-001"],
+            "depends_on": [],
+            "files": [],
+            "verification": "Run regression tests & verify reproduction steps",
+            "status": "pending",
+            "last_synced_jira_status": todo_status,
+            "commit": None,
+            "changed_files": [],
+            "test_result": None,
+            "completed_at": None,
+        }
+        if _is_member_claimed("developer", bug_dev):
+            task_item["assignee"] = serialize_member_for_config(bug_dev, "developer")
+
+        standalone_story = {
+            "jira_key": bug_key,
+            "issue_kind": "standalone_bug",
+            "preserve_remote_description": True,
+            "title": eff_title,
+            "scope_in": eff_expected,
+            "scope_out": "N/A",
+            "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+            "risk_level": "high" if args.severity == "blocker" else "medium",
+            "acceptance_criteria": [{"id": "AC-001", "description": eff_expected}],
+            "design": {"summary": f"Standalone Bug ({args.severity}): {eff_actual}"},
+            "bug_report": bug_report_meta,
+            "spec_status": "approved",
+            "tasks": [task_item],
+            "bugs": [],
+            "qa": qa_block,
+            "role_owners": {},
+        }
+        if _is_member_claimed("qa", qa_person):
+            standalone_story["role_owners"]["qa"] = serialize_member_for_config(qa_person, "qa")
+        if _is_member_claimed("developer", bug_dev):
+            standalone_story["role_owners"]["developer"] = serialize_member_for_config(bug_dev, "developer")
+
+        att_note_zh = f"（已附掛 {len(explicit_validated)} 個媒體證據檔）" if explicit_validated else ""
+        att_note_en = f" ({len(explicit_validated)} media attachment(s) uploaded)" if explicit_validated else ""
+        standalone_comment = (
+            f"[獨立報修單已納管：{bug_key}]{att_note_zh} 嚴重度：`{args.severity}` — {eff_title}。請定位根因、補齊回歸測試並執行 `complete-task --key {bug_key}`。"
+            if zh
+            else f"[Standalone Bug Tracked: {bug_key}]{att_note_en} Severity: `{args.severity}` — {eff_title}. Fix root cause with regression test and run `complete-task --key {bug_key}`."
+        )
+        handoff_target_sel = (
+            getattr(args, "to_assignee", None)
+            or bug_dev.get("email")
+            or bug_dev.get("jira_account_id")
+            or None
+        )
+        handoff_info = execute_role_handoff(
+            client=client,
+            config=config,
+            story=standalone_story,
+            from_role="qa",
+            to_role="developer",
+            status_key="in_progress",
+            comment_md=standalone_comment,
+            from_person_override=qa_person,
+            to_assignee=handoff_target_sel,
+        )
+        saved_path = save_active_story(repo_root, bug_key, standalone_story, client=client)
+        out = {
+            "ok": True,
+            "action": "create-bug",
+            "issue_kind": "standalone_bug",
+            "adopted": adopt_existing,
+            "jira_key": bug_key,
+            "bug_key": bug_key,
+            "tc_id": "TC-001",
+            "assigned_to": bug_dev.get("name", ""),
+            "severity": args.severity,
+            "qa_test_backend": eff_backend,
+            "attachments": uploaded_jira_atts,
+            "handoff": handoff_info,
+            "active_file": str(saved_path.relative_to(repo_root)),
+        }
+        if attachment_warning:
+            out["attachment_warning"] = attachment_warning
+        if qase_defect_info is not None:
+            out["qase_defect"] = qase_defect_info
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    # -----------------------------------------------------------------------
+    # Branch B: Story Bug (`--key <STORY-KEY>`, planned TC failure OR exploratory ad-hoc bug)
+    # -----------------------------------------------------------------------
+    if not getattr(args, "key", None):
+        print("ERROR: --key <STORY-KEY> is required (or pass --standalone for a standalone production Bug).", file=sys.stderr)
+        return 1
+    if not args.title or not args.steps or not args.expected or not args.actual:
+        print("ERROR: --title, --steps, --expected, and --actual are required for create-bug.", file=sys.stderr)
+        return 1
+
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
-    zh = is_zh_tw(config)
 
-    # Inherit any media attachments already recorded on the failing TC during `record-qa --mode verify`
     qa = story.setdefault("qa", {"status": "failed", "test_cases": []})
+    tcs_list = qa.setdefault("test_cases", [])
     norm_tc_id = (args.tc_id or "").strip().upper()
     matched_tc = None
     inherited_paths = []
-    for c in qa.get("test_cases") or []:
-        if str(c.get("id") or "").strip().upper() == norm_tc_id:
-            matched_tc = c
-            for att_meta in (c.get("attachments") or []):
-                if isinstance(att_meta, dict) and att_meta.get("local_path"):
-                    lp = Path(att_meta["local_path"])
-                    if lp.is_file():
-                        inherited_paths.append(str(lp))
-            break
+    if norm_tc_id:
+        for c in tcs_list:
+            if str(c.get("id") or "").strip().upper() == norm_tc_id:
+                matched_tc = c
+                for att_meta in (c.get("attachments") or []):
+                    if isinstance(att_meta, dict) and att_meta.get("local_path"):
+                        lp = Path(att_meta["local_path"])
+                        if lp.is_file():
+                            inherited_paths.append(str(lp))
+                break
 
     combined_paths = inherited_paths + [vf["local_path"] for vf in explicit_validated]
     try:
@@ -5541,7 +6005,8 @@ def cmd_create_bug(args) -> int:
         return 1
 
     eff_backend = (
-        qa.get("qa_test_backend")
+        getattr(args, "qa_backend", None)
+        or qa.get("qa_test_backend")
         or config.get("qa_test_backend")
         or "jira-comment"
     ).strip().lower()
@@ -5552,6 +6017,35 @@ def cmd_create_bug(args) -> int:
             file=sys.stderr,
         )
         return 1
+
+    exploratory = False
+    if matched_tc is None:
+        # Exploratory / Ad-Hoc Bug discovered outside the planned TC list -> append TC-EXP-### without polluting passing TCs!
+        exploratory = True
+        existing_tc_ids = {str(c.get("id") or "").strip().upper() for c in tcs_list if isinstance(c, dict)}
+        if not norm_tc_id:
+            exp_idx = 1
+            while f"TC-EXP-{exp_idx:03d}" in existing_tc_ids:
+                exp_idx += 1
+            norm_tc_id = f"TC-EXP-{exp_idx:03d}"
+        matched_tc = {
+            "id": norm_tc_id,
+            "ac_id": (args.ac_id or "EXPLORATORY").strip(),
+            "title": args.title,
+            "execution_type": exec_type_arg,
+            "recommended_by_ai": False,
+            "exploratory": True,
+            "result": "fail",
+            "notes": args.actual,
+        }
+        tcs_list.append(matched_tc)
+        if eff_backend == "qase" and qase_client is not None:
+            qase_client.sync_test_plan(
+                jira_key=jira_key,
+                story_title=story.get("title") or jira_key,
+                qa=qa,
+                normalized_cases=tcs_list,
+            )
 
     qa_person = resolve_acting_person(config, "qa", client=client, story=story)
     bug_dev = _resolve_bug_developer(
@@ -5709,6 +6203,8 @@ def cmd_create_bug(args) -> int:
         "action": "create-bug",
         "jira_key": jira_key,
         "bug_key": bug_key,
+        "tc_id": norm_tc_id,
+        "exploratory": exploratory,
         "assigned_to": bug_dev.get("name", ""),
         "severity": args.severity,
         "qa_test_backend": eff_backend,
@@ -6009,17 +6505,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_qa.add_argument("--commit", help="Tested git commit SHA")
     p_qa.set_defaults(func=cmd_record_qa)
 
-    # 8. create-bug
-    p_bug = sub.add_parser("create-bug", parents=[sub_common], help="Create a linked Jira Bug ticket on QA failure and assign to the owning Developer")
-    p_bug.add_argument("--key", required=True, help="Jira Story key")
-    p_bug.add_argument("--tc-id", required=True, help="Failing test case ID (e.g. TC-002)")
+    # 8. create-bug (verify failures, Story exploratory bugs, and standalone production bugs)
+    p_bug = sub.add_parser("create-bug", parents=[sub_common], help="Create/adopt a linked Story Bug (planned TC or exploratory) or standalone production Bug and assign to Developer")
+    p_bug.add_argument("--key", default=None, help="Jira Story key (or existing Jira Bug key with --standalone --adopt)")
+    p_bug.add_argument("--standalone", action="store_true", help="Report or adopt a standalone production/user Bug (skips team-spec and extra Sub-tasks)")
+    p_bug.add_argument("--adopt", action="store_true", help="Adopt an existing standalone Jira Bug ticket (--key <BUG-KEY>) without overwriting its description")
+    p_bug.add_argument("--tc-id", default=None, help="Failing test case ID (optional — omit for exploratory ad-hoc Story bugs to auto-generate TC-EXP-###)")
+    p_bug.add_argument("--execution-type", choices=["automated", "external", "manual"], default=None, help="Execution type for auto-created exploratory/standalone regression TC (default: manual)")
+    p_bug.add_argument("--qa-backend", choices=["jira-comment", "qase"], default=None, help="Optional QA backend override ('jira-comment' or 'qase')")
     p_bug.add_argument("--ac-id", help="Affected AC ID (e.g. AC-001)")
     p_bug.add_argument("--to-assignee", default=None, help="Optional developer selector override for Bug assignment")
-    p_bug.add_argument("--title", required=True, help="Concise bug title")
+    p_bug.add_argument("--title", default=None, help="Concise bug title (auto-read from Jira when --adopt is used)")
     p_bug.add_argument("--severity", choices=["blocker", "major", "minor"], default="major")
-    p_bug.add_argument("--steps", required=True, help="Reproduction steps")
-    p_bug.add_argument("--expected", required=True, help="Expected behavior")
-    p_bug.add_argument("--actual", required=True, help="Actual observed behavior")
+    p_bug.add_argument("--steps", default=None, help="Reproduction steps (auto-read from Jira when --adopt is used)")
+    p_bug.add_argument("--expected", default=None, help="Expected behavior")
+    p_bug.add_argument("--actual", default=None, help="Actual observed behavior")
     p_bug.add_argument("--attach", action="append", default=[], help="Screenshot, video, or log file to upload to the Jira Bug (and Qase when qa_test_backend='qase'); repeatable")
     p_bug.add_argument("--commit", help="Tested commit SHA where the bug occurred")
     p_bug.set_defaults(func=cmd_create_bug)

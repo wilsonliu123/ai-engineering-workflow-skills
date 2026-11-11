@@ -49,9 +49,18 @@
 
 ---
 
-## 4. Closed-Loop Defect Routing & Media Evidence (`create-bug`)
+## 4. Closed-Loop Defect Routing, Exploratory Bugs & Standalone Production Bugs (`verify` & `report` modes)
 
-When any test case fails during `verify` mode:
-1. Run `jira_sync.py create-bug` with `--tc-id`, `--ac-id`, `--title`, `--severity`, `--steps`, `--expected`, `--actual`, `--commit`, and `--attach <path>` for every relevant screenshot, video, or log file (any file already bound to `--tc-id` via `--tc-attach` is inherited automatically).
-2. `create-bug` creates a Jira `Bug` issue, uploads all media files to the Jira `Bug` Attachments (`X-Atlassian-Token: no-check`), **and when `qa_test_backend == "qase"`, also syncs those media files to Qase** (reusing cached hashes, creating a Qase Defect via `POST /v1/defect/{code}` with `"attachments"`, and updating the Qase Run Result if new files were added), records the Bug in `.ai-workflow/active/<JIRA-KEY>.json` under `bugs` (`status: "open"`), and triggers a role-aware handoff back to the owning `developer`.
-3. When the developer fixes the bug in `team-dev` (`implement` mode), they run `jira_sync.py complete-task --key <JIRA-KEY> --task-id <BUG-KEY> --commit <new-sha> ...`, which closes the Jira Bug, resolves the linked Qase Defect (`PATCH /v1/defect/{code}/{id}/resolve`) when `qa_test_backend == "qase"`, and updates `candidate_commit` for re-verification.
+`jira_sync.py create-bug` powers three defect workflows cleanly:
+
+1. **Planned Test Case Failure (`verify` mode — `--key <STORY-KEY> --tc-id <TC-002>`):**
+   - Marks `TC-002` as `fail`, inherits any media recorded on `TC-002` via `--tc-attach`, uploads all `--attach` screenshots/videos/logs to the new Jira `Bug` Attachments (`X-Atlassian-Token: no-check`) and Qase (`POST /v1/defect/{code}` + Run Result when `qa_test_backend == "qase"`), links the Bug to `<STORY-KEY>`, and hands `<STORY-KEY>` back to the owning `developer`.
+   - When the developer fixes the bug (`complete-task --key <STORY-KEY> --task-id <BUG-KEY>`), the Jira Bug is closed, the Qase Defect is resolved (`PATCH /v1/defect/{code}/{id}/resolve`), and `candidate_commit` updates for re-verification.
+
+2. **Exploratory / Ad-Hoc Story Defect (`report` mode — `--key <STORY-KEY>` with `--tc-id` omitted):**
+   - When QA finds an extra defect during Story testing that is NOT in `TC-001..N`, omitting `--tc-id` keeps all passing `TC-001..N` untouched (`result == "pass"`) and automatically appends `TC-EXP-001` (`TC-EXP-002`, ..., `execution_type: "manual"` by default, `result: "fail"`).
+   - Syncs `TC-EXP-001` into the Story's Qase Suite when `qa_test_backend == "qase"`, files the linked Jira `Bug` + Qase Defect + media attachments, and blocks `close-story` until both the Bug is fixed and `TC-EXP-001` is verified `pass`.
+
+3. **Standalone Production / User-Reported Bug (`report` mode — `--standalone` or `--standalone --adopt --key <BUG-KEY>`):**
+   - Files a standalone Jira `Bug` without a parent Story link (or adopts an existing CS/user Jira `Bug` via `--adopt --key <BUG-KEY>` **without overwriting its original Jira description**), uploads `--attach` evidence to Jira + Qase Defect, and initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`).
+   - **Lightweight 4-Station Closure:** Skips `team-spec` and creates zero redundant Jira `Sub-task`s (`jira_subtask_key: None`). Flows directly through `team-dev (implement)` (`complete-task --key <BUG-KEY>`, posting the fix comment on `<BUG-KEY>` without prematurely closing it) $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` (resolving Qase Defect on `pass`, or uploading failure media onto `<BUG-KEY>` and reopening `TASK-001` on `fail` without nested Bugs) $\rightarrow$ `team-release` (`close-story --key <BUG-KEY>` transitions `<BUG-KEY>` to `Done` and deletes `.ai-workflow/active/<BUG-KEY>.json`).

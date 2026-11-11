@@ -2923,6 +2923,356 @@ class WorkflowTestSuite(unittest.TestCase):
             qase_srv.shutdown()
             qase_srv.server_close()
 
+    def test_17_qa_report_exploratory_story_bug_and_standalone_production_bug_lifecycle(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+        MockJiraHandler.stored_attachments.clear()
+        MockJiraHandler.reject_attachment_keys.clear()
+
+        MockQaseHandler.requests_log.clear()
+        MockQaseHandler.uploaded_files_log.clear()
+        MockQaseHandler.suites.clear()
+        MockQaseHandler.cases.clear()
+        MockQaseHandler.runs.clear()
+        MockQaseHandler.attachments.clear()
+        MockQaseHandler.defects.clear()
+        MockQaseHandler.next_suite_id = 10
+        MockQaseHandler.next_case_id = 100
+        MockQaseHandler.next_run_id = 500
+        MockQaseHandler.next_defect_id = 700
+        MockQaseHandler.expected_token = "qase-secret-123"
+        MockQaseHandler.fail_external_issue = False
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        qase_srv = HTTPServer(("127.0.0.1", 0), MockQaseHandler)
+        qase_port = qase_srv.server_port
+        t_qase = threading.Thread(target=qase_srv.serve_forever, daemon=True)
+        t_qase.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                exp_png = root / "exploratory-crash.png"
+                exp_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"exploratory-bug-shot" * 20)
+                prod_png = root / "prod-500.png"
+                prod_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"prod-bug-shot" * 20)
+                retest_png = root / "prod-still-failing.png"
+                retest_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"prod-retest-fail" * 20)
+
+                roles_cfg = {
+                    "pm": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acct-alice"},
+                    "tech_lead": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acct-alice"},
+                    "developer": {"name": "Bob", "email": "bob@team.io", "jira_account_id": "acct-bob"},
+                    "reviewer": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acct-alice"},
+                    "qa": {"name": "Carol", "email": "carol@team.io", "jira_account_id": "acct-carol"},
+                    "release_manager": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acct-alice"},
+                }
+                self.assertEqual(
+                    run_cli(
+                        root, "init",
+                        "--project-key", "AP",
+                        "--jira-url", f"http://127.0.0.1:{jira_port}",
+                        "--jira-email", "alice@team.io",
+                        "--jira-token", "tok-alice",
+                        "--qa-backend", "qase",
+                        "--qase-project-code", "AP",
+                        "--qase-token", "qase-secret-123",
+                        "--qase-base-url", f"http://127.0.0.1:{qase_port}/v1",
+                        "--qase-app-url", f"http://127.0.0.1:{qase_port}/app",
+                        "--roles-json", json.dumps(roles_cfg),
+                    ).returncode,
+                    0,
+                )
+
+                # =====================================================================
+                # PART A: Exploratory / Ad-Hoc Bug on Story `AP-1` WITHOUT `--tc-id`
+                # =====================================================================
+                self.assertEqual(
+                    run_cli(
+                        root, "sync-story", "--key", "AP-1", "--title", "訂單匯出",
+                        "--ac", "AC-001:匯出 UTF-8 CSV", "--ac", "AC-002:無權限回傳 403",
+                        "--status", "approved", "--create",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "complete-task", "--key", "AP-1", "--task-id", "TASK-001",
+                        "--commit", "aaa1111", "--files", "src/export.py", "--test-result", "2 passed",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "handoff", "--key", "AP-1", "--review-status", "approved",
+                        "--commit", "aaa1111", "--summary", "LGTM",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "record-qa", "--key", "AP-1", "--mode", "plan",
+                        "--tc", "TC-001:AC-001:automated:驗證匯出 CSV",
+                        "--tc", "TC-002:AC-002:automated:驗證 403 攔截",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "record-qa", "--key", "AP-1", "--mode", "verify",
+                        "--commit", "aaa1111", "--all-pass",
+                    ).returncode,
+                    0,
+                )
+
+                # QA discovers an unscripted exploratory defect NOT in TC-001/TC-002 -> omits `--tc-id`!
+                exp_bug = run_cli(
+                    root, "create-bug", "--key", "AP-1",
+                    "--title", "快速連點兩次匯出按鈕會產生重複下載請求",
+                    "--severity", "major",
+                    "--steps", "1. 進入訂單頁\n2. 連續雙擊匯出按鈕",
+                    "--expected", "匯出中應防抖鎖定按鈕",
+                    "--actual", "同時發出 2 個匯出請求",
+                    "--attach", str(exp_png),
+                )
+                self.assertEqual(exp_bug.returncode, 0, exp_bug.stderr)
+                exp_bug_out = json.loads(exp_bug.stdout)
+                self.assertEqual(exp_bug_out["bug_key"], "AP-999")
+                self.assertEqual(exp_bug_out["tc_id"], "TC-EXP-001")
+                self.assertTrue(exp_bug_out["exploratory"])
+
+                # CRITICAL INVARIANT: TC-001 & TC-002 MUST remain `pass` (unpolluted!), while TC-EXP-001 is `fail` and synced to Qase!
+                ap1_state = json.loads((root / ".ai-workflow/active/AP-1.json").read_text(encoding="utf-8"))
+                tcs_by_id = {c["id"]: c for c in ap1_state["qa"]["test_cases"]}
+                self.assertEqual(tcs_by_id["TC-001"]["result"], "pass")
+                self.assertEqual(tcs_by_id["TC-002"]["result"], "pass")
+                self.assertIn("TC-EXP-001", tcs_by_id)
+                self.assertEqual(tcs_by_id["TC-EXP-001"]["result"], "fail")
+                self.assertEqual(tcs_by_id["TC-EXP-001"]["execution_type"], "manual")
+                self.assertIn("qase_case_id", tcs_by_id["TC-EXP-001"])
+                self.assertEqual(len(MockJiraHandler.stored_attachments.get("AP-999") or []), 1)
+                self.assertIn(700, MockQaseHandler.defects)
+
+                # Developer fixes `AP-999` + re-reviews -> `close-story` MUST still block until `TC-EXP-001` passes in verify!
+                self.assertEqual(
+                    run_cli(
+                        root, "complete-task", "--key", "AP-1", "--task-id", "AP-999",
+                        "--commit", "bbb2222", "--files", "src/export.py", "--test-result", "3 passed",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "handoff", "--key", "AP-1", "--review-status", "approved",
+                        "--commit", "bbb2222", "--summary", "Debounce added",
+                    ).returncode,
+                    0,
+                )
+                # Verify with ONLY `--all-pass` -> `TC-EXP-001` is `manual` (still `fail`), so Anti-False-Pass refuses to pass it!
+                ver_inc = run_cli(root, "record-qa", "--key", "AP-1", "--mode", "verify", "--commit", "bbb2222", "--all-pass")
+                self.assertEqual(ver_inc.returncode, 0, ver_inc.stderr)
+                self.assertEqual(json.loads(ver_inc.stdout)["qa_status"], "failed")
+                self.assertNotEqual(run_cli(root, "close-story", "--key", "AP-1", "--commit", "bbb2222").returncode, 0)
+
+                # Explicit `--result TC-EXP-001=pass` passes QA and unlocks `close-story`!
+                ver_ok = run_cli(
+                    root, "record-qa", "--key", "AP-1", "--mode", "verify",
+                    "--commit", "bbb2222", "--all-pass", "--result", "TC-EXP-001=pass",
+                )
+                self.assertEqual(ver_ok.returncode, 0, ver_ok.stderr)
+                self.assertEqual(json.loads(ver_ok.stdout)["qa_status"], "passed")
+
+                # =====================================================================
+                # PART B: Standalone Production Bug (`create-bug --standalone`) Full Lifecycle
+                # =====================================================================
+                prod_bug = run_cli(
+                    root, "create-bug", "--standalone",
+                    "--title", "線上報修：訂單金額為 0 時匯出報表回傳 HTTP 500",
+                    "--severity", "blocker",
+                    "--steps", "1. 篩選金額為 0 的免費體驗訂單\n2. 點擊匯出",
+                    "--expected", "正常匯出金額為 0 的列",
+                    "--actual", "除以零導致 HTTP 500",
+                    "--attach", str(prod_png),
+                )
+                self.assertEqual(prod_bug.returncode, 0, prod_bug.stderr)
+                pb_out = json.loads(prod_bug.stdout)
+                prod_key = pb_out["bug_key"]
+                self.assertEqual(prod_key, "AP-998")
+                self.assertEqual(pb_out["issue_kind"], "standalone_bug")
+                self.assertEqual(pb_out["qase_defect"]["defect_id"], 701)
+                self.assertFalse(MockQaseHandler.defects[701]["resolved"])
+                self.assertEqual(len(MockJiraHandler.stored_attachments.get("AP-998") or []), 1)
+
+                # Verify NO Sub-task was created under AP-998 and NO issueLink was posted for AP-998
+                self.assertEqual(MockJiraHandler.stored_issues["AP-998"]["fields"].get("subtasks") or [], [])
+                link_calls_for_998 = [
+                    req for req in MockJiraHandler.requests_log
+                    if req[0] == "POST" and req[1] == "/rest/api/3/issueLink"
+                    and "AP-998" in json.dumps(req[2])
+                ]
+                self.assertEqual(link_calls_for_998, [])
+
+                # Router (`status --key AP-998`) routes directly to `team-dev` (`implement`), skipping `team-spec` & `plan`!
+                st_998 = json.loads(run_cli(root, "status", "--key", "AP-998").stdout)
+                self.assertEqual(st_998["recommended_skill"], "team-dev")
+                self.assertEqual(st_998["recommended_mode"], "implement")
+
+                # Station 2: RD fixes AP-998 via `complete-task --key AP-998 --task-id AP-998`
+                # MUST NOT prematurely transition AP-998 to `Done`!
+                fix_998 = run_cli(
+                    root, "complete-task", "--key", "AP-998", "--task-id", "AP-998",
+                    "--commit", "ccc3333", "--files", "src/calc.py", "--test-result", "pytest tests/test_calc.py (4 passed)",
+                )
+                self.assertEqual(fix_998.returncode, 0, fix_998.stderr)
+                self.assertNotEqual(
+                    MockJiraHandler.stored_issues["AP-998"]["fields"]["status"]["name"].lower(),
+                    "done",
+                    "Standalone Bug AP-998 must NOT be marked Done before Review, QA, and Release!",
+                )
+
+                # Station 3a: Code Review approves `ccc3333` -> moves AP-998 to `In QA`
+                self.assertEqual(
+                    run_cli(
+                        root, "handoff", "--key", "AP-998", "--review-status", "approved",
+                        "--commit", "ccc3333", "--summary", "Zero-division guard verified",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(MockJiraHandler.stored_issues["AP-998"]["fields"]["status"]["name"], "In QA")
+
+                # Station 3b (Round 1 — Regression check FAILS!): QA runs `verify` with `TC-001=fail` + `--tc-attach`
+                # Must upload failure screenshot onto `AP-998`, reopen `TASK-001`, and transition `AP-998` back to `In Progress` WITHOUT creating nested Bug!
+                bug_count_before = len([
+                    k for k, v in MockJiraHandler.stored_issues.items()
+                    if ((v.get("fields") or {}).get("issuetype") or {}).get("name") == "Bug"
+                ])
+                ver_fail_998 = run_cli(
+                    root, "record-qa", "--key", "AP-998", "--mode", "verify",
+                    "--commit", "ccc3333",
+                    "--result", "TC-001=fail:負數折抵後金額為 0 仍觸發 500",
+                    "--tc-attach", f"TC-001={retest_png}",
+                )
+                self.assertEqual(ver_fail_998.returncode, 0, ver_fail_998.stderr)
+                bug_count_after = len([
+                    k for k, v in MockJiraHandler.stored_issues.items()
+                    if ((v.get("fields") or {}).get("issuetype") or {}).get("name") == "Bug"
+                ])
+                self.assertEqual(bug_count_after, bug_count_before, "Failed retest on standalone bug must not spawn nested Bug")
+                self.assertEqual(len(MockJiraHandler.stored_attachments.get("AP-998") or []), 2)
+                self.assertEqual(MockJiraHandler.stored_issues["AP-998"]["fields"]["status"]["name"], "In Progress")
+                st_reopened = json.loads(run_cli(root, "status", "--key", "AP-998").stdout)
+                self.assertEqual(st_reopened["recommended_skill"], "team-dev")
+                self.assertEqual(st_reopened["recommended_mode"], "implement")
+
+                # RD submits fix `ddd4444` -> Review approves -> QA verifies `TC-001=pass` -> Qase Defect #701 resolves!
+                self.assertEqual(
+                    run_cli(
+                        root, "complete-task", "--key", "AP-998",
+                        "--commit", "ddd4444", "--files", "src/calc.py", "--test-result", "5 passed",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "handoff", "--key", "AP-998", "--review-status", "approved",
+                        "--commit", "ddd4444", "--summary", "Discount zero-amount path fixed",
+                    ).returncode,
+                    0,
+                )
+                ver_pass_998 = run_cli(
+                    root, "record-qa", "--key", "AP-998", "--mode", "verify",
+                    "--commit", "ddd4444", "--result", "TC-001=pass",
+                )
+                self.assertEqual(ver_pass_998.returncode, 0, ver_pass_998.stderr)
+                self.assertTrue(
+                    MockQaseHandler.defects[701]["resolved"],
+                    "Passing QA verification on standalone bug must resolve its Qase Defect",
+                )
+
+                # Station 4: `close-story --key AP-998` transitions `AP-998` to `Done` and deletes active file!
+                close_998 = run_cli(
+                    root, "close-story", "--key", "AP-998", "--version", "v1.2.1", "--commit", "ddd4444",
+                    "--notes", "修復零元訂單匯出 500 錯誤（Bug Fix，手冊無須變更）",
+                )
+                self.assertEqual(close_998.returncode, 0, close_998.stderr)
+                self.assertEqual(MockJiraHandler.stored_issues["AP-998"]["fields"]["status"]["name"], "Done")
+                self.assertFalse((root / ".ai-workflow/active/AP-998.json").exists())
+
+                # Also close Story AP-1 so active directory is completely empty before Part C discovery test
+                self.assertEqual(run_cli(root, "close-story", "--key", "AP-1", "--commit", "bbb2222").returncode, 0)
+
+                # =====================================================================
+                # PART C: Auto-Discovery of CS-Filed Standalone Bug (`AP-777`) vs Story-Linked Bug (`AP-888`)
+                # =====================================================================
+                cs_desc = {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "客服原始報修描述：Safari 登入後重整白屏"}]}],
+                }
+                MockJiraHandler.stored_issues["AP-777"] = {
+                    "key": "AP-777",
+                    "fields": {
+                        "summary": "客服報修：Safari 登入白屏",
+                        "description": cs_desc,
+                        "issuetype": {"name": "Bug", "subtask": False},
+                        "status": {"name": "To Do"},
+                    },
+                }
+                # Story AP-2 (Done? No, In Progress) with a linked child Bug AP-888 -> AP-888 must NOT be discovered as standalone!
+                MockJiraHandler.stored_issues["AP-888"] = {
+                    "key": "AP-888",
+                    "fields": {
+                        "summary": "附屬於 AP-2 的測試缺陷",
+                        "issuetype": {"name": "Bug", "subtask": False},
+                        "status": {"name": "To Do"},
+                    },
+                }
+                MockJiraHandler.stored_issues["AP-2"] = {
+                    "key": "AP-2",
+                    "fields": {
+                        "summary": "新報表需求",
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "In Progress"},
+                        "issuelinks": [{"type": {"name": "Blocks"}, "inwardIssue": MockJiraHandler.stored_issues["AP-888"]}],
+                    },
+                }
+
+                disc_res = run_cli(root, "status")
+                self.assertEqual(disc_res.returncode, 0, disc_res.stderr)
+                disc_out = json.loads(disc_res.stdout)
+                # Both Story `AP-2` AND standalone Bug `AP-777` are discovered, while child Bug `AP-888` is excluded!
+                self.assertEqual(sorted(disc_out["active_stories"]), ["AP-2", "AP-777"])
+                self.assertNotIn("AP-888", disc_out["active_stories"])
+
+                # Check `AP-777` hydrated as `standalone_bug`, routes to `team-dev` (`implement`), and CS description is untouched!
+                st_777 = json.loads(run_cli(root, "status", "--key", "AP-777").stdout)
+                self.assertEqual(st_777["recommended_skill"], "team-dev")
+                self.assertEqual(st_777["recommended_mode"], "implement")
+                self.assertEqual(MockJiraHandler.stored_issues["AP-777"]["fields"]["description"], cs_desc)
+
+                # Explicit `--standalone --adopt --key AP-777` enriches Qase Defect & attachments while STILL preserving CS description!
+                adopt_777 = run_cli(
+                    root, "create-bug", "--standalone", "--adopt", "--key", "AP-777",
+                    "--attach", str(prod_png),
+                )
+                self.assertEqual(adopt_777.returncode, 0, adopt_777.stderr)
+                ad_out = json.loads(adopt_777.stdout)
+                self.assertTrue(ad_out["adopted"])
+                self.assertEqual(ad_out["issue_kind"], "standalone_bug")
+                self.assertEqual(MockJiraHandler.stored_issues["AP-777"]["fields"]["description"], cs_desc)
+                self.assertEqual(len(MockJiraHandler.stored_attachments.get("AP-777") or []), 1)
+                self.assertIn(702, MockQaseHandler.defects)
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+            qase_srv.shutdown()
+            qase_srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

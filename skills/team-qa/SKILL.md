@@ -1,13 +1,13 @@
 ---
 name: team-qa
-description: Use when planning QA test cases (TC-001..N) mapped to acceptance criteria with AI pre-filled automated/manual execution types (plan mode, which can run in parallel with development), or when verifying test execution results, importing JUnit XML/JSON test reports, and filing linked Jira Bug tickets on failure (verify mode).
+description: Use when planning QA test cases (TC-001..N) mapped to acceptance criteria (plan mode), verifying test execution results and filing linked Jira Bug tickets on failure (verify mode), or reporting exploratory ad-hoc Story defects and standalone production/user-reported Bug tickets (report mode).
 ---
 
-# Team QA (Station 3b — Streamlined QA Plan & Verify)
+# Team QA (Station 3b — Streamlined QA Plan, Verify & Defect Report)
 
 ## Overview
 
-Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), and final QA assessment into two streamlined modes: `plan` and `verify`. Supports **two remembered QA backends** (`qa_test_backend` in `.ai-workflow/team-config.json`):
+Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), final QA assessment, and **exploratory / production bug intake** into three streamlined modes: `plan`, `verify`, and `report`. Supports **two remembered QA backends** (`qa_test_backend` in `.ai-workflow/team-config.json`):
 - **`jira-comment`:** Stores the full Test Plan and AC/TC Verification tables directly in Jira Story comments.
 - **`qase`:** Synchronizes Test Suites, Test Cases (`TC-001..N`), Test Runs, bulk execution results, and Jira External Issue links directly to **Qase TestOps** (`https://api.qase.io/v1`), while posting a concise 3-line summary and Qase Suite/Run link on the Jira Story.
 
@@ -35,7 +35,8 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
 | Mode | When to Run | Key Action |
 |---|---|---|
 | **`plan`** | Anytime after `team-spec` is `approved` (**can run in parallel with `team-dev`**) | Generate `TC-001..N` mapped to `AC-*` with AI pre-filled **3-tier execution types (`automated` / `external` / `manual`)** for 1-step human confirmation; sync via `jira_sync.py record-qa --mode plan` |
-| **`verify`** | After `team-review` approves the candidate commit | Verify `automated` tests locally (`--all-pass` or `--junit-xml`), ingest `external` tool reports (`--junit-xml` / `--results-json` / `--result`), and record `manual` human check results (`--result TC-ID=pass\|fail`); file linked Jira `Bug` tickets on any failure via `jira_sync.py create-bug` |
+| **`verify`** | After `team-review` approves the candidate commit (for either a Story or a standalone Bug) | Verify `automated` tests locally (`--all-pass` or `--junit-xml`), ingest `external` tool reports (`--junit-xml` / `--results-json` / `--result`), and record `manual` human check results (`--result TC-ID=pass\|fail`); file linked Jira `Bug` tickets on Story failure via `jira_sync.py create-bug` (or reopen a standalone Bug directly on failed retest) |
+| **`report`** | **(A)** During QA exploratory testing when an unscripted defect NOT in `TC-001..N` is found on an active Story, OR **(B)** when filing / adopting a standalone production / CS / user-reported Bug | **(A) Story Exploratory Bug:** Run `create-bug --key <STORY-KEY>` **without `--tc-id`** — leaves passing `TC-001..N` untouched, appends `TC-EXP-001` (`fail`), and files linked Jira `Bug` + Qase Defect.<br>**(B) Standalone Production Bug:** Run `create-bug --standalone` (or `--standalone --adopt --key <BUG-KEY>` for an existing CS Jira Bug) — skips `team-spec` & extra Sub-tasks and enters the lightweight `team-dev -> team-review -> team-qa (verify) -> team-release` track! |
 | **QA Fast-Track** | In `verify` mode when `qa.test_cases` is empty | `record-qa --mode verify` automatically derives `TC-001..N` (`automated`) 1:1 from Story `AC-001..N` without requiring a separate `--mode plan` pass first |
 
 ### The 3-Tier Hybrid QA Execution Types
@@ -118,7 +119,53 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
      ```
      `create-bug` validates attachment safety (`<= 32 MiB`, non-empty, rejects credential files), links the Bug to `<JIRA-KEY>`, uploads all media evidence to the **Jira `Bug` ticket's Attachments** (`POST /rest/api/3/issue/{bugKey}/attachments`), **and when `qa_test_backend == "qase"`, also syncs those media attachments to Qase** (`POST /v1/attachment/{code}` -> Qase Test Run Result & Qase Defect `POST /v1/defect/{code}`, deduplicating cached hashes). It then traces `tc_id -> ac_id -> TASK-###` to assign the `Bug` directly to the owning Developer, transitions the Story back to `In Progress`, and notifies that developer with `@mention` in Traditional Chinese so `$team-dev` (`implement` mode) can fix it.
    - **If All Tests Pass (`qa_status: "passed"` and 0 open Bugs):**
-     `record-qa --mode verify` automatically records the verification results (creating a Qase Test Run, submitting bulk results, and completing the Run when `qa_test_backend == "qase"`, or posting the full AC/TC table when `qa_test_backend == "jira-comment"`) and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if `same_person: true`, where AI can proactively auto-chain into `$team-release`).
+     `record-qa --mode verify` automatically records the verification results (creating a Qase Test Run, submitting bulk results, completing the Run, and resolving any standalone-bug Qase Defect when `qa_test_backend == "qase"`, or posting the full AC/TC table when `qa_test_backend == "jira-comment"`) and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if `same_person: true`, where AI can proactively auto-chain into `$team-release`).
+   - **Note on Standalone Production Bugs (`issue_kind == "standalone_bug"`):** If `verify` fails (`--result TC-001=fail:...`) on a standalone Bug `<BUG-KEY>`, `record-qa --mode verify` automatically uploads any `--tc-attach` failure media directly onto `<BUG-KEY>`, reopens `TASK-001`, and hands `<BUG-KEY>` back to `developer` (`In Progress`) **without** needing a separate nested `create-bug` call!
+
+## Mode 3: `report` — Exploratory Story Defects & Standalone Production Bugs
+
+Use `report` mode whenever a defect does **not** come from a pre-planned `TC-001..N` row:
+
+### Path A: Exploratory / Ad-Hoc Bug on an Active Story (No Existing `TC-ID`)
+When QA finds an extra defect while testing `<STORY-KEY>` that was not listed in `TC-001..N`, **omit `--tc-id`** so previously passing `TC-001..N` stay `pass`:
+
+```bash
+python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
+  --key "<STORY-KEY>" \
+  [--ac-id "<AC-001-or-omit>"] \
+  [--execution-type "<manual|external|automated>"] \
+  --title "<Concise exploratory defect summary>" \
+  --severity "<blocker|major|minor>" \
+  --steps "<Reproduction steps>" \
+  --expected "<Expected behavior>" \
+  --actual "<Actual observed behavior>" \
+  [--attach "<path/to/screenshot.png>"]
+```
+- Automatically appends `TC-EXP-001` (`TC-EXP-002`, ...) with `result: "fail"` (syncing the new case to the Story's Qase Suite if `qa_test_backend == "qase"`), creates the linked Jira `Bug` + Qase Defect + media attachments, and hands `<STORY-KEY>` back to `developer`. `<STORY-KEY>` cannot close until both the Bug is fixed and `TC-EXP-001` passes in `verify`!
+
+### Path B: Standalone Production / User-Reported Bug (No Parent Story)
+When a user, CS, or ops inspection reports a production bug outside any active Story, file a **new** standalone Jira `Bug` (or `--adopt` an **existing** Jira `Bug` ticket such as `AP-88` while keeping its original reporter description 100% intact):
+
+```bash
+# Option 1: Create a brand-new standalone Jira Bug (and Qase Defect when qase is active)
+python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
+  --standalone \
+  --title "<Production bug summary>" \
+  --severity "<blocker|major|minor>" \
+  --steps "<Reproduction steps>" \
+  --expected "<Expected behavior>" \
+  --actual "<Actual observed behavior>" \
+  [--execution-type "<manual|external|automated>"] \
+  [--to-assignee "<dev-email-or-name>"] \
+  [--attach "<path/to/prod-error.png>"]
+
+# Option 2: Adopt an existing CS/user Jira Bug ticket without overwriting its Jira description
+python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
+  --standalone --adopt \
+  --key "<EXISTING-BUG-KEY>" \
+  [--attach "<path/to/extra-evidence.png>"]
+```
+- Initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`), **skips `team-spec` and creates zero redundant Jira `Sub-task`s**, assigns `<BUG-KEY>` to `developer` (`In Progress`), and flows cleanly through **`team-dev (implement)` $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` $\rightarrow$ `team-release` (`close-story`)**!
 
 ## Red Flags — STOP
 
