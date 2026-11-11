@@ -98,6 +98,12 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                     "displayName": "Bob Lin",
                     "emailAddress": "bob@team.io",
                 })
+            elif decoded_auth.startswith("dave@team.io:"):
+                self._send_json(200, {
+                    "accountId": "acc-dave-from-token",
+                    "displayName": "Dave Ho",
+                    "emailAddress": "dave@team.io",
+                })
             else:
                 self._send_json(200, {
                     "accountId": "acc-alice",
@@ -156,22 +162,42 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"errorMessages": [f"Issue type '{itype}' invalid"]})
                 return
             if itype in ("Sub-task", "Subtask", "子任務"):
-                sub_key = f"{proj_key}-102"
-                self.stored_issues[sub_key] = {
+                existing_subs = [
+                    k for k, v in self.stored_issues.items()
+                    if ((v.get("fields") or {}).get("issuetype") or {}).get("subtask") is True
+                    and k.startswith(f"{proj_key}-")
+                ]
+                sub_num = 102 + len(existing_subs)
+                sub_key = f"{proj_key}-{sub_num}"
+                parent_key = (fields.get("parent") or {}).get("key") or ""
+                sub_obj = {
                     "key": sub_key,
                     "fields": {
                         "summary": fields.get("summary") or sub_key,
+                        "description": fields.get("description"),
                         "issuetype": {"name": itype, "subtask": True},
                         "status": {"name": "To Do"},
+                        "parent": {"key": parent_key},
                     },
                 }
+                self.stored_issues[sub_key] = sub_obj
+                if parent_key and parent_key in self.stored_issues:
+                    p_subs = self.stored_issues[parent_key].setdefault("fields", {}).setdefault("subtasks", [])
+                    p_subs.append(sub_obj)
                 self._send_json(201, {"key": sub_key})
             elif itype == "Bug":
-                bug_key = f"{proj_key}-999"
+                existing_bugs = [
+                    k for k, v in self.stored_issues.items()
+                    if ((v.get("fields") or {}).get("issuetype") or {}).get("name") == "Bug"
+                    and k.startswith(f"{proj_key}-")
+                ]
+                bug_num = 999 - len(existing_bugs)
+                bug_key = f"{proj_key}-{bug_num}"
                 self.stored_issues[bug_key] = {
                     "key": bug_key,
                     "fields": {
                         "summary": fields.get("summary") or bug_key,
+                        "description": fields.get("description"),
                         "issuetype": {"name": "Bug", "subtask": False},
                         "status": {"name": "To Do"},
                     },
@@ -194,6 +220,20 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                     },
                 }
                 self._send_json(201, {"key": key})
+        elif self.path == "/rest/api/3/issueLink":
+            inward_key = ((data.get("inwardIssue") or {}).get("key") or "").strip()
+            outward_key = ((data.get("outwardIssue") or {}).get("key") or "").strip()
+            if outward_key in self.stored_issues and inward_key in self.stored_issues:
+                links = self.stored_issues[outward_key].setdefault("fields", {}).setdefault("issuelinks", [])
+                links.append({"type": data.get("type") or {"name": "Blocks"}, "inwardIssue": self.stored_issues[inward_key]})
+            self._send_json(201, {"ok": True})
+        elif self.path.startswith("/rest/api/3/issue/") and self.path.endswith("/transitions"):
+            key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
+            tid = str(((data.get("transition") or {}).get("id")) or "")
+            id_to_status = {"11": "In Progress", "21": "In QA", "31": "Ready for Release", "41": "Done"}
+            if key in self.stored_issues and tid in id_to_status:
+                self.stored_issues[key].setdefault("fields", {})["status"] = {"name": id_to_status[tid]}
+            self._send_json(204, {})
         else:
             self._send_json(200, {"ok": True})
 
@@ -204,6 +244,14 @@ class MockJiraHandler(BaseHTTPRequestHandler):
             key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
             self.stored_properties[key] = data
             self._send_json(200, {"ok": True})
+            return
+        if self.path.startswith("/rest/api/3/issue/") and self.path.endswith("/assignee"):
+            key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
+            existing = self.stored_issues.get(key) or {"key": key, "fields": {"status": {"name": "In Progress"}}}
+            acct_id = data.get("accountId")
+            existing.setdefault("fields", {})["assignee"] = {"accountId": acct_id} if acct_id else None
+            self.stored_issues[key] = existing
+            self._send_json(204, {})
             return
         if self.path.startswith("/rest/api/3/issue/") and not self.path.endswith("/assignee"):
             key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
@@ -1626,7 +1674,7 @@ class WorkflowTestSuite(unittest.TestCase):
                 jc_body_str = json.dumps(jc_comments[0][2], ensure_ascii=False)
                 self.assertNotIn("請接手下一階段工作", jc_body_str)
                 self.assertNotIn("@Carol", jc_body_str)
-                self.assertIn("[Station 3b: QA Test Plan — AP-1]", jc_body_str)
+                self.assertIn("[站點 3b：QA 測試計畫 — AP-1]", jc_body_str)
 
                 # Verify jira-comment choice was persisted to team-config.json
                 cfg_after_jc = json.loads((root / ".ai-workflow/team-config.json").read_text(encoding="utf-8"))
@@ -1996,6 +2044,475 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertEqual(st_after["jira_key"], "AP-1")
                 self.assertEqual(st_after["recommended_skill"], "team-qa")
                 self.assertEqual(st_after["responsible_person"], "Carol Wu")
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+
+    def test_14_multi_member_role_pool_auto_assignment_peer_review_and_zhtw_default(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp_alice, \
+                 tempfile.TemporaryDirectory() as tmp_bob, \
+                 tempfile.TemporaryDirectory() as tmp_dave, \
+                 tempfile.TemporaryDirectory() as tmp_en:
+                alice_root = Path(tmp_alice)
+                bob_root = Path(tmp_bob)
+                dave_root = Path(tmp_dave)
+                en_root = Path(tmp_en)
+
+                # S1: Alice initializes AP claiming `pm,tech_lead,developer,reviewer,release_manager` with --specialty backend
+                init_a = run_cli(
+                    alice_root, "init",
+                    "--project-key", "AP",
+                    "--jira-url", f"http://127.0.0.1:{jira_port}",
+                    "--role", "pm,tech_lead,developer,reviewer,release_manager",
+                    "--specialty", "backend",
+                    "--name", "Alice Chen",
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "alice-tok-111",
+                )
+                self.assertEqual(init_a.returncode, 0, init_a.stderr)
+
+                # Simulate Bob cloning and running `auth --role developer,reviewer --specialty frontend` ->
+                # MUST append Bob to `developer` and `reviewer` pools instead of overwriting Alice!
+                (bob_root / ".ai-workflow").mkdir(parents=True, exist_ok=True)
+                (bob_root / ".ai-workflow/team-config.json").write_bytes(
+                    (alice_root / ".ai-workflow/team-config.json").read_bytes()
+                )
+                auth_bob = run_cli(
+                    bob_root, "auth",
+                    "--role", "developer,reviewer",
+                    "--specialty", "frontend",
+                    "--jira-email", "bob@team.io",
+                    "--jira-token", "bob-tok-222",
+                )
+                self.assertEqual(auth_bob.returncode, 0, auth_bob.stderr)
+                ab_out = json.loads(auth_bob.stdout)
+                self.assertTrue(ab_out["team_config_modified"])
+
+                # Re-running auth for Bob is idempotent (no duplicate Bob in members!)
+                auth_bob_again = run_cli(
+                    bob_root, "auth",
+                    "--role", "developer,reviewer",
+                    "--specialty", "frontend",
+                    "--jira-email", "bob@team.io",
+                    "--jira-token", "bob-tok-222",
+                )
+                self.assertEqual(auth_bob_again.returncode, 0, auth_bob_again.stderr)
+                cfg_after_bob = json.loads((bob_root / ".ai-workflow/team-config.json").read_text(encoding="utf-8"))
+                dev_members = cfg_after_bob["roles"]["developer"].get("members") or []
+                self.assertEqual(len(dev_members), 2)
+                self.assertEqual([m["email"] for m in dev_members], ["alice@team.io", "bob@team.io"])
+                self.assertEqual([m.get("specialty") for m in dev_members], ["backend", "frontend"])
+
+                # Carol & Dave both claim `qa` -> 2 QA members in pool!
+                (dave_root / ".ai-workflow").mkdir(parents=True, exist_ok=True)
+                (dave_root / ".ai-workflow/team-config.json").write_bytes(
+                    (bob_root / ".ai-workflow/team-config.json").read_bytes()
+                )
+                self.assertEqual(
+                    run_cli(
+                        dave_root, "auth",
+                        "--role", "qa",
+                        "--jira-email", "carol@team.io",
+                        "--jira-token", "carol-tok-333",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        dave_root, "auth",
+                        "--role", "qa",
+                        "--jira-email", "dave@team.io",
+                        "--jira-token", "dave-tok-444",
+                    ).returncode,
+                    0,
+                )
+                # Sync merged team-config.json back to Alice & Bob (as via git pull)
+                merged_cfg_bytes = (dave_root / ".ai-workflow/team-config.json").read_bytes()
+                (alice_root / ".ai-workflow/team-config.json").write_bytes(merged_cfg_bytes)
+                (bob_root / ".ai-workflow/team-config.json").write_bytes(merged_cfg_bytes)
+                merged_cfg = json.loads(merged_cfg_bytes.decode("utf-8"))
+                self.assertEqual(len(merged_cfg["roles"]["qa"]["members"]), 2)
+
+                # S2a: Alice creates Draft Story AP-1 -> MUST immediately assign AP-1 to PM Alice (`acc-alice`) AND format Description in zh-TW!
+                draft_res = run_cli(
+                    alice_root, "sync-story",
+                    "--key", "AP-1",
+                    "--title", "多人分工與繁體中文預設驗證",
+                    "--scope-in", "後端 API 與前端看板",
+                    "--has-ui", "--has-api",
+                    "--ac", "AC-001:後端資料庫與 API",
+                    "--ac", "AC-002:前端看板元件",
+                    "--status", "draft",
+                    "--create",
+                )
+                self.assertEqual(draft_res.returncode, 0, draft_res.stderr)
+                self.assertEqual(
+                    (MockJiraHandler.stored_issues["AP-1"]["fields"].get("assignee") or {}).get("accountId"),
+                    "acc-alice",
+                )
+                desc_str = json.dumps(MockJiraHandler.stored_issues["AP-1"]["fields"]["description"], ensure_ascii=False)
+                self.assertIn("1. 範圍界定", desc_str)
+                self.assertIn("2. 驗收條件", desc_str)
+
+                # Approve AP-1 -> posts zh-TW Station 1 comment
+                MockJiraHandler.requests_log.clear()
+                app_res = run_cli(alice_root, "sync-story", "--key", "AP-1", "--status", "approved")
+                self.assertEqual(app_res.returncode, 0, app_res.stderr)
+                s1_comments = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1].endswith("/comment")]
+                self.assertIn("[站點 1：規格與設計核准]", json.dumps(s1_comments[0][2], ensure_ascii=False))
+
+                # S2b: Decompose into Backend TASK-001 (AP-102) & Frontend TASK-002 (AP-103) ->
+                # Auto-matches specialty (`backend` -> Alice `acc-alice`, `frontend` -> Bob `acc-bob-from-token`) and assigns BOTH Jira Sub-tasks!
+                tasks_payload = [
+                    {
+                        "id": "TASK-001",
+                        "title": "後端資料庫 Schema 與 API 模組",
+                        "ac_coverage": ["AC-001"],
+                        "files": ["src/server/api.ts"],
+                        "verification": "npm test -- server",
+                    },
+                    {
+                        "id": "TASK-002",
+                        "title": "前端 React 看板與互動元件",
+                        "ac_coverage": ["AC-002"],
+                        "depends_on": ["TASK-001"],
+                        "files": ["src/client/Board.tsx"],
+                        "verification": "npm test -- client",
+                    },
+                ]
+                sub_res = run_cli(
+                    alice_root, "create-subtasks",
+                    "--key", "AP-1",
+                    "--tasks-json", json.dumps(tasks_payload, ensure_ascii=False),
+                )
+                self.assertEqual(sub_res.returncode, 0, sub_res.stderr)
+                self.assertEqual(
+                    (MockJiraHandler.stored_issues["AP-102"]["fields"].get("assignee") or {}).get("accountId"),
+                    "acc-alice",
+                )
+                self.assertEqual(
+                    (MockJiraHandler.stored_issues["AP-103"]["fields"].get("assignee") or {}).get("accountId"),
+                    "acc-bob-from-token",
+                )
+                sub_desc_str = json.dumps(MockJiraHandler.stored_issues["AP-102"]["fields"]["description"], ensure_ascii=False)
+                self.assertIn("任務編號：TASK-001", sub_desc_str)
+
+                # Alice completes TASK-001; Bob (on Bob's machine!) completes TASK-002 ->
+                # Bob's completion comment uses Bob's token & zh-TW `[任務完成：TASK-002]` attributed to Bob Lin!
+                self.assertEqual(
+                    run_cli(
+                        alice_root, "complete-task",
+                        "--key", "AP-1",
+                        "--task-id", "TASK-001",
+                        "--commit", "be00001",
+                        "--files", "src/server/api.ts",
+                        "--test-result", "vitest server passed",
+                    ).returncode,
+                    0,
+                )
+                MockJiraHandler.requests_log.clear()
+                comp_bob = run_cli(
+                    bob_root, "complete-task",
+                    "--key", "AP-1",
+                    "--task-id", "TASK-002",
+                    "--commit", "fe00002",
+                    "--files", "src/client/Board.tsx",
+                    "--test-result", "vitest client passed",
+                )
+                self.assertEqual(comp_bob.returncode, 0, comp_bob.stderr)
+                bob_comments = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1].endswith("/comment")]
+                bob_comment_str = json.dumps(bob_comments[0][2], ensure_ascii=False)
+                self.assertIn("[任務完成：TASK-002]", bob_comment_str)
+                self.assertIn("Bob Lin", bob_comment_str)
+
+                # S2c: Peer Review & Multi-QA Handoff (`--to-assignee dave@team.io`)
+                # Let's also check Peer Review when a single developer (Alice) owns the story:
+                # Here `reviewer` has [Alice, Bob]; handing off to `--to-assignee dave@team.io` assigns AP-1 to Dave (`acc-dave-from-token`) and remembers `role_owners.qa`!
+                MockJiraHandler.requests_log.clear()
+                ho_res = run_cli(
+                    bob_root, "handoff",
+                    "--key", "AP-1",
+                    "--review-status", "approved",
+                    "--commit", "fe00002",
+                    "--to-assignee", "dave@team.io",
+                )
+                self.assertEqual(ho_res.returncode, 0, ho_res.stderr)
+                self.assertEqual(
+                    (MockJiraHandler.stored_issues["AP-1"]["fields"].get("assignee") or {}).get("accountId"),
+                    "acc-dave-from-token",
+                )
+                ho_str = json.dumps(
+                    [r[2] for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1].endswith("/comment")][0],
+                    ensure_ascii=False,
+                )
+                self.assertIn("[站點 3a：開發交接與程式碼審查", ho_str)
+
+                # Verify sticky `role_owners.qa` on Dave's machine: status shows Dave Ho as responsible_person for QA!
+                st_dave = json.loads(run_cli(dave_root, "status", "--key", "AP-1").stdout)
+                self.assertEqual(st_dave["recommended_skill"], "team-qa")
+                self.assertEqual(st_dave["responsible_person"], "Dave Ho")
+
+                # Dave plans QA TCs and files a Bug on TC-002 (covering AC-002, which belongs to TASK-002 owned by Bob!) ->
+                # Newly created Bug AP-999 MUST be assigned directly to Bob (`acc-bob-from-token`), with zh-TW Bug description & comment!
+                self.assertEqual(
+                    run_cli(
+                        dave_root, "record-qa",
+                        "--key", "AP-1",
+                        "--mode", "plan",
+                        "--qa-backend", "jira-comment",
+                        "--tc", "TC-001:AC-001:automated:API 驗證",
+                        "--tc", "TC-002:AC-002:automated:看板按鈕驗證",
+                    ).returncode,
+                    0,
+                )
+                MockJiraHandler.requests_log.clear()
+                bug_res = run_cli(
+                    dave_root, "create-bug",
+                    "--key", "AP-1",
+                    "--tc-id", "TC-002",
+                    "--ac-id", "AC-002",
+                    "--title", "前端看板按鈕點擊無反應",
+                    "--severity", "major",
+                    "--steps", "點擊按讚",
+                    "--expected", "票數 +1",
+                    "--actual", "無反應",
+                )
+                self.assertEqual(bug_res.returncode, 0, bug_res.stderr)
+                self.assertEqual(
+                    (MockJiraHandler.stored_issues["AP-999"]["fields"].get("assignee") or {}).get("accountId"),
+                    "acc-bob-from-token",
+                )
+                bug_desc_str = json.dumps(MockJiraHandler.stored_issues["AP-999"]["fields"]["description"], ensure_ascii=False)
+                self.assertIn("重現步驟", bug_desc_str)
+
+                # S4b: Explicit `--language en` override produces English comment headers when requested
+                self.assertEqual(
+                    run_cli(
+                        en_root, "init",
+                        "--offline",
+                        "--project-key", "ENP",
+                        "--language", "en",
+                        "--role", "pm,developer,reviewer,qa,release_manager",
+                        "--name", "Alice",
+                        "--jira-email", "alice@team.io",
+                        "--jira-token", "tok",
+                    ).returncode,
+                    0,
+                )
+                cfg_en = json.loads((en_root / ".ai-workflow/team-config.json").read_text(encoding="utf-8"))
+                self.assertEqual(cfg_en["language"], "en")
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+
+    def test_15_bidirectional_jira_ui_reconciliation_and_description_drift_guard(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp_root:
+                root = Path(tmp_root)
+                self.assertEqual(
+                    run_cli(
+                        root, "init",
+                        "--project-key", "AP",
+                        "--jira-url", f"http://127.0.0.1:{jira_port}",
+                        "--roles-json", json.dumps({
+                            "pm": {"name": "Alice", "email": "alice@team.io", "api_token": "tok-a"},
+                            "tech_lead": {"name": "Alice", "email": "alice@team.io"},
+                            "developer": {
+                                "members": [
+                                    {"name": "Alice", "email": "alice@team.io"},
+                                    {"name": "Bob", "email": "bob@team.io", "api_token": "tok-b"},
+                                ]
+                            },
+                            "reviewer": {
+                                "members": [
+                                    {"name": "Alice", "email": "alice@team.io"},
+                                    {"name": "Bob", "email": "bob@team.io"},
+                                ]
+                            },
+                            "qa": {"name": "Carol", "email": "carol@team.io", "api_token": "tok-c"},
+                            "release_manager": {"name": "Alice", "email": "alice@team.io"},
+                        }),
+                    ).returncode,
+                    0,
+                )
+
+                # Create & approve AP-1, create & complete TASK-001 (AP-102, owned by Alice)
+                self.assertEqual(
+                    run_cli(
+                        root, "sync-story",
+                        "--key", "AP-1",
+                        "--title", "雙向同步驗證 Story",
+                        "--ac", "AC-001:基礎匯出功能",
+                        "--status", "approved",
+                        "--create",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "create-subtasks",
+                        "--key", "AP-1",
+                        "--task", "TASK-001:實作匯出模組:AC-001:pytest",
+                        "--task-assignee", "TASK-001=alice@team.io",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "complete-task",
+                        "--key", "AP-1",
+                        "--task-id", "TASK-001",
+                        "--commit", "111aaaa",
+                        "--files", "export.py",
+                        "--test-result", "pytest ok",
+                    ).returncode,
+                    0,
+                )
+
+                # Check Peer Review auto-avoidance: since Alice implemented AP-1, `handoff` selects Bob (`self_reviewed_with_ai == False`)!
+                ho_peer = run_cli(root, "handoff", "--key", "AP-1", "--review-status", "approved", "--commit", "111aaaa")
+                self.assertEqual(ho_peer.returncode, 0, ho_peer.stderr)
+                story_after_ho = json.loads((root / ".ai-workflow/active/AP-1.json").read_text(encoding="utf-8"))
+                self.assertFalse(story_after_ho["review"]["self_reviewed_with_ai"])
+                self.assertEqual(story_after_ho["review"]["reviewer_person"]["email"], "bob@team.io")
+
+                # S3a: Human in Jira Web UI:
+                # 1) Manually adds Sub-task AP-109 ("人工在 Jira 新增的報表權限子任務", To Do, assigned to acc-bob-from-token)
+                # 2) Reopens AP-102 back to "In Progress"
+                manual_sub = {
+                    "key": "AP-109",
+                    "fields": {
+                        "summary": "人工在 Jira 新增的報表權限子任務",
+                        "issuetype": {"name": "Subtask", "subtask": True},
+                        "status": {"name": "To Do"},
+                        "assignee": {"accountId": "acc-bob-from-token", "displayName": "Bob Lin"},
+                        "parent": {"key": "AP-1"},
+                    },
+                }
+                MockJiraHandler.stored_issues["AP-109"] = manual_sub
+                MockJiraHandler.stored_issues["AP-1"]["fields"].setdefault("subtasks", []).append(manual_sub)
+                MockJiraHandler.stored_issues["AP-102"]["fields"]["status"] = {"name": "In Progress"}
+
+                # Even though local `.ai-workflow/active/AP-1.json` ALREADY exists, `status --key AP-1` reconciles with Jira!
+                st_rec = run_cli(root, "status", "--key", "AP-1")
+                self.assertEqual(st_rec.returncode, 0, st_rec.stderr)
+                sr_out = json.loads(st_rec.stdout)
+                self.assertEqual(sr_out["recommended_skill"], "team-dev")
+                self.assertEqual(sr_out["recommended_mode"], "implement")
+                reconciled_story = json.loads((root / ".ai-workflow/active/AP-1.json").read_text(encoding="utf-8"))
+                by_sub_key = {t["jira_subtask_key"]: t for t in reconciled_story["tasks"]}
+                self.assertIn("AP-109", by_sub_key)
+                self.assertEqual(by_sub_key["AP-109"]["source"], "jira-ui")
+                self.assertEqual(by_sub_key["AP-102"]["status"], "pending")
+
+                # Human marks BOTH AP-102 and AP-109 "Done" directly in Jira Web UI -> `pull --key AP-1` marks both completed!
+                MockJiraHandler.stored_issues["AP-102"]["fields"]["status"] = {"name": "Done"}
+                MockJiraHandler.stored_issues["AP-109"]["fields"]["status"] = {"name": "Done"}
+                pull_done = run_cli(root, "pull", "--key", "AP-1")
+                self.assertEqual(pull_done.returncode, 0, pull_done.stderr)
+                after_pull = json.loads((root / ".ai-workflow/active/AP-1.json").read_text(encoding="utf-8"))
+                self.assertTrue(all(t["status"] == "completed" for t in after_pull["tasks"]))
+
+                # Complete QA verify so AP-1 is otherwise ready for release
+                self.assertEqual(
+                    run_cli(
+                        root, "record-qa",
+                        "--key", "AP-1",
+                        "--mode", "verify",
+                        "--qa-backend", "jira-comment",
+                        "--commit", "111aaaa",
+                        "--all-pass",
+                    ).returncode,
+                    0,
+                )
+
+                # S3b: Human QA files & links Bug `AP-888` directly in Jira Web UI!
+                manual_bug = {
+                    "key": "AP-888",
+                    "fields": {
+                        "summary": "Jira 網頁人工新增的匯出亂碼 Bug",
+                        "issuetype": {"name": "Bug", "subtask": False},
+                        "status": {"name": "To Do"},
+                    },
+                }
+                MockJiraHandler.stored_issues["AP-888"] = manual_bug
+                MockJiraHandler.stored_issues["AP-1"]["fields"].setdefault("issuelinks", []).append({
+                    "type": {"name": "Blocks"},
+                    "inwardIssue": manual_bug,
+                })
+
+                # `close-story` MUST reconcile first and FAIL CLOSED because AP-888 is open on Jira!
+                blocked_close = run_cli(root, "close-story", "--key", "AP-1", "--commit", "111aaaa")
+                self.assertNotEqual(blocked_close.returncode, 0)
+                self.assertIn("AP-888", blocked_close.stderr)
+
+                # Human closes AP-888 in Jira Web UI -> `pull --key AP-1` updates AP-888 to completed!
+                MockJiraHandler.stored_issues["AP-888"]["fields"]["status"] = {"name": "Done"}
+                self.assertEqual(run_cli(root, "pull", "--key", "AP-1").returncode, 0)
+
+                # S3c: Human edits AP-1 Story Description directly in Jira Web UI (adding AC-002 + human note)
+                MockJiraHandler.stored_issues["AP-1"]["fields"]["description"] = {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": "- AC-001: 基礎匯出功能\n- AC-002: PM 在 Jira 網頁手動新增的 BOM 編碼要求\nPM 補充備註：請務必保留 UTF-8 BOM"}],
+                        }
+                    ],
+                }
+                pull_desc = run_cli(root, "pull", "--key", "AP-1")
+                self.assertEqual(pull_desc.returncode, 0, pull_desc.stderr)
+                pd_out = json.loads(pull_desc.stdout)
+                self.assertTrue(pd_out["reconciled"]["description_modified"])
+                desc_story = json.loads((root / ".ai-workflow/active/AP-1.json").read_text(encoding="utf-8"))
+                ac_ids = [a["id"] for a in desc_story["acceptance_criteria"]]
+                self.assertIn("AC-002", ac_ids)
+
+                # Blind `sync-story` without `--accept-remote-description` or `--force-overwrite` MUST fail closed to protect human edits!
+                clobber_attempt = run_cli(root, "sync-story", "--key", "AP-1", "--title", "試圖覆蓋")
+                self.assertNotEqual(clobber_attempt.returncode, 0)
+                self.assertIn("description", clobber_attempt.stderr.lower())
+
+                # Passing `--accept-remote-description` succeeds cleanly!
+                safe_sync = run_cli(root, "sync-story", "--key", "AP-1", "--accept-remote-description")
+                self.assertEqual(safe_sync.returncode, 0, safe_sync.stderr)
+
+                # S3d: PM creates a brand-new Story `AP-9` directly in Jira Web UI while `AP-1.json` already exists locally ->
+                # `status` (without --key) discovers `AP-9` via JQL!
+                MockJiraHandler.stored_issues["AP-9"] = {
+                    "key": "AP-9",
+                    "fields": {
+                        "summary": "PM 在 Jira 網頁新建的第二張需求單",
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "To Do"},
+                    },
+                }
+                st_multi = run_cli(root, "status")
+                self.assertEqual(st_multi.returncode, 0, st_multi.stderr)
+                sm_out = json.loads(st_multi.stdout)
+                self.assertTrue(sm_out["ambiguous"])
+                self.assertIn("AP-1", sm_out["active_stories"])
+                self.assertIn("AP-9", sm_out["active_stories"])
         finally:
             jira_srv.shutdown()
             jira_srv.server_close()

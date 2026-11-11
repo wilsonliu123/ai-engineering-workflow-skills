@@ -41,8 +41,8 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . close-story \
 ```
 
 What `jira_sync.py close-story` does deterministically:
-1. Validates all 5 release readiness gates (exits non-zero with `unmet_gates` if any check fails).
-2. Posts the final Release Summary comment (version, verified commit SHA, AC/Sub-task/TC coverage counts with `qa_breakdown` across `automated`/`external`/`manual`, and release notes) to the Jira `User Story`.
+1. Reconciles live Jira state first (catching any Sub-tasks reopened or Bugs newly linked in Jira Web UI) and validates all 5 release readiness gates (exits non-zero with `unmet_gates` if any check fails).
+2. Assigns the Story to the acting `release_manager` and posts the final Release Summary comment in Traditional Chinese by default (version, verified commit SHA, AC/Sub-task/TC coverage counts with `qa_breakdown` across `automated`/`external`/`manual`, and release notes) to the Jira `User Story`.
 3. Transitions the Jira `User Story` to `Done` (`status_mapping.done`).
 4. **Deletes `.ai-workflow/active/<JIRA-KEY>.json`** (including any main worktree mirror) so no temporary per-feature scaffolding remains on disk.
 

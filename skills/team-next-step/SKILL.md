@@ -26,11 +26,13 @@ Run the status inspector from the repository root (prefer `.ai-workflow/bin/jira
 
 ```bash
 python3 .ai-workflow/bin/jira_sync.py --repo-root . status [--key <JIRA-KEY>] [--fetch-remote]
+# Or run explicit bidirectional reconciliation across active/remote Stories:
+python3 .ai-workflow/bin/jira_sync.py --repo-root . pull [--key <JIRA-KEY>]
 ```
 
 - If `.ai-workflow/team-config.json` does not exist (`initialized: false`), immediately recommend `$team-init`.
-- If `requires_member_auth: true` (`credentials_missing: true` — a teammate cloned a live Jira repository whose `.ai-workflow/credentials.json` is gitignored), immediately display `claimed_roles` and `unclaimed_roles` from `status`, ask **which role(s) they own** (`--role`, e.g. `qa` or `reviewer,qa`) plus their **personal Jira Email + API Token** (and Qase Token if claiming `qa` when `qase_required: true`), run `jira_sync.py auth --role <ROLES> --jira-email <EMAIL> --jira-token <TOKEN>`, and then immediately re-run `status` to auto-discover active Stories from Jira!
-- When `.ai-workflow/active/` is empty on a newly cloned machine with valid live credentials, `jira_sync.py status` automatically queries Jira (`POST /rest/api/3/search/jql`) for non-Done Stories in `project_key`, hydrates `.ai-workflow/active/<KEY>.json`, and routes seamlessly (`discovered_from_jira`).
+- If `requires_member_auth: true` (`credentials_missing: true` — a teammate cloned a live Jira repository whose `.ai-workflow/credentials.json` is gitignored), immediately display `claimed_roles` and `unclaimed_roles` from `status`, ask **which role(s) they own** (`--role`, e.g. `developer`, `qa`, or `reviewer,qa`; supports appending multiple members per role and optional `--specialty`) plus their **personal Jira Email + API Token** (and Qase Token if claiming `qa` when `qase_required: true`), run `jira_sync.py auth --role <ROLES> [--specialty <SPEC>] --jira-email <EMAIL> --jira-token <TOKEN>`, and then immediately re-run `status`!
+- **Bidirectional Live Jira Reconciliation:** Whenever live credentials are configured, `status` and `pull` automatically discover newly created Jira Stories (`POST /rest/api/3/search/jql`) and reconcile manual Jira Web UI edits (Sub-tasks added/completed/reopened/reassigned, linked Bugs added/closed, Story status/assignee changes, and Story Description `AC-###` additions) even when `.ai-workflow/active/<KEY>.json` already exists locally.
 - If multiple `.ai-workflow/active/*.json` files exist and no `<JIRA-KEY>` was specified (`ambiguous: true`), ask one concise question listing the active Jira keys so the user can choose.
 
 ### 2. Evaluate station state and blockers

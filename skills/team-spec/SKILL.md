@@ -91,6 +91,8 @@ python3 "<skill-dir>/scripts/jira_sync.py" --repo-root . sync-story \
   --status approved
 ```
 
+- **Default Traditional Chinese (`zh-TW`) & Auto-Assignment:** `sync-story` formats Jira Story descriptions and approval comments in Traditional Chinese by default (`team-config.json` `"language": "zh-TW"`), assigns `--status draft` Stories directly to the PM's `jira_account_id`, and assigns `--status approved` Stories to the Developer (`--to-assignee <email|name|specialty>` optional when multiple developers exist).
+- **Description Drift Guard (Jira Web UI Sync):** If a human manually edited the Jira Story Description in Jira Web UI since last sync, `sync-story` reconciles first, imports any manually added `AC-###` items, and stops before overwriting human prose unless you inspect via `jira_sync.py pull --key <JIRA-KEY>` and pass `--accept-remote-description` (or `--force-overwrite`).
 - **Refreshing / Cleaning an Existing Story Description:** If the user asks to refresh or clean an existing Jira Story description (e.g., stripping a legacy `[ai-workflow-state]` block from `AP-1`), simply run:
   ```bash
   python3 "<skill-dir>/scripts/jira_sync.py" --repo-root . sync-story --key "<JIRA-KEY>"

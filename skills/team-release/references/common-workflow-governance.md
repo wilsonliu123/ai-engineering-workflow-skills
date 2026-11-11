@@ -13,7 +13,12 @@ To prevent repository bloat and review fatigue in small teams, artifacts are str
 - **Temporary Local Scaffolding:** `.ai-workflow/active/<JIRA-KEY>.json` (gitignored).
   - Holds the structured machine-readable state during active development of `<JIRA-KEY>`.
   - Synchronized with Jira at every station via `.ai-workflow/bin/jira_sync.py` (or `<skill-dir>/scripts/jira_sync.py`).
-  - **Cross-Machine, Fresh-Clone & Cross-Worktree Auto-Hydration:** When a teammate on another machine or in a secondary Git worktree runs any command (`status`, `create-subtasks`, `complete-task`, `handoff`, `record-qa`, `close-story`) and local `.ai-workflow/active/<JIRA-KEY>.json` is missing, `jira_sync.py` automatically hydrates `<JIRA-KEY>.json` from the main Git worktree or from the remote Jira issue (via the hidden Jira Issue Property `ai_workflow_state` or remote Jira fields/subtasks/links — keeping the visible Jira Story Description 100% clean for human readers). Even when `.ai-workflow/active/` is completely empty after a fresh `git clone`, running `jira_sync.py status` (without `--key`) in live mode automatically discovers non-Done Stories in `project_key` via `POST /rest/api/3/search/jql` and hydrates them locally.
+  - **Cross-Machine Hydration & Bidirectional Jira Web UI Reconciliation:** When local `.ai-workflow/active/<JIRA-KEY>.json` is missing OR already exists in live mode, `jira_sync.py` (`status`, `pull`, and every station command via `load_active_story`) automatically reconciles with live Jira (`reconcile_story_with_jira`):
+    1. Syncs newer cross-machine `ai_workflow_state` snapshots (`updated_at`), Story `summary`, `status`, and manual `assignee` changes (`story.role_owners`).
+    2. Imports Sub-tasks manually added, completed, reopened, or reassigned in Jira Web UI (`source: "jira-ui"`, `last_synced_jira_status`).
+    3. Imports linked `Bug` issues manually added, closed, or reopened in Jira Web UI (`fields.issuelinks`), blocking `close-story` until all Jira Bugs are resolved.
+    4. **Description Drift Guard:** Detects manual edits to the Jira Story Description (`last_synced_description_hash`), auto-imports any newly added `AC-###` lines, and refuses to overwrite human edits on `sync-story` unless `--accept-remote-description` or `--force-overwrite` is passed.
+    5. Always discovers newly created non-Done Stories in `project_key` via `POST /rest/api/3/search/jql` on `status` and `pull` even when `.ai-workflow/active/` already contains other Story files.
   - **Automatically deleted** when `team-release` runs `jira_sync.py close-story --key <JIRA-KEY>`, keeping the Git repository 100% free of per-feature process markdown files (`docs/requirements/`, `docs/design/`, `docs/ux/`, `docs/dev-prep/`, `docs/dev-delivery/`, `docs/review/`, `docs/qa/`, `docs/release/`, `docs/workflow/reviews/` are never created).
 
 ### 1.2 System-Wide Living Assets (Committed to Git)
@@ -49,17 +54,24 @@ Only system-wide rules, project workflow configuration, and long-lived architect
 
 ---
 
-## 3. Multi-Role Awareness, Smart Handoff & Auto-Chaining
+## 3. 1-to-N Multi-Member Role Pools, Auto-Assignment & Smart Handoff
 
-Small teams frequently assign one person to multiple roles (e.g., PM + Release Manager, or Tech Lead + Developer). Role assignments live in `.ai-workflow/team-config.json` under `roles` (`pm`, `tech_lead`, `developer`, `reviewer`, `qa`, `release_manager`).
+Small and growing teams frequently combine two patterns: **one person holding multiple roles** (e.g., PM + Tech Lead) and **one role shared by multiple people** (e.g., 2+ `developer`s or 2+ `qa` engineers). Role definitions live in `.ai-workflow/team-config.json` under `roles` (`pm`, `tech_lead`, `developer`, `reviewer`, `qa`, `release_manager`) and support `members` arrays with optional `specialty` tags (`backend`, `frontend`, `mobile`, `devops`).
 
-1. **Same-Person Consolidation & Auto-Chaining (`from_role` person == `to_role` person):**
+1. **1-to-N Role Pool & Non-Destructive `auth` Append:**
+   - Collaborators running `jira_sync.py auth --role <roles> [--specialty <tag>]` append/upsert themselves into `roles.<role>.members` by default without overwriting teammates (`--replace-role` only when replacing an outgoing member), while storing personal tokens in gitignored `.ai-workflow/credentials.json` (`member_credentials[<email>]`).
+   - **End-to-End Jira Auto-Assignment:** Every station assigns Jira issues automatically via `PUT /rest/api/3/issue/{key}/assignee` (`safe_assign_issue`):
+     - `sync-story --status draft` assigns the Story to `pm`; `--status approved` assigns to `developer` (`--to-assignee` optional).
+     - `create-subtasks` (and Fast-Track `complete-task`) assigns **each Jira Sub-task** to its owning `developer` (`--task-assignee`, `"assignee"` in `--tasks-json`, `--assignee`, automatic `specialty` matching, or the sole `developer`).
+     - `handoff` automatically selects a **peer reviewer** (`self_reviewed_with_ai: false`) from `roles.reviewer.members` who did not author the Story's tasks whenever available, and supports `--to-assignee` for multi-QA pools (`story.role_owners`).
+     - `create-bug` traces `tc_id -> ac_id -> TASK-###` and assigns the newly created `Bug` issue directly to the `developer` who owned that slice.
+2. **Same-Person Consolidation & Auto-Chaining (`from_role` person == `to_role` person):**
    - When the current station owner and the next station owner resolve to the **same person** (matching `jira_account_id`, `email`, or `name`), `jira_sync.py` records `same_person: true` and `handoff_mode: "auto-consolidated"`.
-   - Even when `same_person: true`, if `to_person.jira_account_id` is configured, `jira_sync.py` assigns the Jira issue to that `jira_account_id` so the issue never remains `Unassigned`, and includes an explicit `- **Station Role & Owner**: ...` attribution line in the Jira comment.
+   - Even when `same_person: true`, if `to_person.jira_account_id` is configured, `jira_sync.py` assigns the Jira issue to that `jira_account_id` so the issue never remains `Unassigned`, and includes an explicit `- **站點角色與負責人**：...` attribution line in the Jira comment.
    - Do **not** pause for redundant handoff approval ceremonies or send self-`@mention` notifications.
    - **Auto-Chaining:** When `same_person: true`, the AI agent should proactively chain into the next station (or offer a single one-line prompt: `"下一站同由您負責，是否直接繼續執行？"`) to eliminate multi-turn friction.
-   - **Independent Review Safeguard:** For `team-review`, if `developer` and `reviewer` map to the same person and `independent_reviewer` is configured in `team-config.json`, route to `independent_reviewer`; if it is a solo/tiny team with no separate reviewer, perform the AI three-axis code review and record `self_reviewed_with_ai: true` transparently in the Jira review comment.
-2. **Cross-Person Handoff (`from_role` person != `to_role` person):**
+   - **Independent Review Safeguard:** For `team-review`, if `roles.reviewer.members` has a peer who did not implement the Story's tasks, route to that peer (`self_reviewed_with_ai: false`); otherwise if `independent_reviewer` is configured in `team-config.json`, route to `independent_reviewer`; if it is a solo/tiny team with no separate reviewer, perform the AI three-axis code review and record `self_reviewed_with_ai: true` transparently in the Jira review comment.
+3. **Cross-Person Handoff (`from_role` person != `to_role` person):**
    - When the next station belongs to a **different person**, `jira_sync.py` executes a 3-part Jira handoff:
      1. **Transition Status:** Moves the Jira issue to the target status mapped in `team-config.json` (e.g., `In QA`, `In Progress`, `Ready for Release`).
      2. **Reassign Issue:** Updates the Jira issue assignee to the target person's `jira_account_id`.

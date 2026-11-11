@@ -36,9 +36,11 @@ If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-
    python3 .ai-workflow/bin/jira_sync.py --repo-root . create-subtasks \
      --key "<JIRA-KEY>" \
      --task "TASK-001:<Title>:<AC-001,AC-002>:<Verification command>" \
-     --task "TASK-002:<Title>:<AC-003>:<Verification command>"
+     --task "TASK-002:<Title>:<AC-003>:<Verification command>" \
+     [--assignee "<default-dev-email-or-specialty>"] \
+     [--task-assignee "TASK-001=<dev-email-or-specialty>"]
    ```
-   *(Colons inside `<Verification command>` such as `pytest tests/a.py::test_b` are preserved automatically. Or pass `--tasks-json '<JSON>'` when specifying `depends_on` and `files`.)*
+   *(Colons inside `<Verification command>` such as `pytest tests/a.py::test_b` are preserved automatically. Or pass `--tasks-json '<JSON>'` with optional per-task `"assignee"`. Every created Jira Sub-task is **automatically assigned** via `PUT /rest/api/3/issue/{subKey}/assignee` to its owning developer — using explicit `--task-assignee`/`"assignee"`, automatic `specialty` matching across `roles.developer.members` such as `backend` vs `frontend`, or the sole configured `developer` — so Sub-tasks never appear Unassigned in Jira!)*
 
 ## Mode 2: `implement` — Minimal-Context Coding & Task Check-Off
 

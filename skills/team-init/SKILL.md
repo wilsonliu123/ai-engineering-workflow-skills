@@ -42,23 +42,25 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 
 ## Workflow
 
-### Fast Path for Collaborators Cloning an Existing Repo (`auth` Mode — Progressive Role Claiming)
+### Fast Path for Collaborators Cloning an Existing Repo (`auth` Mode — Progressive & Multi-Member Role Pools)
 When `.ai-workflow/team-config.json` **already exists** with a configured `jira_base_url` and a teammate clones the repo without local `.ai-workflow/credentials.json` (for example, `status` reported `requires_member_auth: true`):
-1. Run `python3 .ai-workflow/bin/jira_sync.py --repo-root . auth --inspect` to view `claimed_roles`, `unclaimed_roles`, and whether `qase_required` is `true`.
-2. **STOP and show the current role board** (which roles are already claimed vs. still in `unclaimed_roles`), then ask this collaborator:
-   - **請問您負責哪一個（或哪幾個）角色？**（例如認領空缺的 `qa`、`reviewer,qa`，或接手特定角色）
+1. Run `python3 .ai-workflow/bin/jira_sync.py --repo-root . auth --inspect` to view `claimed_roles` (including multi-member `members` pools), `unclaimed_roles`, and whether `qase_required` is `true`.
+2. **STOP and show the current role board** (which roles already have member(s) vs. still in `unclaimed_roles`), then ask this collaborator:
+   - **請問您負責哪一個（或哪幾個）角色？**（例如 `developer`、`qa`、`reviewer,qa`；同一角色支援多人共擔，預設會**追加（append）**至該角色的 `members` 成員池而不會覆蓋既有成員；若有多位 RD，可選填專長 `--specialty backend|frontend|mobile|devops` 以利子任務自動分派。）
    - **請問您的個人 Jira Email 與 Jira API Token 為何？**（顯示名稱選填，系統可透過 `/rest/api/3/myself` 自動帶入；若認領 `qa` 且 `qase_required: true`，請一併提供 **Qase API Token**。）
 3. Run:
    ```bash
    python3 .ai-workflow/bin/jira_sync.py --repo-root . auth \
      --role "<CLAIMED_ROLES_COMMA_SEPARATED>" \
+     [--specialty "<backend|frontend|mobile|devops>"] \
+     [--replace-role] \
      [--name "<DISPLAY_NAME>"] \
      --jira-email "<COLLABORATOR_EMAIL>" \
      --jira-token "<COLLABORATOR_JIRA_API_TOKEN>" \
      [--qase-token "<QASE_API_TOKEN>"]
    ```
-   - **Secrets stay local:** All tokens write exclusively to gitignored `.ai-workflow/credentials.json` (`0600`).
-   - **Public role claiming:** `auth` verifies `/rest/api/3/myself` and automatically populates the collaborator's `name`, `email`, and `jira_account_id` into `.ai-workflow/team-config.json` for their claimed role(s) (`team_config_modified: true`; or leaves `team-config.json` untouched if those roles already matched). Remind the collaborator to commit `.ai-workflow/team-config.json` if `team_config_modified` is `true` so teammates automatically `@mention` and assign Jira issues to them, then immediately run `status` (`$team-next-step`) to discover active Jira Stories!
+   - **Secrets stay local:** All tokens write exclusively to gitignored `.ai-workflow/credentials.json` (`0600`, under `role_credentials` and `member_credentials[<email>]`).
+   - **Non-destructive multi-member pool upsert:** `auth` verifies `/rest/api/3/myself` and appends/updates the collaborator (`name`, `email`, `jira_account_id`, optional `specialty`) in `.ai-workflow/team-config.json` (`--replace-role` only when intentionally replacing an outgoing owner). Remind the collaborator to commit `.ai-workflow/team-config.json` if `team_config_modified` is `true`, then run `status` (`$team-next-step`)!
 
 ### Step 1: Inspect existing repository state (`init --inspect`)
 1. Run pre-init inspection to check whether `.ai-workflow/team-config.json`, `.ai-workflow/credentials.json`, `AGENTS.md`, `docs/shared/engineering-standards.md`, and `.gitignore` exist:

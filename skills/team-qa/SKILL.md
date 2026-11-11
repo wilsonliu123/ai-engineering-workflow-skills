@@ -106,6 +106,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
        --key "<JIRA-KEY>" \
        --tc-id "<TC-002>" \
        --ac-id "<AC-001>" \
+       [--to-assignee "<dev-email-or-name>"] \
        --title "<Concise defect summary>" \
        --severity "<blocker|major|minor>" \
        --steps "<Reproduction steps>" \
@@ -113,7 +114,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
        --actual "<Actual observed behavior>" \
        [--commit "<tested-commit-sha>"]
      ```
-     `create-bug` automatically links the Bug to `<JIRA-KEY>`, transitions the Story back to `In Progress`, and notifies/reassigns the `developer` role from `team-config.json` with `@mention` so `$team-dev` (`implement` mode) can fix it.
+     `create-bug` automatically links the Bug to `<JIRA-KEY>`, **traces `tc_id -> ac_id -> TASK-###` to assign the newly created `Bug` issue directly to the specific Developer who implemented that slice** (falling back to the Story's `developer`), transitions the Story back to `In Progress`, and notifies that developer with `@mention` in Traditional Chinese so `$team-dev` (`implement` mode) can fix it.
    - **If All Tests Pass (`qa_status: "passed"` and 0 open Bugs):**
      `record-qa --mode verify` automatically records the verification results (creating a Qase Test Run, submitting bulk results, and completing the Run when `qa_test_backend == "qase"`, or posting the full AC/TC table when `qa_test_backend == "jira-comment"`) and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if `same_person: true`, where AI can proactively auto-chain into `$team-release`).
 

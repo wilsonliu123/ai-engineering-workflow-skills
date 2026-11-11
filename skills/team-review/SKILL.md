@@ -44,12 +44,14 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . handoff \
   --key "<JIRA-KEY>" \
   --from-role reviewer \
   --to-role qa \
+  [--to-assignee "<qa-member-email-or-name>"] \
   --review-status "<approved|changes-requested>" \
   [--commit "<candidate-commit-sha>"] \
   --summary "<Combined Dev Handoff (tasks, commits, test evidence, QA focus areas) + 3-Axis Review Summary>" \
   [--findings-json '<JSON array of findings>']
 ```
 
+- **Peer Review Auto-Selection (Multi-Member `reviewer` Pool):** When `roles.reviewer.members` has 2+ members, `handoff` automatically selects a reviewer who did **not** author the Story's tasks (`self_reviewed_with_ai: false`), avoiding self-review whenever a peer is available. Pass `--to-assignee` when handing off to a specific QA member in a multi-QA pool (`story.role_owners.qa`).
 - **Automatic `REV-001` Safeguard:** If `--review-status changes-requested` is passed and `--findings-json` is omitted (or contains no open `blocker`/`major` item), `jira_sync.py` automatically creates an open `REV-001` finding from `--summary` so `$team-dev` (`implement` mode) can remediate and check it off via `complete-task --task-id REV-001`.
 
 ### 4. Multi-role notification & Auto-Chaining behavior
