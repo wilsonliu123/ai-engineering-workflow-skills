@@ -13,6 +13,7 @@ Tests:
   9. Live Jira REST API v3 mode against a local mock HTTP server (Basic Auth, ADF payloads, transitions, assignee updates, issue links)
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -20,6 +21,8 @@ import sys
 import tempfile
 import threading
 import unittest
+from email.parser import BytesParser
+from email.policy import default as email_default_policy
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -50,19 +53,44 @@ def run_cli(repo_root: Path, *args, env_override: dict = None) -> subprocess.Com
     return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
 
+def _parse_multipart_files(content_type: str, raw_bytes: bytes) -> list:
+    header_bytes = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
+    msg = BytesParser(policy=email_default_policy).parsebytes(header_bytes + raw_bytes)
+    files = []
+    for part in msg.iter_parts():
+        if part.get_content_disposition() == "form-data":
+            field_name = part.get_param("name", header="content-disposition")
+            filename = part.get_filename() or ""
+            payload = part.get_payload(decode=True) or b""
+            files.append({
+                "field": field_name,
+                "filename": filename,
+                "mime": part.get_content_type(),
+                "bytes": payload,
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            })
+    return files
+
+
 class MockJiraHandler(BaseHTTPRequestHandler):
     requests_log = []
     stored_issues = {}
     stored_properties = {}
+    stored_attachments = {}
     simulate_put_404_keys = set()
     reject_subtask_types = set()
+    reject_attachment_keys = set()
 
     def log_message(self, format, *args):
         pass
 
-    def _read_json(self):
+    def _read_raw(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length).decode("utf-8") if length > 0 else ""
+        return self.rfile.read(length) if length > 0 else b""
+
+    def _read_json(self):
+        raw = self._read_raw().decode("utf-8")
         return json.loads(raw) if raw else {}
 
     def _send_json(self, code: int, payload):
@@ -142,6 +170,35 @@ class MockJiraHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"key": "PROJ-101", "fields": {"status": {"name": "In Progress"}}})
 
     def do_POST(self):
+        ctype = self.headers.get("Content-Type", "")
+        if self.path.startswith("/rest/api/3/issue/") and self.path.endswith("/attachments"):
+            raw = self._read_raw()
+            key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
+            self.requests_log.append(("POST", self.path, {"multipart_len": len(raw)}, dict(self.headers)))
+            if self.headers.get("X-Atlassian-Token") != "no-check":
+                self._send_json(403, {"errorMessages": ["XSRF check failed"]})
+                return
+            if key in self.reject_attachment_keys:
+                self._send_json(403, {"errorMessages": ["Attachments disabled for issue"]})
+                return
+            parsed_files = _parse_multipart_files(ctype, raw)
+            out_items = []
+            bucket = self.stored_attachments.setdefault(key, [])
+            for idx, pf in enumerate(parsed_files, start=len(bucket) + 1):
+                rec = {
+                    "id": f"att-{key}-{idx}",
+                    "filename": pf["filename"],
+                    "size": pf["size"],
+                    "mimeType": pf["mime"],
+                    "sha256": pf["sha256"],
+                    "field": pf["field"],
+                    "content": f"http://jira.mock/secure/attachment/{idx}/{pf['filename']}",
+                }
+                bucket.append(rec)
+                out_items.append(rec)
+            self._send_json(200, out_items)
+            return
+
         data = self._read_json()
         self.requests_log.append(("POST", self.path, data, dict(self.headers)))
         if self.path == "/rest/api/3/search/jql":
@@ -268,21 +325,28 @@ class MockJiraHandler(BaseHTTPRequestHandler):
 
 class MockQaseHandler(BaseHTTPRequestHandler):
     requests_log = []
+    uploaded_files_log = []
     suites = {}
     cases = {}
     runs = {}
+    attachments = {}
+    defects = {}
     next_suite_id = 10
     next_case_id = 100
     next_run_id = 500
+    next_defect_id = 700
     expected_token = "qase-secret-123"
     fail_external_issue = False
 
     def log_message(self, format, *args):
         pass
 
-    def _read_json(self):
+    def _read_raw(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length).decode("utf-8") if length > 0 else ""
+        return self.rfile.read(length) if length > 0 else b""
+
+    def _read_json(self):
+        raw = self._read_raw().decode("utf-8")
         return json.loads(raw) if raw else {}
 
     def _send_json(self, code: int, payload):
@@ -311,6 +375,32 @@ class MockQaseHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": True, "result": {}})
 
     def do_POST(self):
+        ctype = self.headers.get("Content-Type", "")
+        if self.path.startswith("/v1/attachment/"):
+            raw = self._read_raw()
+            self.requests_log.append(("POST", self.path, {"multipart_len": len(raw)}, dict(self.headers)))
+            if not self._check_auth():
+                return
+            code = self.path.split("/v1/attachment/", 1)[1].split("?")[0]
+            parsed_files = _parse_multipart_files(ctype, raw)
+            out_items = []
+            for pf in parsed_files:
+                MockQaseHandler.uploaded_files_log.append(pf["filename"])
+                h = hashlib.sha1(pf["bytes"] + pf["filename"].encode("utf-8")).hexdigest()
+                rec = {
+                    "filename": pf["filename"],
+                    "url": f"https://api.qase.io/v1/files/{code}/{h}/{pf['filename']}",
+                    "hash": h,
+                    "mime": pf["mime"],
+                    "size": pf["size"],
+                    "sha256": pf["sha256"],
+                    "field": pf["field"],
+                }
+                MockQaseHandler.attachments[h] = rec
+                out_items.append(rec)
+            self._send_json(200, {"status": True, "result": out_items})
+            return
+
         data = self._read_json()
         self.requests_log.append(("POST", self.path, data, dict(self.headers)))
         if not self._check_auth():
@@ -353,6 +443,16 @@ class MockQaseHandler(BaseHTTPRequestHandler):
             if rid in MockQaseHandler.runs:
                 MockQaseHandler.runs[rid]["results"].extend(data.get("results") or [])
             self._send_json(200, {"status": True, "result": {}})
+        elif self.path.startswith("/v1/result/"):
+            rid = int(self.path.split("/v1/result/", 1)[1].split("/")[1])
+            if rid in MockQaseHandler.runs:
+                MockQaseHandler.runs[rid]["results"].append(data)
+            self._send_json(200, {"status": True, "result": {"hash": "res-single-1"}})
+        elif self.path.startswith("/v1/defect/"):
+            did = MockQaseHandler.next_defect_id
+            MockQaseHandler.next_defect_id += 1
+            MockQaseHandler.defects[did] = {"payload": data, "resolved": False}
+            self._send_json(200, {"status": True, "result": {"id": did}})
         else:
             self._send_json(200, {"status": True, "result": {}})
 
@@ -361,7 +461,13 @@ class MockQaseHandler(BaseHTTPRequestHandler):
         self.requests_log.append(("PATCH", self.path, data, dict(self.headers)))
         if not self._check_auth():
             return
-        if self.path.startswith("/v1/case/"):
+        if self.path.startswith("/v1/defect/") and self.path.endswith("/resolve"):
+            parts = self.path.split("/v1/defect/", 1)[1].split("/")
+            did = int(parts[1])
+            if did in MockQaseHandler.defects:
+                MockQaseHandler.defects[did]["resolved"] = True
+            self._send_json(200, {"status": True, "result": {"id": did}})
+        elif self.path.startswith("/v1/case/"):
             parts = self.path.split("/v1/case/", 1)[1].split("/")
             cid = int(parts[1])
             if cid not in MockQaseHandler.cases:
@@ -2516,6 +2622,306 @@ class WorkflowTestSuite(unittest.TestCase):
         finally:
             jira_srv.shutdown()
             jira_srv.server_close()
+
+    def test_16_qa_media_attachments_jira_and_qase_sync(self):
+        MockJiraHandler.requests_log = []
+        MockJiraHandler.stored_issues = {}
+        MockJiraHandler.stored_properties = {}
+        MockJiraHandler.stored_attachments = {}
+        MockJiraHandler.simulate_put_404_keys = set()
+        MockJiraHandler.reject_subtask_types = set()
+        MockJiraHandler.reject_attachment_keys = set()
+
+        MockQaseHandler.requests_log = []
+        MockQaseHandler.uploaded_files_log = []
+        MockQaseHandler.suites = {}
+        MockQaseHandler.cases = {}
+        MockQaseHandler.runs = {}
+        MockQaseHandler.attachments = {}
+        MockQaseHandler.defects = {}
+        MockQaseHandler.next_suite_id = 10
+        MockQaseHandler.next_case_id = 100
+        MockQaseHandler.next_run_id = 500
+        MockQaseHandler.next_defect_id = 700
+        MockQaseHandler.fail_external_issue = False
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        qase_srv = HTTPServer(("127.0.0.1", 0), MockQaseHandler)
+        jt = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        qt = threading.Thread(target=qase_srv.serve_forever, daemon=True)
+        jt.start()
+        qt.start()
+        jira_url = f"http://127.0.0.1:{jira_srv.server_port}"
+        qase_url = f"http://127.0.0.1:{qase_srv.server_port}/v1"
+
+        try:
+            with tempfile.TemporaryDirectory() as td_comment, tempfile.TemporaryDirectory() as td_qase:
+                # ------------------------------------------------------------------
+                # Part A: Backend == "jira-comment" + S1 Safety & S2 Jira Bug Attachments
+                # ------------------------------------------------------------------
+                root_c = Path(td_comment)
+                subprocess.run(["git", "init", "-q"], cwd=str(root_c), check=True)
+                init_c = run_cli(
+                    root_c,
+                    "init",
+                    "--project-key", "JC",
+                    "--jira-url", jira_url,
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "tok-alice",
+                    "--role", "pm,developer,reviewer,qa,release_manager",
+                    "--qa-backend", "jira-comment",
+                )
+                self.assertEqual(init_c.returncode, 0, init_c.stderr)
+
+                self.assertEqual(
+                    run_cli(
+                        root_c, "sync-story", "--key", "JC-1",
+                        "--title", "按讚動畫與面板",
+                        "--status", "approved",
+                        "--ac", "AC-001:按讚切換不閃爍",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root_c, "complete-task", "--key", "JC-1",
+                        "--task-id", "TASK-001", "--commit", "abc1111",
+                        "--files", "src/App.tsx", "--test-result", "1 passed",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root_c, "handoff", "--key", "JC-1",
+                        "--from-role", "reviewer", "--to-role", "qa",
+                        "--review-status", "approved", "--commit", "abc1111",
+                        "--summary", "LGTM",
+                    ).returncode,
+                    0,
+                )
+
+                # Prepare binary PNG screenshot & console log + unsafe/invalid files
+                ev_dir = root_c / "qa-evidence"
+                ev_dir.mkdir(parents=True, exist_ok=True)
+                png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\xff\xd9"
+                shot_png = ev_dir / "broken-button.png"
+                shot_png.write_bytes(png_bytes)
+                console_log = ev_dir / "console.log"
+                console_log.write_text("TypeError: Cannot read properties of null\n", encoding="utf-8")
+                empty_file = ev_dir / "empty.png"
+                empty_file.write_bytes(b"")
+
+                # S1a: Missing file fails fast BEFORE creating any Jira Bug
+                missing_res = run_cli(
+                    root_c, "create-bug", "--key", "JC-1", "--tc-id", "TC-001", "--ac-id", "AC-001",
+                    "--title", "按鈕破版", "--severity", "major",
+                    "--steps", "點擊按讚", "--expected", "正常縮放", "--actual", "溢位破版",
+                    "--attach", str(ev_dir / "does-not-exist.png"),
+                )
+                self.assertNotEqual(missing_res.returncode, 0)
+                self.assertNotIn("JC-999", MockJiraHandler.stored_issues)
+
+                # S1b: Empty (0-byte) file fails fast BEFORE creating any Jira Bug
+                empty_res = run_cli(
+                    root_c, "create-bug", "--key", "JC-1", "--tc-id", "TC-001", "--ac-id", "AC-001",
+                    "--title", "按鈕破版", "--severity", "major",
+                    "--steps", "點擊按讚", "--expected", "正常縮放", "--actual", "溢位破版",
+                    "--attach", str(empty_file),
+                )
+                self.assertNotEqual(empty_res.returncode, 0)
+                self.assertNotIn("JC-999", MockJiraHandler.stored_issues)
+
+                # S1c: Sensitive secret file (`credentials.json` / `.env`) is blocked from upload!
+                secret_res = run_cli(
+                    root_c, "create-bug", "--key", "JC-1", "--tc-id", "TC-001", "--ac-id", "AC-001",
+                    "--title", "按鈕破版", "--severity", "major",
+                    "--steps", "點擊按讚", "--expected", "正常縮放", "--actual", "溢位破版",
+                    "--attach", str(root_c / ".ai-workflow/credentials.json"),
+                )
+                self.assertNotEqual(secret_res.returncode, 0)
+                self.assertNotIn("JC-999", MockJiraHandler.stored_issues)
+
+                # S2: `record-qa --mode verify --tc-attach TC-001=<shot>` records TC attachment, and `create-bug`
+                # inherits `shot_png` + appends explicit `--attach console.log` -> uploads BOTH to Jira Bug `JC-999`,
+                # with ZERO Qase requests!
+                rqa_c = run_cli(
+                    root_c, "record-qa", "--key", "JC-1", "--mode", "verify",
+                    "--commit", "abc1111",
+                    "--result", "TC-001=fail:按讚按鈕溢位",
+                    "--tc-attach", f"TC-001={shot_png}",
+                )
+                self.assertEqual(rqa_c.returncode, 0, rqa_c.stderr)
+
+                bug_c = run_cli(
+                    root_c, "create-bug", "--key", "JC-1", "--tc-id", "TC-001", "--ac-id", "AC-001",
+                    "--title", "按讚按鈕溢位破版", "--severity", "major",
+                    "--steps", "1. 開啟首頁 2. 點擊按讚", "--expected", "按鈕寬度固定", "--actual", "右側文字溢位",
+                    "--attach", str(console_log),
+                )
+                self.assertEqual(bug_c.returncode, 0, bug_c.stderr)
+                bug_c_out = json.loads(bug_c.stdout)
+                self.assertEqual(bug_c_out["bug_key"], "JC-999")
+                self.assertEqual(len(MockQaseHandler.requests_log), 0, "jira-comment backend must never call Qase")
+
+                # Verify Jira Bug `JC-999` received exact binary PNG + console.log via multipart/form-data (`field="file"`)
+                jc_atts = MockJiraHandler.stored_attachments.get("JC-999") or []
+                self.assertEqual([a["filename"] for a in jc_atts], ["broken-button.png", "console.log"])
+                self.assertTrue(all(a["field"] == "file" for a in jc_atts))
+                self.assertEqual(jc_atts[0]["sha256"], hashlib.sha256(png_bytes).hexdigest())
+
+                # Verify Bug description mentions `附件證據` and filenames, and local active JSON stores attachment metadata
+                jc_bug_adf = json.dumps(MockJiraHandler.stored_issues["JC-999"]["fields"]["description"], ensure_ascii=False)
+                self.assertIn("broken-button.png", jc_bug_adf)
+                self.assertIn("console.log", jc_bug_adf)
+                jc_story = json.loads((root_c / ".ai-workflow/active/JC-1.json").read_text(encoding="utf-8"))
+                self.assertEqual(len(jc_story["bugs"][0]["attachments"]), 2)
+
+                # S4: Graceful degradation if Jira returns HTTP 403 on `/attachments` + Offline mode check
+                MockJiraHandler.reject_attachment_keys.add("JC-998")
+                bug_403 = run_cli(
+                    root_c, "create-bug", "--key", "JC-1", "--tc-id", "TC-001", "--ac-id", "AC-001",
+                    "--title", "權限受限附件降級測試", "--severity", "minor",
+                    "--steps", "測試", "--expected", "正常", "--actual", "403 降級",
+                    "--attach", str(shot_png),
+                )
+                self.assertEqual(bug_403.returncode, 0, bug_403.stderr)
+                bug_403_out = json.loads(bug_403.stdout)
+                self.assertEqual(bug_403_out["bug_key"], "JC-998")
+                self.assertIn("attachment_warning", bug_403_out)
+
+                off_bug = run_cli(
+                    root_c, "--offline", "create-bug", "--key", "JC-1", "--tc-id", "TC-001", "--ac-id", "AC-001",
+                    "--title", "離線附件驗證", "--severity", "minor",
+                    "--steps", "離線", "--expected", "正常", "--actual", "記錄本地附件",
+                    "--attach", str(shot_png),
+                )
+                self.assertEqual(off_bug.returncode, 0, off_bug.stderr)
+
+                # ------------------------------------------------------------------
+                # Part B: Backend == "qase" -> Dual Sync to Jira Bug AND Qase (Run Result + Defect + Resolve)
+                # ------------------------------------------------------------------
+                root_q = Path(td_qase)
+                subprocess.run(["git", "init", "-q"], cwd=str(root_q), check=True)
+                init_q = run_cli(
+                    root_q,
+                    "init",
+                    "--project-key", "QS",
+                    "--jira-url", jira_url,
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "tok-alice",
+                    "--role", "pm,developer,reviewer,qa,release_manager",
+                    "--qa-backend", "qase",
+                    "--qase-project-code", "QS",
+                    "--qase-token", "qase-secret-123",
+                    "--qase-base-url", qase_url,
+                )
+                self.assertEqual(init_q.returncode, 0, init_q.stderr)
+
+                self.assertEqual(
+                    run_cli(
+                        root_q, "sync-story", "--key", "QS-1",
+                        "--title", "Roadmap 拖拉與投票",
+                        "--status", "approved",
+                        "--ac", "AC-001:投票成功",
+                        "--ac", "AC-002:看板渲染正常",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root_q, "complete-task", "--key", "QS-1",
+                        "--task-id", "TASK-001", "--commit", "def2222",
+                        "--files", "src/Roadmap.tsx", "--test-result", "2 passed",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root_q, "handoff", "--key", "QS-1",
+                        "--from-role", "reviewer", "--to-role", "qa",
+                        "--review-status", "approved", "--commit", "def2222",
+                        "--summary", "Ready for QA",
+                    ).returncode,
+                    0,
+                )
+
+                q_ev = root_q / "e2e-artifacts"
+                q_ev.mkdir(parents=True, exist_ok=True)
+                ui_png = q_ev / "roadmap-overlap.png"
+                ui_png.write_bytes(png_bytes)
+                trace_webm = q_ev / "roadmap-trace.webm"
+                trace_webm.write_bytes(b"\x1a\x45\xdf\xa3WEBM_VIDEO_PAYLOAD_BYTES")
+
+                # Step A: `record-qa --mode verify` with `--tc-attach TC-002=ui_png`
+                rqa_q = run_cli(
+                    root_q, "record-qa", "--key", "QS-1", "--mode", "verify",
+                    "--commit", "def2222",
+                    "--result", "TC-001=pass",
+                    "--result", "TC-002=fail:卡片重疊",
+                    "--tc-attach", f"TC-002={ui_png}",
+                )
+                self.assertEqual(rqa_q.returncode, 0, rqa_q.stderr)
+
+                # Verify Qase Run #500 received `attachments: [<hash>]` on TC-002 (case_id 101)
+                self.assertIn(500, MockQaseHandler.runs)
+                run_results = MockQaseHandler.runs[500]["results"]
+                tc2_res = [r for r in run_results if r.get("case_id") == 101][0]
+                self.assertEqual(tc2_res["status"], "failed")
+                self.assertEqual(len(tc2_res.get("attachments") or []), 1)
+                ui_png_hash = tc2_res["attachments"][0]
+                self.assertEqual(MockQaseHandler.attachments[ui_png_hash]["filename"], "roadmap-overlap.png")
+
+                upload_calls_after_rqa = [
+                    req for req in MockQaseHandler.requests_log if req[0] == "POST" and req[1].startswith("/v1/attachment/")
+                ]
+                self.assertEqual(len(upload_calls_after_rqa), 1)
+
+                # Step B: `create-bug` on `QS-1` passing `--attach ui_png` (already uploaded -> deduplicated!)
+                # AND a new `--attach trace_webm` -> uploads BOTH to Jira Bug `QS-999`, uploads ONLY `trace_webm`
+                # anew to Qase, creates Qase Defect #700 with BOTH hashes, and updates Run #500 result!
+                bug_q = run_cli(
+                    root_q, "create-bug", "--key", "QS-1", "--tc-id", "TC-002", "--ac-id", "AC-002",
+                    "--title", "Roadmap 卡片窄螢幕重疊", "--severity", "major",
+                    "--steps", "調整視窗至 375px", "--expected", "垂直堆疊", "--actual", "卡片重疊遮擋",
+                    "--attach", str(ui_png),
+                    "--attach", str(trace_webm),
+                )
+                self.assertEqual(bug_q.returncode, 0, bug_q.stderr)
+                bug_q_out = json.loads(bug_q.stdout)
+                self.assertEqual(bug_q_out["bug_key"], "QS-999")
+                self.assertEqual(bug_q_out["qase_defect"]["defect_id"], 700)
+
+                # Jira Bug `QS-999` received BOTH files
+                qs_jira_atts = MockJiraHandler.stored_attachments.get("QS-999") or []
+                self.assertEqual([a["filename"] for a in qs_jira_atts], ["roadmap-overlap.png", "roadmap-trace.webm"])
+
+                # Qase uploaded `ui_png` ONCE (cached hash reused!) and `trace_webm` ONCE -> exact 2 file parts uploaded
+                self.assertEqual(
+                    MockQaseHandler.uploaded_files_log,
+                    ["roadmap-overlap.png", "roadmap-trace.webm"],
+                    "Cached Qase hash for ui_png must not be re-uploaded",
+                )
+
+                # Qase Defect #700 has BOTH attachment hashes & references `QS-999`
+                self.assertIn(700, MockQaseHandler.defects)
+                defect_payload = MockQaseHandler.defects[700]["payload"]
+                self.assertEqual(len(defect_payload.get("attachments") or []), 2)
+                self.assertIn(ui_png_hash, defect_payload["attachments"])
+                self.assertIn("QS-999", defect_payload.get("actual_result", ""))
+                self.assertFalse(MockQaseHandler.defects[700]["resolved"])
+
+                # Step C: Developer fixes `QS-999` via `complete-task --task-id QS-999` -> Qase Defect #700 is resolved!
+                fix_q = run_cli(
+                    root_q, "complete-task", "--key", "QS-1", "--task-id", "QS-999",
+                    "--commit", "fed3333", "--files", "src/Roadmap.tsx", "--test-result", "2 passed",
+                )
+                self.assertEqual(fix_q.returncode, 0, fix_q.stderr)
+                self.assertTrue(MockQaseHandler.defects[700]["resolved"])
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+            qase_srv.shutdown()
+            qase_srv.server_close()
 
 
 if __name__ == "__main__":

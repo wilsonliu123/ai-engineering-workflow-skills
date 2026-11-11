@@ -25,6 +25,7 @@ import datetime
 import getpass
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -33,11 +34,99 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
 STATE_SNAPSHOT_MARKER = "[ai-workflow-state]"
+MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024  # 32 MiB per file (matches Qase API v1 & standard Jira limits)
+_DENIED_ATTACHMENT_EXACT = {
+    ".env",
+    "credentials.json",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+}
+_DENIED_ATTACHMENT_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".kdbx")
+
+
+def _sanitize_multipart_filename(name: str) -> str:
+    base = Path(str(name or "attachment.bin")).name
+    cleaned = re.sub(r'[\r\n\x00-\x1f"\\/;]', "_", base).strip()
+    return cleaned or "attachment.bin"
+
+
+def _is_denied_secret_attachment(path_obj: Path) -> bool:
+    lower_name = path_obj.name.lower()
+    if lower_name in _DENIED_ATTACHMENT_EXACT or lower_name.startswith(".env."):
+        return True
+    if any(lower_name.endswith(sfx) for sfx in _DENIED_ATTACHMENT_SUFFIXES):
+        return True
+    return False
+
+
+def validate_attachment_files(file_paths: list, repo_root: Path = None) -> list:
+    """
+    Validate and deduplicate attachment file paths before any remote Jira/Qase mutation.
+    Raises ValueError on missing, directory, empty, oversized (>32 MiB), or secret/credential files.
+    """
+    validated = []
+    seen_keys = set()
+    for raw_p in (file_paths or []):
+        s = str(raw_p or "").strip()
+        if not s:
+            continue
+        p = Path(s)
+        if not p.is_absolute() and repo_root is not None:
+            p = (repo_root / p).resolve()
+        else:
+            p = p.resolve()
+        if not p.exists():
+            raise ValueError(f"Attachment file does not exist: {s}")
+        if not p.is_file():
+            raise ValueError(f"Attachment path is not a regular file: {s}")
+        if _is_denied_secret_attachment(p):
+            raise ValueError(f"Refusing to upload sensitive credential/secret file as attachment: {p.name}")
+        size = p.stat().st_size
+        if size <= 0:
+            raise ValueError(f"Attachment file is empty (0 bytes): {p}")
+        if size > MAX_ATTACHMENT_BYTES:
+            raise ValueError(f"Attachment file exceeds 32 MiB limit ({size} bytes): {p.name}")
+        data_bytes = p.read_bytes()
+        sha = hashlib.sha256(data_bytes).hexdigest()
+        safe_name = _sanitize_multipart_filename(p.name)
+        dedup_key = (sha, safe_name)
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
+        guessed_mime, _ = mimetypes.guess_type(safe_name)
+        mime_type = guessed_mime or "application/octet-stream"
+        validated.append({
+            "local_path": str(p),
+            "filename": safe_name,
+            "size": len(data_bytes),
+            "mime_type": mime_type,
+            "sha256": sha,
+            "bytes": data_bytes,
+        })
+    return validated
+
+
+def _build_multipart_form_data(validated_files: list, field_name: str = "file") -> tuple:
+    """Encode one or more validated file dicts into an RFC 7578 multipart/form-data payload."""
+    boundary = f"----AIWorkflowBoundary{uuid.uuid4().hex}"
+    chunks = []
+    for vf in validated_files:
+        chunks.append(f"--{boundary}\r\n".encode("ascii"))
+        disp = f'Content-Disposition: form-data; name="{field_name}"; filename="{vf["filename"]}"\r\n'
+        chunks.append(disp.encode("utf-8"))
+        chunks.append(f'Content-Type: {vf["mime_type"]}\r\n\r\n'.encode("ascii"))
+        chunks.append(vf["bytes"])
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+    return boundary, b"".join(chunks)
 
 DEFAULT_TEAM_CONFIG = {
     "version": "1.0",
@@ -1098,6 +1187,60 @@ class JiraClient:
         )
         return {"mode": "live", "assigned_to": account_id}
 
+    def add_attachments(self, issue_key: str, validated_files: list) -> list:
+        """Upload one or more validated files to a Jira issue via POST /rest/api/3/issue/{key}/attachments."""
+        if not validated_files:
+            return []
+        if not self.is_live:
+            return [
+                {
+                    "mode": "offline",
+                    "id": f"offline-att-{idx}",
+                    "filename": vf["filename"],
+                    "size": vf["size"],
+                    "mime_type": vf["mime_type"],
+                    "sha256": vf["sha256"],
+                    "local_path": vf["local_path"],
+                }
+                for idx, vf in enumerate(validated_files, start=1)
+            ]
+        boundary, body = _build_multipart_form_data(validated_files, field_name="file")
+        path = f"/rest/api/3/issue/{urllib.parse.quote(issue_key)}/attachments"
+        url = f"{self.base_url}{path}"
+        token = base64.b64encode(f"{self.email}:{self.api_token}".encode("utf-8")).decode("ascii")
+        headers = {
+            "Authorization": f"Basic {token}",
+            "Accept": "application/json",
+            "X-Atlassian-Token": "no-check",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+                parsed = json.loads(raw) if raw.strip() else []
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Jira API POST {path} failed with HTTP {exc.code}: {err_body}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Jira API POST {path} connection error: {exc.reason}") from exc
+
+        items = parsed if isinstance(parsed, list) else []
+        out = []
+        for idx, vf in enumerate(validated_files):
+            remote = items[idx] if idx < len(items) and isinstance(items[idx], dict) else {}
+            out.append({
+                "mode": "live",
+                "id": str(remote.get("id") or ""),
+                "filename": remote.get("filename") or vf["filename"],
+                "size": int(remote.get("size") or vf["size"]),
+                "mime_type": remote.get("mimeType") or vf["mime_type"],
+                "url": remote.get("content") or "",
+                "sha256": vf["sha256"],
+                "local_path": vf["local_path"],
+            })
+        return out
+
     def get_issue(self, issue_key: str) -> dict:
         if not self.is_live:
             return {}
@@ -1303,6 +1446,163 @@ class QaseClient:
             out["external_link_warning"] = external_link_warning
         return out
 
+    def upload_attachments(self, validated_files: list, existing_cache: dict = None) -> tuple:
+        """
+        Upload validated files to Qase via POST /attachment/{code}, reusing cached hashes by SHA-256
+        so identical screenshots/videos are never uploaded twice across record-qa and create-bug.
+        Returns (ordered_hashes, attachment_records, updated_cache).
+        """
+        cache = dict(existing_cache or {})
+        if not validated_files:
+            return [], [], cache
+
+        if self.offline:
+            ordered_hashes = []
+            records = []
+            for vf in validated_files:
+                h = cache.get(vf["sha256"]) or f"offline-qase-{vf['sha256'][:16]}"
+                cache[vf["sha256"]] = h
+                ordered_hashes.append(h)
+                records.append({
+                    "mode": "offline",
+                    "filename": vf["filename"],
+                    "hash": h,
+                    "size": vf["size"],
+                    "mime_type": vf["mime_type"],
+                    "sha256": vf["sha256"],
+                })
+            return ordered_hashes, records, cache
+
+        if not self.has_credentials:
+            raise RuntimeError(
+                "qa_test_backend is set to 'qase', but Qase project_code or Qase API token is missing."
+            )
+
+        uncached = [vf for vf in validated_files if vf["sha256"] not in cache]
+        url_by_sha = {}
+        if uncached:
+            code_q = urllib.parse.quote(self.project_code)
+            boundary, body = _build_multipart_form_data(uncached, field_name="file")
+            path = f"/attachment/{code_q}"
+            url = f"{self.base_url}{path}"
+            headers = {
+                "Token": self.api_token,
+                "Accept": "application/json",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            }
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    raw = resp.read().decode("utf-8")
+                    parsed = json.loads(raw) if raw.strip() else {}
+                    if isinstance(parsed, dict) and parsed.get("status") is False:
+                        raise RuntimeError(
+                            f"Qase API POST {path} returned status=false: {parsed.get('errorMessage') or parsed}"
+                        )
+            except urllib.error.HTTPError as exc:
+                err_body = exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"Qase API POST {path} failed with HTTP {exc.code}: {err_body}") from exc
+            except urllib.error.URLError as exc:
+                raise RuntimeError(f"Qase API POST {path} connection error: {exc.reason}") from exc
+
+            res_items = (parsed.get("result") or []) if isinstance(parsed, dict) else []
+            for idx, vf in enumerate(uncached):
+                remote = res_items[idx] if idx < len(res_items) and isinstance(res_items[idx], dict) else {}
+                h = str(remote.get("hash") or "").strip()
+                if not h:
+                    raise RuntimeError(f"Qase attachment upload did not return a hash for {vf['filename']}")
+                cache[vf["sha256"]] = h
+                url_by_sha[vf["sha256"]] = str(remote.get("url") or "")
+
+        ordered_hashes = []
+        records = []
+        for vf in validated_files:
+            h = cache[vf["sha256"]]
+            ordered_hashes.append(h)
+            records.append({
+                "mode": "live",
+                "filename": vf["filename"],
+                "hash": h,
+                "url": url_by_sha.get(vf["sha256"], ""),
+                "size": vf["size"],
+                "mime_type": vf["mime_type"],
+                "sha256": vf["sha256"],
+            })
+        return ordered_hashes, records, cache
+
+    def create_defect(
+        self,
+        title: str,
+        actual_result: str,
+        severity: str = "major",
+        attachment_hashes: list = None,
+    ) -> dict:
+        sev_map = {"blocker": 1, "critical": 2, "major": 3, "minor": 5}
+        sev_int = sev_map.get((severity or "major").strip().lower(), 3)
+        hashes = [str(h) for h in (attachment_hashes or []) if h]
+        if self.offline:
+            code = self.project_code or "OFFLINE"
+            return {
+                "mode": "offline",
+                "project_code": code,
+                "defect_id": 1,
+                "attachments": hashes,
+            }
+        if not self.has_credentials:
+            raise RuntimeError(
+                "qa_test_backend is set to 'qase', but Qase project_code or Qase API token is missing."
+            )
+        code_q = urllib.parse.quote(self.project_code)
+        payload = {
+            "title": (title or "QA Defect")[:255],
+            "actual_result": actual_result or title,
+            "severity": sev_int,
+        }
+        if hashes:
+            payload["attachments"] = hashes
+        res = self._request("POST", f"/defect/{code_q}", payload)
+        defect_id = int((res.get("result") or {}).get("id") or 0)
+        return {
+            "mode": "live",
+            "project_code": self.project_code,
+            "defect_id": defect_id,
+            "defect_url": f"{self.app_url}/defect/{self.project_code}/view/{defect_id}" if defect_id else "",
+            "attachments": hashes,
+        }
+
+    def update_run_case_attachments(
+        self,
+        run_id: int,
+        case_id: int,
+        status_str: str,
+        comment: str,
+        attachment_hashes: list,
+    ) -> dict:
+        hashes = [str(h) for h in (attachment_hashes or []) if h]
+        if self.offline or not run_id or not case_id or not hashes:
+            return {"mode": "offline" if self.offline else "live", "updated": False}
+        code_q = urllib.parse.quote(self.project_code)
+        payload = {
+            "case_id": int(case_id),
+            "status": status_str,
+            "attachments": hashes,
+        }
+        if comment:
+            payload["comment"] = comment
+        self._request("POST", f"/result/{code_q}/{int(run_id)}", payload)
+        return {"mode": "live", "updated": True, "run_id": int(run_id), "case_id": int(case_id), "attachments": hashes}
+
+    def resolve_defect(self, defect_id: int) -> dict:
+        if not defect_id:
+            return {"resolved": False}
+        if self.offline:
+            return {"mode": "offline", "defect_id": int(defect_id), "resolved": True}
+        if not self.has_credentials:
+            return {"mode": "live", "defect_id": int(defect_id), "resolved": False}
+        code_q = urllib.parse.quote(self.project_code)
+        self._request("PATCH", f"/defect/{code_q}/{int(defect_id)}/resolve", {})
+        return {"mode": "live", "defect_id": int(defect_id), "resolved": True}
+
     def sync_verification_run(
         self,
         jira_key: str,
@@ -1311,9 +1611,23 @@ class QaseClient:
         test_cases: list,
         tested_commit: str,
         qa_status: str,
+        tc_validated_attachments: dict = None,
     ) -> dict:
         if any(not c.get("qase_case_id") for c in test_cases):
             self.sync_test_plan(jira_key, story_title, qa, test_cases)
+
+        att_cache = dict(qa.get("qase_attachment_cache") or {})
+        tc_att_map = tc_validated_attachments or {}
+        for c in test_cases:
+            cid_key = c.get("id")
+            vfiles = tc_att_map.get(cid_key) or []
+            if vfiles:
+                hashes, _, att_cache = self.upload_attachments(vfiles, existing_cache=att_cache)
+                existing_hashes = [h for h in (c.get("qase_attachment_hashes") or []) if h]
+                merged_hashes = list(dict.fromkeys(existing_hashes + hashes))
+                c["qase_attachment_hashes"] = merged_hashes
+        if att_cache:
+            qa["qase_attachment_cache"] = att_cache
 
         if self.offline:
             code = self.project_code or "OFFLINE"
@@ -1367,6 +1681,8 @@ class QaseClient:
             }
             if c.get("notes"):
                 item["comment"] = str(c["notes"])
+            if c.get("qase_attachment_hashes"):
+                item["attachments"] = list(c["qase_attachment_hashes"])
             results_payload.append(item)
 
         if results_payload:
@@ -1462,6 +1778,28 @@ def safe_assign_issue(client: JiraClient, issue_key: str, account_id: str) -> di
         return client.assign_issue(issue_key, acct)
     except Exception as exc:
         return {"mode": "live", "assigned_to": None, "warning": str(exc)}
+
+
+def safe_add_jira_attachments(client: JiraClient, issue_key: str, validated_files: list) -> dict:
+    """Upload validated attachments to a Jira issue, degrading gracefully to a warning if project permissions reject upload."""
+    if not validated_files:
+        return {"uploaded": [], "warning": None}
+    try:
+        uploaded = client.add_attachments(issue_key, validated_files)
+        return {"uploaded": uploaded, "warning": None}
+    except Exception as exc:
+        fallback = [
+            {
+                "mode": "warning-local-only",
+                "filename": vf["filename"],
+                "size": vf["size"],
+                "mime_type": vf["mime_type"],
+                "sha256": vf["sha256"],
+                "local_path": vf["local_path"],
+            }
+            for vf in validated_files
+        ]
+        return {"uploaded": fallback, "warning": str(exc)}
 
 
 def _compute_description_hash(plain_text: str) -> str:
@@ -4344,6 +4682,21 @@ def cmd_complete_task(args) -> int:
             client.transition_issue(jira_issue_key, done_status)
             matched_item["last_synced_jira_status"] = done_status
 
+        if item_kind == "bug" and matched_item.get("qase_defect_id"):
+            eff_qa_backend = (
+                ((story.get("qa") or {}).get("qa_test_backend"))
+                or config.get("qa_test_backend")
+                or "jira-comment"
+            ).strip().lower()
+            if eff_qa_backend == "qase":
+                try:
+                    qase_client = QaseClient(config, offline=args.offline, repo_root=repo_root)
+                    qase_res = qase_client.resolve_defect(int(matched_item["qase_defect_id"]))
+                    if qase_res.get("resolved"):
+                        matched_item["qase_defect_resolved"] = True
+                except Exception:
+                    pass
+
     story["candidate_commit"] = commit_sha
 
     review = story.get("review")
@@ -4856,6 +5209,7 @@ def cmd_record_qa(args) -> int:
     known_tc_ids = {c["id"] for c in test_cases}
     incoming_results = {}
     incoming_notes = {}
+    incoming_tc_attach_paths = {}
     if args.junit_xml:
         xml_p = Path(args.junit_xml)
         if not xml_p.exists():
@@ -4883,6 +5237,37 @@ def cmd_record_qa(args) -> int:
                     note_val = str(item.get("notes") or item.get("note") or "").strip()
                     if note_val:
                         incoming_notes[tc_id] = note_val
+                    if isinstance(item.get("attachments"), list):
+                        incoming_tc_attach_paths.setdefault(tc_id, []).extend(
+                            [str(ap).strip() for ap in item["attachments"] if str(ap).strip()]
+                        )
+
+    if getattr(args, "tc_attach", None):
+        for att_item in args.tc_attach:
+            m_att = re.match(r"^([^=:]+)[=:](.+)$", str(att_item or "").strip())
+            if not m_att:
+                print(
+                    f"ERROR: Invalid --tc-attach format '{att_item}'. Expected 'TC-ID=/path/to/file'.",
+                    file=sys.stderr,
+                )
+                return 1
+            tc_id = m_att.group(1).strip().upper()
+            f_path = m_att.group(2).strip()
+            if tc_id not in known_tc_ids:
+                print(
+                    f"ERROR: Unknown test case ID '{tc_id}' in --tc-attach (planned: {sorted(known_tc_ids)}).",
+                    file=sys.stderr,
+                )
+                return 1
+            incoming_tc_attach_paths.setdefault(tc_id, []).append(f_path)
+
+    tc_validated_attachments = {}
+    for tc_id, raw_paths in incoming_tc_attach_paths.items():
+        try:
+            tc_validated_attachments[tc_id] = validate_attachment_files(raw_paths, repo_root=repo_root)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
 
     if args.result:
         for r_item in args.result:
@@ -4922,6 +5307,20 @@ def cmd_record_qa(args) -> int:
             c["result"] = val
         if c["id"] in incoming_notes:
             c["notes"] = incoming_notes[c["id"]]
+        if c["id"] in tc_validated_attachments:
+            existing_meta = [a for a in (c.get("attachments") or []) if isinstance(a, dict)]
+            seen_shas = {a.get("sha256") for a in existing_meta if a.get("sha256")}
+            for vf in tc_validated_attachments[c["id"]]:
+                if vf["sha256"] not in seen_shas:
+                    existing_meta.append({
+                        "filename": vf["filename"],
+                        "local_path": vf["local_path"],
+                        "size": vf["size"],
+                        "mime_type": vf["mime_type"],
+                        "sha256": vf["sha256"],
+                    })
+                    seen_shas.add(vf["sha256"])
+            c["attachments"] = existing_meta
 
     counts = {"pass": 0, "fail": 0, "blocked": 0, "not-executed": 0}
     by_type = {"automated": 0, "external": 0, "manual": 0}
@@ -4960,6 +5359,7 @@ def cmd_record_qa(args) -> int:
             test_cases=test_cases,
             tested_commit=tested_commit,
             qa_status=qa_status,
+            tc_validated_attachments=tc_validated_attachments,
         )
 
     qa["status"] = qa_status
@@ -5105,15 +5505,59 @@ def cmd_create_bug(args) -> int:
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="qa")
     if not ensure_live_or_explicit_offline(client, config, args.offline):
         return 1
+
+    # Fail-fast validation of explicit --attach files BEFORE mutating local or remote state
+    explicit_attach_paths = list(getattr(args, "attach", None) or [])
+    try:
+        explicit_validated = validate_attachment_files(explicit_attach_paths, repo_root=repo_root)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
     zh = is_zh_tw(config)
+
+    # Inherit any media attachments already recorded on the failing TC during `record-qa --mode verify`
+    qa = story.setdefault("qa", {"status": "failed", "test_cases": []})
+    norm_tc_id = (args.tc_id or "").strip().upper()
+    matched_tc = None
+    inherited_paths = []
+    for c in qa.get("test_cases") or []:
+        if str(c.get("id") or "").strip().upper() == norm_tc_id:
+            matched_tc = c
+            for att_meta in (c.get("attachments") or []):
+                if isinstance(att_meta, dict) and att_meta.get("local_path"):
+                    lp = Path(att_meta["local_path"])
+                    if lp.is_file():
+                        inherited_paths.append(str(lp))
+            break
+
+    combined_paths = inherited_paths + [vf["local_path"] for vf in explicit_validated]
+    try:
+        validated_files = validate_attachment_files(combined_paths, repo_root=repo_root)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    eff_backend = (
+        qa.get("qa_test_backend")
+        or config.get("qa_test_backend")
+        or "jira-comment"
+    ).strip().lower()
+    qase_client = QaseClient(config, offline=args.offline, repo_root=repo_root) if eff_backend == "qase" else None
+    if eff_backend == "qase" and not args.offline and not qase_client.has_credentials:
+        print(
+            "ERROR: qa_test_backend is 'qase', but Qase project_code or Qase API token is missing.",
+            file=sys.stderr,
+        )
+        return 1
 
     qa_person = resolve_acting_person(config, "qa", client=client, story=story)
     bug_dev = _resolve_bug_developer(
         config=config,
         story=story,
-        tc_id=args.tc_id,
+        tc_id=norm_tc_id,
         ac_id=args.ac_id or "",
         to_assignee=getattr(args, "to_assignee", None),
     )
@@ -5126,7 +5570,7 @@ def cmd_create_bug(args) -> int:
             f"關聯需求單：{jira_key}\n"
             f"回報人員：{format_person_badge('qa', qa_person)}\n"
             f"指派修復人員：{format_person_badge('developer', bug_dev)}\n"
-            f"失敗測試案例：{args.tc_id}\n"
+            f"失敗測試案例：{norm_tc_id}\n"
             f"影響驗收條件：{args.ac_id or '無'}\n"
             f"嚴重等級：{args.severity}\n"
             f"驗證 Commit：{tested_commit}\n\n"
@@ -5134,12 +5578,15 @@ def cmd_create_bug(args) -> int:
             f"### 預期結果\n{args.expected}\n\n"
             f"### 實際結果\n{args.actual}"
         )
+        if validated_files:
+            att_bullets = "\n".join(f"- `{vf['filename']}` ({vf['size']} bytes)" for vf in validated_files)
+            desc_md += f"\n\n### 附件證據\n{att_bullets}"
     else:
         desc_md = (
             f"Linked Story: {jira_key}\n"
             f"Reported By: {format_person_badge('qa', qa_person)}\n"
             f"Assigned Developer: {format_person_badge('developer', bug_dev)}\n"
-            f"Failed Test Case: {args.tc_id}\n"
+            f"Failed Test Case: {norm_tc_id}\n"
             f"Affected AC: {args.ac_id or 'N/A'}\n"
             f"Severity: {args.severity}\n"
             f"Tested Commit: {tested_commit}\n\n"
@@ -5147,15 +5594,60 @@ def cmd_create_bug(args) -> int:
             f"### Expected Result\n{args.expected}\n\n"
             f"### Actual Result\n{args.actual}"
         )
+        if validated_files:
+            att_bullets = "\n".join(f"- `{vf['filename']}` ({vf['size']} bytes)" for vf in validated_files)
+            desc_md += f"\n\n### Attachments\n{att_bullets}"
 
-    bug_key = client.create_bug(jira_key, f"[{jira_key}][{args.tc_id}] {args.title}", desc_md, bug_idx)
+    bug_key = client.create_bug(jira_key, f"[{jira_key}][{norm_tc_id}] {args.title}", desc_md, bug_idx)
     if bug_dev.get("jira_account_id"):
         safe_assign_issue(client, bug_key, bug_dev["jira_account_id"])
+
+    jira_att_res = safe_add_jira_attachments(client, bug_key, validated_files)
+    uploaded_jira_atts = jira_att_res.get("uploaded") or []
+    attachment_warning = jira_att_res.get("warning")
+
+    # Conditional Qase sync when qa_test_backend == 'qase'
+    qase_defect_info = None
+    if eff_backend == "qase" and qase_client is not None:
+        att_cache = dict(qa.get("qase_attachment_cache") or {})
+        qase_hashes, qase_att_records, att_cache = qase_client.upload_attachments(
+            validated_files, existing_cache=att_cache
+        )
+        if att_cache:
+            qa["qase_attachment_cache"] = att_cache
+        qase_actual = (
+            f"Jira Bug: {bug_key} (Story: {jira_key}, TC: {norm_tc_id}, AC: {args.ac_id or 'N/A'}, Commit: {tested_commit})\n"
+            f"Steps:\n{args.steps}\n\nExpected:\n{args.expected}\n\nActual:\n{args.actual}"
+        )
+        qase_defect_info = qase_client.create_defect(
+            title=f"[{jira_key}][{norm_tc_id}] {args.title}",
+            actual_result=qase_actual,
+            severity=args.severity,
+            attachment_hashes=qase_hashes,
+        )
+        if matched_tc is not None and qase_hashes:
+            prior_tc_hashes = [h for h in (matched_tc.get("qase_attachment_hashes") or []) if h]
+            merged_tc_hashes = list(dict.fromkeys(prior_tc_hashes + qase_hashes))
+            new_hashes_added = set(merged_tc_hashes) != set(prior_tc_hashes)
+            matched_tc["qase_attachment_hashes"] = merged_tc_hashes
+            run_id = qa.get("qase_last_run_id")
+            case_id = matched_tc.get("qase_case_id")
+            if new_hashes_added and run_id and case_id:
+                try:
+                    qase_client.update_run_case_attachments(
+                        run_id=int(run_id),
+                        case_id=int(case_id),
+                        status_str="failed",
+                        comment=f"[{bug_key}] {args.title}",
+                        attachment_hashes=merged_tc_hashes,
+                    )
+                except Exception:
+                    pass
 
     todo_status = config.get("status_mapping", {}).get("todo", "To Do")
     bug_record = {
         "bug_key": bug_key,
-        "tc_id": args.tc_id,
+        "tc_id": norm_tc_id,
         "ac_id": args.ac_id or "",
         "title": args.title,
         "severity": args.severity,
@@ -5167,21 +5659,31 @@ def cmd_create_bug(args) -> int:
         "last_synced_jira_status": todo_status,
         "created_at": now_iso(),
     }
+    if uploaded_jira_atts:
+        bug_record["attachments"] = uploaded_jira_atts
+    if attachment_warning:
+        bug_record["attachment_warning"] = attachment_warning
+    if qase_defect_info is not None:
+        if qase_defect_info.get("defect_id"):
+            bug_record["qase_defect_id"] = qase_defect_info["defect_id"]
+        if qase_defect_info.get("attachments"):
+            bug_record["qase_attachment_hashes"] = qase_defect_info["attachments"]
     if _is_member_claimed("developer", bug_dev):
         bug_record["assignee"] = serialize_member_for_config(bug_dev, "developer")
     bugs.append(bug_record)
 
     # Mark matching TC as fail and QA status as failed
-    qa = story.setdefault("qa", {"status": "failed", "test_cases": []})
     qa["status"] = "failed"
     for c in qa.get("test_cases") or []:
-        if c["id"] == args.tc_id:
+        if str(c.get("id") or "").strip().upper() == norm_tc_id:
             c["result"] = "fail"
 
+    att_note_zh = f"（已附掛 {len(validated_files)} 個媒體證據檔）" if validated_files else ""
+    att_note_en = f" ({len(validated_files)} media attachment(s) uploaded)" if validated_files else ""
     bug_comment = (
-        f"[缺陷單已建立：{bug_key}] 測試案例 `{args.tc_id}` 驗證失敗（嚴重度：`{args.severity}`）：{args.title}。請修復並執行 `complete-task --task-id {bug_key}`。"
+        f"[缺陷單已建立：{bug_key}]{att_note_zh} 測試案例 `{norm_tc_id}` 驗證失敗（嚴重度：`{args.severity}`）：{args.title}。請修復並執行 `complete-task --task-id {bug_key}`。"
         if zh
-        else f"[Bug Created: {bug_key}] Test case `{args.tc_id}` failed (Severity: `{args.severity}`): {args.title}. Remediate and run `complete-task --task-id {bug_key}`."
+        else f"[Bug Created: {bug_key}]{att_note_en} Test case `{norm_tc_id}` failed (Severity: `{args.severity}`): {args.title}. Remediate and run `complete-task --task-id {bug_key}`."
     )
     handoff_target_sel = (
         getattr(args, "to_assignee", None)
@@ -5202,16 +5704,23 @@ def cmd_create_bug(args) -> int:
     )
 
     saved_path = save_active_story(repo_root, jira_key, story, client=client)
-    print(json.dumps({
+    out = {
         "ok": True,
         "action": "create-bug",
         "jira_key": jira_key,
         "bug_key": bug_key,
         "assigned_to": bug_dev.get("name", ""),
         "severity": args.severity,
+        "qa_test_backend": eff_backend,
+        "attachments": uploaded_jira_atts,
         "handoff": handoff_info,
         "active_file": str(saved_path.relative_to(repo_root)),
-    }, ensure_ascii=False, indent=2))
+    }
+    if attachment_warning:
+        out["attachment_warning"] = attachment_warning
+    if qase_defect_info is not None:
+        out["qase_defect"] = qase_defect_info
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -5495,6 +6004,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_qa.add_argument("--junit-xml", help="Path to JUnit XML report for verify mode")
     p_qa.add_argument("--results-json", help="JSON string or file with TC results for verify mode")
     p_qa.add_argument("--result", action="append", help="Single TC result 'TC-001=pass|fail|blocked[:note]' (also accepts 'TC-001:pass[:note]')")
+    p_qa.add_argument("--tc-attach", action="append", default=[], help="Attach screenshot/media/log file to a test case in verify mode: 'TC-002=/path/to/fail.png' (repeatable)")
     p_qa.add_argument("--all-pass", action="store_true", help="Mark all un-overridden 'automated' test cases as pass in verify mode (external/manual TCs require explicit result)")
     p_qa.add_argument("--commit", help="Tested git commit SHA")
     p_qa.set_defaults(func=cmd_record_qa)
@@ -5510,6 +6020,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_bug.add_argument("--steps", required=True, help="Reproduction steps")
     p_bug.add_argument("--expected", required=True, help="Expected behavior")
     p_bug.add_argument("--actual", required=True, help="Actual observed behavior")
+    p_bug.add_argument("--attach", action="append", default=[], help="Screenshot, video, or log file to upload to the Jira Bug (and Qase when qa_test_backend='qase'); repeatable")
     p_bug.add_argument("--commit", help="Tested commit SHA where the bug occurred")
     p_bug.set_defaults(func=cmd_create_bug)
 

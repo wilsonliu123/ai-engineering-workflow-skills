@@ -93,13 +93,14 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
      --mode verify \
      [--commit "<tested-commit-sha>"] \
      [--junit-xml "<path/to/junit.xml>"] \
-     [--result "TC-001=pass" --result "TC-002=pass"] \
+     [--result "TC-001=pass" --result "TC-002=fail:按鈕溢位"] \
+     [--tc-attach "TC-002=<path/to/screenshot.png>"] \
      [--all-pass]
    ```
 
 3. **Branch on Verification Outcome:**
    - **If Any Test Fails (`fail` or `blocked`):**
-     Immediately create a linked Jira `Bug` ticket for each failure using `jira_sync.py create-bug`:
+     Immediately create a linked Jira `Bug` ticket for each failure using `jira_sync.py create-bug` — **always attaching any screenshots, screen recordings (`.webm`/`.mp4`), or diagnostic logs** captured by E2E runners (e.g., Playwright/Cypress) or provided by human QA via `--attach` (files already bound via `--tc-attach` on that `TC-###` are inherited automatically):
 
      ```bash
      python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
@@ -112,9 +113,10 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
        --steps "<Reproduction steps>" \
        --expected "<Expected behavior>" \
        --actual "<Actual observed behavior>" \
+       [--attach "<path/to/screenshot.png>" --attach "<path/to/trace.webm>"] \
        [--commit "<tested-commit-sha>"]
      ```
-     `create-bug` automatically links the Bug to `<JIRA-KEY>`, **traces `tc_id -> ac_id -> TASK-###` to assign the newly created `Bug` issue directly to the specific Developer who implemented that slice** (falling back to the Story's `developer`), transitions the Story back to `In Progress`, and notifies that developer with `@mention` in Traditional Chinese so `$team-dev` (`implement` mode) can fix it.
+     `create-bug` validates attachment safety (`<= 32 MiB`, non-empty, rejects credential files), links the Bug to `<JIRA-KEY>`, uploads all media evidence to the **Jira `Bug` ticket's Attachments** (`POST /rest/api/3/issue/{bugKey}/attachments`), **and when `qa_test_backend == "qase"`, also syncs those media attachments to Qase** (`POST /v1/attachment/{code}` -> Qase Test Run Result & Qase Defect `POST /v1/defect/{code}`, deduplicating cached hashes). It then traces `tc_id -> ac_id -> TASK-###` to assign the `Bug` directly to the owning Developer, transitions the Story back to `In Progress`, and notifies that developer with `@mention` in Traditional Chinese so `$team-dev` (`implement` mode) can fix it.
    - **If All Tests Pass (`qa_status: "passed"` and 0 open Bugs):**
      `record-qa --mode verify` automatically records the verification results (creating a Qase Test Run, submitting bulk results, and completing the Run when `qa_test_backend == "qase"`, or posting the full AC/TC table when `qa_test_backend == "jira-comment"`) and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if `same_person: true`, where AI can proactively auto-chain into `$team-release`).
 

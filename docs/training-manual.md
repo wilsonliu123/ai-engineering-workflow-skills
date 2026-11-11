@@ -583,10 +583,11 @@ python3 skills/team-qa/scripts/jira_sync.py \
   --steps "1. 以 viewer 登入 2. GET /api/v1/orders/export" \
   --expected "回傳 HTTP 403 Forbidden 且不回傳 CSV 內容" \
   --actual "回傳 HTTP 200 並下載完整訂單 CSV" \
+  --attach "artifacts/tc-002-screenshot.png" \
   --commit "f00baa1"
 ```
 
-   - 此指令會自動：(1) 在 Jira 建立 `Bug` 單（如 `PROJ-101-BUG-1`）並建立 `Blocks` 連結指向 `PROJ-101`；(2) 將 `TC-002` 標為 `fail` 且 `qa.status` 標為 `failed`；(3) 將 `PROJ-101` 狀態退回 `In Progress`、改指派給 `developer`（Bob）並發送 `@Bob` 評論通知。
+   - 此指令會自動：(1) 在 Jira 建立 `Bug` 單（如 `PROJ-101-BUG-1`）、建立 `Blocks` 連結指向 `PROJ-101`，並將 `--attach`（或先前 `record-qa --tc-attach` 綁定）的截圖／錄影／Log 自動上傳掛載至 **Jira Bug 單附件區**（若 `qa_test_backend == "qase"`，亦同步上傳至 **Qase Test Run 結果與 Qase Defect**）；(2) 將 `TC-002` 標為 `fail` 且 `qa.status` 標為 `failed`；(3) 依 `TC-002 -> AC-002 -> TASK-###` 追蹤原實作開發者，將 Bug 單與 `PROJ-101` 指派給對應 `developer`（Bob）、狀態退回 `In Progress` 並發送繁體中文 `@Bob` 評論通知。
 2. **步驟二（導航確認）：`team-next-step` 自動以最高優先級派工修 Bug**
    - 此時若執行 `jira_sync.py status --key PROJ-101`，導航員會因偵測到 Open Bug（Priority 2）而明確阻斷發佈，並指派 `team-dev`（`implement` 模式）優先修復 `PROJ-101-BUG-1`。
 3. **步驟三（開發修復打卡）：在 `team-dev` (`implement`) 修復缺陷並執行 `complete-task`**
