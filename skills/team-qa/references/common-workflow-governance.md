@@ -13,7 +13,7 @@ To prevent repository bloat and review fatigue in small teams, artifacts are str
 - **Temporary Local Scaffolding:** `.ai-workflow/active/<JIRA-KEY>.json` (gitignored).
   - Holds the structured machine-readable state during active development of `<JIRA-KEY>`.
   - Synchronized with Jira at every station via `.ai-workflow/bin/jira_sync.py` (or `<skill-dir>/scripts/jira_sync.py`).
-  - **Cross-Machine & Cross-Worktree Auto-Hydration:** When a teammate on another machine or in a secondary Git worktree runs any command (`status`, `create-subtasks`, `complete-task`, `handoff`, `record-qa`, `close-story`) and local `.ai-workflow/active/<JIRA-KEY>.json` is missing, `jira_sync.py` automatically hydrates `<JIRA-KEY>.json` from the main Git worktree or from the remote Jira issue (via the embedded `[ai-workflow-state]` snapshot or remote Jira fields/subtasks/links).
+  - **Cross-Machine & Cross-Worktree Auto-Hydration:** When a teammate on another machine or in a secondary Git worktree runs any command (`status`, `create-subtasks`, `complete-task`, `handoff`, `record-qa`, `close-story`) and local `.ai-workflow/active/<JIRA-KEY>.json` is missing, `jira_sync.py` automatically hydrates `<JIRA-KEY>.json` from the main Git worktree or from the remote Jira issue (via the hidden Jira Issue Property `ai_workflow_state` or remote Jira fields/subtasks/links — keeping the visible Jira Story Description 100% clean for human readers).
   - **Automatically deleted** when `team-release` runs `jira_sync.py close-story --key <JIRA-KEY>`, keeping the Git repository 100% free of per-feature process markdown files (`docs/requirements/`, `docs/design/`, `docs/ux/`, `docs/dev-prep/`, `docs/dev-delivery/`, `docs/review/`, `docs/qa/`, `docs/release/`, `docs/workflow/reviews/` are never created).
 
 ### 1.2 System-Wide Living Assets (Committed to Git)
@@ -30,7 +30,7 @@ Only system-wide rules, project workflow configuration, and long-lived architect
 
 | Station | Skill | Modes | Primary Responsibility | Jira & Local State Action |
 |---|---|---|---|---|
-| **Init** | `team-init` | — | Configure `.ai-workflow/team-config.json`, install `.ai-workflow/bin/jira_sync.py`, update `.gitignore`, and extract `docs/shared/engineering-standards.md` from `AGENTS.md` | `jira_sync.py init` |
+| **Init** | `team-init` | — | Interactive inquiry to confirm Jira URL, Project Key, Jira account email & API token (saved to gitignored `.ai-workflow/credentials.json`), and role-to-person mappings; configure `.ai-workflow/team-config.json`, install `.ai-workflow/bin/jira_sync.py`, update `.gitignore`, and extract `docs/shared/engineering-standards.md` from `AGENTS.md` | `jira_sync.py init --inspect` / `jira_sync.py init` |
 | **Router** | `team-next-step` | — | Read-only inspection of `team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json` (with auto-hydration), and Jira state to recommend the exact next action | `jira_sync.py status` |
 | **Station 1** | `team-spec` | `one-pass` / `draft` | Scale-aware Spec: Small/clear stories in one pass; Large/complex stories via iterative `draft` deep-dive + 6-Dimension AC Checklist | `jira_sync.py sync-story` |
 | **Station 2** | `team-dev` | `plan` / `implement` | Decompose into `TASK-001..N` (`Sub-task`), implement code & tests, and check off completed tasks/bugs/review findings (Dev Fast-Track guarded to `<= 3` ACs & `low/medium` risk) | `jira_sync.py create-subtasks` / `complete-task` |
@@ -55,6 +55,7 @@ Small teams frequently assign one person to multiple roles (e.g., PM + Release M
 
 1. **Same-Person Consolidation & Auto-Chaining (`from_role` person == `to_role` person):**
    - When the current station owner and the next station owner resolve to the **same person** (matching `jira_account_id`, `email`, or `name`), `jira_sync.py` records `same_person: true` and `handoff_mode: "auto-consolidated"`.
+   - Even when `same_person: true`, if `to_person.jira_account_id` is configured, `jira_sync.py` assigns the Jira issue to that `jira_account_id` so the issue never remains `Unassigned`, and includes an explicit `- **Station Role & Owner**: ...` attribution line in the Jira comment.
    - Do **not** pause for redundant handoff approval ceremonies or send self-`@mention` notifications.
    - **Auto-Chaining:** When `same_person: true`, the AI agent should proactively chain into the next station (or offer a single one-line prompt: `"下一站同由您負責，是否直接繼續執行？"`) to eliminate multi-turn friction.
    - **Independent Review Safeguard:** For `team-review`, if `developer` and `reviewer` map to the same person and `independent_reviewer` is configured in `team-config.json`, route to `independent_reviewer`; if it is a solo/tiny team with no separate reviewer, perform the AI three-axis code review and record `self_reviewed_with_ai: true` transparently in the Jira review comment.
@@ -87,14 +88,16 @@ Human review bandwidth is scarce, yet large features fail when edge cases are si
 
 `scripts/jira_sync.py` uses only the Python 3 standard library and operates in two modes:
 
-1. **Live Jira REST API v3 Mode:**
-   - Activated automatically when `JIRA_BASE_URL` (or `jira_base_url` in `team-config.json`), `JIRA_EMAIL`, and `JIRA_API_TOKEN` environment variables are present (and `--offline` is not set).
+1. **Live Jira REST API v3 Mode (with Per-Role API Token Resolution):**
+   - Activated automatically when Jira base URL (`JIRA_BASE_URL` or `jira_base_url` in `team-config.json` / `.ai-workflow/credentials.json`) and credentials (default `JIRA_EMAIL`/`JIRA_API_TOKEN` or per-role `role_credentials` in `.ai-workflow/credentials.json` / `JIRA_API_TOKEN_<ROLE>`) are configured (and `--offline` is not set).
+   - During `team-init`, the agent asks the user to confirm each role's assigned person, email, and Jira API token (`--role-tokens-json` or `api_token` inside `--roles-json`), plus default fallback credentials (`--jira-email` / `--jira-token`). All tokens are stripped from `team-config.json` and stored exclusively in `.ai-workflow/credentials.json` (`chmod 0600`, automatically added to `.gitignore`).
+   - Each station command (`sync-story` -> `pm`, `create-subtasks`/`complete-task` -> `developer`, `handoff` -> `reviewer`, `record-qa`/`create-bug` -> `qa`, `close-story` -> `release_manager`) automatically resolves that role's email and API token (sharing tokens across roles with the same email, or falling back to default credentials) so Jira comments and transitions appear under the acting role's Jira account, and includes explicit role/owner attribution in comments.
    - Syncs Stories, Sub-tasks, linked Bugs, status transitions, assignee changes, and ADF comments directly to Jira while updating `.ai-workflow/active/<JIRA-KEY>.json`.
 2. **Local / Offline Mode:**
-   - Activated automatically when Jira API credentials are not set in the environment (or when `--offline` is passed).
+   - Activated automatically when Jira API credentials are not configured in either environment variables or `.ai-workflow/credentials.json` (or when `--offline` is passed).
    - Updates `.ai-workflow/active/<JIRA-KEY>.json` deterministically and outputs the formatted Jira Markdown/payload so teams can work offline, in CI sandboxes, or paste directly into Jira.
 
-**Security Rule:** Never hardcode `JIRA_API_TOKEN` or secrets in `team-config.json`, code, or Git commits. Read credentials exclusively from environment variables.
+**Security Rule:** Never hardcode `JIRA_API_TOKEN` or secrets in `team-config.json`, code, or Git commits. Store credentials exclusively in environment variables or gitignored `.ai-workflow/credentials.json` / `.ai-workflow/.env` (`0600`).
 
 ---
 

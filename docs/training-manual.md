@@ -134,67 +134,78 @@
 
 請依序執行以下三步驟完成專案導入：
 
-1. **步驟一：向 AI 代理觸發 `$team-init` 並回答最多 3 題關鍵設定**
-   - 在對話中輸入：「請使用 `$team-init` 初始化本專案，Jira Project Key 為 `TEAM`，網址為 `https://your-org.atlassian.net`，PM/Tech Lead/Reviewer/Release Manager 為 Alice，Developer 為 Bob，QA 為 Carol。」
-   - AI 會自動掃描 `package.json`、`pyproject.toml`、`go.mod`、`Makefile` 與 `AGENTS.md` 偵測技術棧，不會追問瑣碎技術問題。
-2. **步驟二：執行決定性初始化腳本 `jira_sync.py init`**
-   - AI 代理（或開發者手動）於專案根目錄執行以下指令：
+1. **步驟一：向 AI 代理觸發 `$team-init`，由 AI 主動詢問確認 4 大設定項目**
+   - 在對話中輸入 `$team-init`（或「請幫我初始化本專案」）。
+   - AI 會先執行 `jira_sync.py init --inspect` 並自動掃描 `package.json`、`pyproject.toml`、`go.mod`、`Makefile` 與 `AGENTS.md` 偵測技術棧，接著**主動停下來向您詢問確認**：
+     1. **專案 Jira URL 與 Project Key**（例如 `https://your-org.atlassian.net`、代號 `TEAM`）
+     2. **預設 Jira 認證帳號（Email）與 API Token**（作為未單獨設定角色專屬 Token 時的 fallback）
+     3. **六大角色定義、對應人員與各角色專屬 API Token**（`pm`、`tech_lead`、`developer`、`reviewer`、`qa`、`release_manager` 的姓名、Email 與該成員的 Jira API Token；設定各角色專屬 Token 後，各站點評論會直接以該角色本人的 Jira 帳號頭像發出，並自動呼叫 `/rest/api/3/myself` 綁定 `jira_account_id`；所有 Token 皆只會寫入受 `.gitignore` 保護的 `.ai-workflow/credentials.json`，權限 `0600`）
+     4. **Jira 狀態與單據類型映射**（是否沿用預設值或自訂）
+2. **步驟二：確認回覆後，執行決定性初始化腳本 `jira_sync.py init`**
+   - AI 代理根據您的回覆（或開發者透過 `init --interactive` 互動模式）於專案根目錄執行以下指令：
 
 ```bash
 python3 skills/team-init/scripts/jira_sync.py \
   --repo-root . init \
   --project-key "TEAM" \
   --jira-url "https://your-org.atlassian.net" \
+  --jira-email "alice@team.io" \
+  --jira-token "<DEFAULT_JIRA_API_TOKEN>" \
   --roles-json '{
     "pm": {
       "name": "Alice",
-      "email": "alice@team.io",
-      "jira_account_id": "acc-alice"
+      "email": "alice@team.io"
     },
     "tech_lead": {
       "name": "Alice",
-      "email": "alice@team.io",
-      "jira_account_id": "acc-alice"
+      "email": "alice@team.io"
     },
     "developer": {
       "name": "Bob",
-      "email": "bob@team.io",
-      "jira_account_id": "acc-bob"
+      "email": "bob@team.io"
     },
     "reviewer": {
       "name": "Alice",
-      "email": "alice@team.io",
-      "jira_account_id": "acc-alice"
+      "email": "alice@team.io"
     },
     "qa": {
       "name": "Carol",
-      "email": "carol@team.io",
-      "jira_account_id": "acc-carol"
+      "email": "carol@team.io"
     },
     "release_manager": {
       "name": "Alice",
-      "email": "alice@team.io",
-      "jira_account_id": "acc-alice"
+      "email": "alice@team.io"
     }
+  }' \
+  --role-tokens-json '{
+    "developer": "<BOB_JIRA_API_TOKEN>",
+    "qa": "<CAROL_JIRA_API_TOKEN>"
   }'
 ```
 
 3. **步驟三：檢視產出檔案與提交 Git 版控**
-   - 確認 `.ai-workflow/team-config.json`、統一短指令入口 `.ai-workflow/bin/jira_sync.py`（自動設為可執行 `0755`，即使團隊將 Skills 安裝於全域目錄也能直接在業務專案內呼叫 `python3 .ai-workflow/bin/jira_sync.py ...`）、`.gitignore`、`docs/shared/engineering-standards.md` 與精簡後的 `AGENTS.md` 皆已正確生成，即可提交至 Git。
+   - 確認 `.ai-workflow/team-config.json`、本地受保護憑證 `.ai-workflow/credentials.json`（已被 `.gitignore` 排除，絕不進版控）、統一短指令入口 `.ai-workflow/bin/jira_sync.py`（自動設為可執行 `0755`）、`.gitignore`、`docs/shared/engineering-standards.md` 與精簡後的 `AGENTS.md` 皆已正確生成，即可將受版控檔案提交至 Git。
 
 ### 3.3 `jira_sync.py init` 參數與產出檔案規格表
 
 | 類別 | 參數或檔案名稱 | 必填 / 預設值 | 功能說明與輸入規範 | 狀態影響與防呆機制 |
 | :--- | :--- | :--- | :--- | :--- |
+| **CLI 旗標** | `--inspect` | 選填（布林旗標） | 唯讀檢查目前專案初始化與憑證狀態，回傳尚未確認之 `questions_to_ask` | 不修改任何檔案；供 AI 在執行 `init` 前先向使用者詢問確認 |
+| **CLI 旗標** | `-i` / `--interactive` | 選填（布林旗標） | 終端機互動式問答模式，逐步詢問 URL、Project Key、帳號、Token 與六大角色 | 適合人類開發者直接於終端機手動執行初始化 |
 | **CLI 旗標** | `--project-key` | 選填（預設 `PROJ`） | 設定 Jira 專案代號（自動轉為大寫，如 `TEAM`） | 寫入 `team-config.json` 之 `project_key` |
 | **CLI 旗標** | `--jira-url` | 選填（預設空字串） | 設定 Jira Cloud 主機網址（如 `https://org.atlassian.net`） | 僅允許 `http` 或 `https` 協定；自動移除結尾斜線 |
-| **CLI 旗標** | `--roles-json` | 選填 | JSON 字串或檔案路徑，定義 `pm`、`tech_lead`、`developer`、`reviewer`、`qa`、`release_manager` 及選用之 `independent_reviewer` | 支援傳入字串（僅姓名）或完整物件 `{name, email, jira_account_id}`，並自動保留既有欄位 |
+| **CLI 旗標** | `--jira-email` | 選填 | 設定 Jira 認證登入信箱（`JIRA_EMAIL`） | 寫入受 `.gitignore` 保護之 `.ai-workflow/credentials.json` |
+| **CLI 旗標** | `--jira-token` | 選填 | 設定 Jira API Token（`JIRA_API_TOKEN`） | 寫入 `.ai-workflow/credentials.json`（權限 `0600`），**嚴禁寫入 `team-config.json`** |
+| **CLI 旗標** | `--roles-json` | 選填 | JSON 字串或檔案路徑，定義 `pm`、`tech_lead`、`developer`、`reviewer`、`qa`、`release_manager` 及選用之 `independent_reviewer` | 支援傳入 `{name, email, jira_account_id, api_token}`；內嵌之 `api_token` 會自動剝離轉存至 `credentials.json`，並自動呼叫 Jira API 解析補齊 `jira_account_id` |
+| **CLI 旗標** | `--role-tokens-json` | 選填 | JSON 字串或檔案路徑，設定各角色專屬 Jira API Token（如 `{"qa": "..."}`） | 寫入 `.ai-workflow/credentials.json` 之 `role_credentials`，使各站點直接以該角色本人之 Jira 帳號發送評論與流轉狀態 |
 | **CLI 旗標** | `--status-mapping-json` | 選填 | JSON 字串或檔案路徑，自訂六大狀態對應之 Jira 狀態名稱 | 覆寫 `todo`、`in_progress`、`in_review`、`in_qa`、`ready_for_release`、`done` 映射 |
+| **CLI 旗標** | `--issue-type-mapping-json` | 選填 | JSON 字串或檔案路徑，自訂 `story`、`subtask`、`bug` 對應之 Jira 單據類型 | 覆寫 `team-config.json` 之 `issue_type_mapping` |
 | **CLI 旗標** | `--agents-md` | 選填（預設 `AGENTS.md`） | 指定專案內 AI 代理入口文件之相對路徑 | 自動解析 Markdown 標題（忽略程式碼區塊內之 `#` 註解） |
 | **CLI 旗標** | `--standards-md` | 選填（預設 `docs/shared/engineering-standards.md`） | 指定全專案唯一權威工程規範之輸出路徑 | 若 `AGENTS.md` 含規範段落則自動萃取合併，否則由預設範本建立 |
-| **產出檔案** | `.ai-workflow/team-config.json` | 自動建立（進 Git） | 儲存專案代號、角色人員映射、狀態表與 `issue_type_mapping` | **嚴禁寫入 `JIRA_API_TOKEN` 或密碼** |
+| **產出檔案** | `.ai-workflow/team-config.json` | 自動建立（進 Git） | 儲存專案代號、Jira 網址、角色人員映射、狀態表與 `issue_type_mapping` | **嚴禁寫入 `JIRA_API_TOKEN` 或密碼** |
+| **產出檔案** | `.ai-workflow/credentials.json` | 自動建立（**不進 Git**） | 儲存本地 Jira 認證信箱與 API Token（權限 `0600`），供後續各站自動載入連線 | 自動寫入 `.gitignore`，防止憑證外洩 |
 | **產出檔案** | `.ai-workflow/bin/jira_sync.py` | 自動建立（進 Git） | 業務專案本地統一 CLI 入口（權限 `0755`） | 解決全域安裝 Skill 時業務專案無 `skills/` 目錄之路徑問題 |
-| **產出檔案** | `.gitignore` | 自動更新（進 Git） | 自動確保包含 `.ai-workflow/active/` 忽略規則 | 具備冪等性，重複執行 `init` 不會重複插入多行 |
+| **產出檔案** | `.gitignore` | 自動更新（進 Git） | 自動確保包含 `.ai-workflow/active/`、`.ai-workflow/credentials.json` 與 `.ai-workflow/.env` | 具備冪等性，重複執行 `init` 不會重複插入多行 |
 
 ---
 

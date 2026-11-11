@@ -4,7 +4,7 @@ Seven AI-agent skills designed for small engineering teams where one person may 
 
 | Station | Skill | Modes | Purpose |
 |---|---|---|---|
-| **Init** | `skills/team-init/` | — | Initialize `.ai-workflow/team-config.json` (role-to-person mappings, Jira settings), configure `.gitignore`, and extract/deduplicate `docs/shared/engineering-standards.md` from `AGENTS.md`. |
+| **Init** | `skills/team-init/` | — | Interactive inquiry-first setup: confirm Jira URL, Project Key, role-to-person mappings, and default/per-role Jira API tokens (saved exclusively to gitignored `.ai-workflow/credentials.json`); initialize `.ai-workflow/team-config.json`, configure `.gitignore`, and extract/deduplicate `docs/shared/engineering-standards.md` from `AGENTS.md`. |
 | **Router** | `skills/team-next-step/` | — | Read-only router that inspects `team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json`, and Jira state to recommend the exact next station, mode, and owner. |
 | **Station 1** | `skills/team-spec/` | — | Unified specification & design (merges `team-requirements`, `team-ux`, `team-design`, and inline `team-doc-review`). Produces Scope, testable `AC-*`, conditional UI/API design, and **"抓大放小"** review in one pass; syncs to the Jira `User Story`. |
 | **Station 2** | `skills/team-dev/` | `plan` / `implement` | Decomposes approved specs into verifiable tasks (`TASK-001..N` → Jira `Sub-task`), implements code & tests with minimal context, and checks off completed tasks/bugs via `complete-task`. |

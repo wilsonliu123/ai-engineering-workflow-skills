@@ -7,7 +7,7 @@ description: Use when planning QA test cases (TC-001..N) mapped to acceptance cr
 
 ## Overview
 
-Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), and final QA assessment into two streamlined modes: `plan` and `verify`. Syncs the Test Plan table, AC/TC Verification table, and any linked `Bug` tickets directly to Jira and `.ai-workflow/active/<JIRA-KEY>.json`.
+Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), and final QA assessment into two streamlined modes: `plan` and `verify`. Syncs the Test Plan table, AC/TC Verification table, and any linked `Bug` tickets directly to Jira and `.ai-workflow/active/<JIRA-KEY>.json` using the configured `qa` role identity and per-role Jira API token (`role_credentials.qa` in `.ai-workflow/credentials.json`, or fallback credentials with explicit `QA Owner` attribution and assignee assignment).
 
 Read `references/common-workflow-governance.md` and `references/qa-method.md` before running.
 

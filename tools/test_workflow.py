@@ -53,6 +53,7 @@ def run_cli(repo_root: Path, *args, env_override: dict = None) -> subprocess.Com
 class MockJiraHandler(BaseHTTPRequestHandler):
     requests_log = []
     stored_issues = {}
+    stored_properties = {}
     simulate_put_404_keys = set()
     reject_subtask_types = set()
 
@@ -64,7 +65,7 @@ class MockJiraHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode("utf-8") if length > 0 else ""
         return json.loads(raw) if raw else {}
 
-    def _send_json(self, code: int, payload: dict):
+    def _send_json(self, code: int, payload):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -74,7 +75,41 @@ class MockJiraHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.requests_log.append(("GET", self.path, None, dict(self.headers)))
-        if self.path.endswith("/transitions"):
+        if self.path == "/rest/api/3/myself":
+            auth_hdr = self.headers.get("Authorization", "")
+            decoded_auth = ""
+            if auth_hdr.startswith("Basic "):
+                import base64
+                try:
+                    decoded_auth = base64.b64decode(auth_hdr.split(" ", 1)[1]).decode("utf-8")
+                except Exception:
+                    decoded_auth = ""
+            if decoded_auth.startswith("carol@team.io:"):
+                self._send_json(200, {
+                    "accountId": "acc-carol-from-token",
+                    "displayName": "Carol Wu",
+                    "emailAddress": "carol@team.io",
+                })
+            elif decoded_auth.startswith("bob@team.io:"):
+                self._send_json(200, {
+                    "accountId": "acc-bob-from-token",
+                    "displayName": "Bob Lin",
+                    "emailAddress": "bob@team.io",
+                })
+            else:
+                self._send_json(200, {
+                    "accountId": "acc-alice",
+                    "displayName": "Alice Chen",
+                    "emailAddress": "alice@team.io",
+                })
+        elif self.path.startswith("/rest/api/3/user/search"):
+            if "bob%40team.io" in self.path or "bob@team.io" in self.path:
+                self._send_json(200, [{"accountId": "acc-bob-resolved", "emailAddress": "bob@team.io", "displayName": "Bob Lin"}])
+            elif "carol%40team.io" in self.path or "carol@team.io" in self.path:
+                self._send_json(200, [{"accountId": "acc-carol-resolved", "emailAddress": "carol@team.io", "displayName": "Carol Wu"}])
+            else:
+                self._send_json(200, [{"accountId": "acc-alice-resolved", "emailAddress": "alice@team.io", "displayName": "Alice Chen"}])
+        elif self.path.endswith("/transitions"):
             self._send_json(200, {
                 "transitions": [
                     {"id": "11", "name": "In Progress", "to": {"name": "In Progress"}},
@@ -83,6 +118,12 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                     {"id": "41", "name": "Done", "to": {"name": "Done"}},
                 ]
             })
+        elif self.path.startswith("/rest/api/3/issue/") and "/properties/ai_workflow_state" in self.path:
+            key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
+            if key in self.stored_properties:
+                self._send_json(200, {"key": "ai_workflow_state", "value": self.stored_properties[key]})
+            else:
+                self._send_json(404, {"errorMessages": ["Property not found"]})
         elif self.path.startswith("/rest/api/3/issue/"):
             key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
             if key in self.stored_issues:
@@ -122,6 +163,11 @@ class MockJiraHandler(BaseHTTPRequestHandler):
     def do_PUT(self):
         data = self._read_json()
         self.requests_log.append(("PUT", self.path, data, dict(self.headers)))
+        if self.path.startswith("/rest/api/3/issue/") and "/properties/ai_workflow_state" in self.path:
+            key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
+            self.stored_properties[key] = data
+            self._send_json(200, {"ok": True})
+            return
         if self.path.startswith("/rest/api/3/issue/") and not self.path.endswith("/assignee"):
             key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
             if key in self.simulate_put_404_keys:
@@ -138,7 +184,7 @@ class MockJiraHandler(BaseHTTPRequestHandler):
 class WorkflowTestSuite(unittest.TestCase):
 
     def test_01_skill_bundle_structure_and_shared_files(self):
-        actual_skills = {p.name for p in SKILLS_DIR.iterdir() if p.is_dir()}
+        actual_skills = {p.name for p in SKILLS_DIR.iterdir() if p.is_dir() and p.name != "system"}
         self.assertEqual(actual_skills, EXPECTED_SKILLS)
 
         for s in EXPECTED_SKILLS:
@@ -893,6 +939,7 @@ class WorkflowTestSuite(unittest.TestCase):
     def test_08_cross_machine_worktree_hydration_and_rich_adf(self):
         MockJiraHandler.requests_log.clear()
         MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
         MockJiraHandler.simulate_put_404_keys = {"PROJ-404"}
         MockJiraHandler.reject_subtask_types = {"Sub-task"}
 
@@ -928,10 +975,13 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertEqual(out_a["jira_sync"]["action"], "create-story")
 
                 # Verify Rich ADF conversion (heading & bulletList) in stored issue description
+                # AND ensure Story description is 100% clean of raw [ai-workflow-state] JSON dump!
                 stored_desc = MockJiraHandler.stored_issues["PROJ-404"]["fields"]["description"]
                 node_types = [n["type"] for n in stored_desc["content"]]
                 self.assertIn("heading", node_types)
                 self.assertIn("bulletList", node_types)
+                self.assertNotIn("[ai-workflow-state]", json.dumps(stored_desc, ensure_ascii=False))
+                self.assertIn("PROJ-404", MockJiraHandler.stored_properties)
 
                 # Machine A creates subtask where "Sub-task" returns HTTP 400 -> auto-falls back to "Subtask"!
                 sub_a = run_cli(
@@ -1159,6 +1209,173 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertEqual(close_500.returncode, 0, close_500.stderr)
             close_out = json.loads(close_500.stdout)
             self.assertEqual(close_out["qa_breakdown"], {"automated": 2, "external": 1, "manual": 1})
+
+    def test_10_init_inquiry_inspect_credentials_and_auto_account_resolution(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+
+        server = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+
+                # 1. Pre-init --inspect must report requires_user_inquiry=True and all 4 structured questions without creating files
+                insp = run_cli(root, "init", "--inspect")
+                self.assertEqual(insp.returncode, 0, insp.stderr)
+                insp_out = json.loads(insp.stdout)
+                self.assertEqual(insp_out["action"], "init-inspect")
+                self.assertFalse(insp_out["config_exists"])
+                self.assertFalse(insp_out["credentials_configured"])
+                self.assertTrue(insp_out["requires_user_inquiry"])
+                self.assertEqual(
+                    set(insp_out["missing_confirmations"]),
+                    {"project_url", "project_key", "jira_credentials", "roles"},
+                )
+                q_ids = [q["id"] for q in insp_out["questions_to_ask"]]
+                self.assertEqual(
+                    q_ids,
+                    ["project_url_and_key", "role_definitions_and_tokens", "status_and_issue_types"],
+                )
+                self.assertIn("role_has_api_token", insp_out)
+                self.assertFalse((root / ".ai-workflow/team-config.json").exists())
+
+                # 2. Run init with confirmed URL, key, account email, API token, and roles (including per-role tokens)
+                roles_input = {
+                    "pm": {"name": "Alice", "email": "alice@team.io"},
+                    "tech_lead": {"name": "Alice", "email": "alice@team.io"},
+                    "developer": {"name": "Bob", "email": "bob@team.io", "api_token": "dev-token-bob"},
+                    "reviewer": {"name": "Alice", "email": "alice@team.io"},
+                    "qa": {"name": "Carol", "email": "carol@team.io"},
+                    "release_manager": {"name": "Alice", "email": "alice@team.io"},
+                }
+                role_tokens_input = {
+                    "qa": "qa-token-carol",
+                }
+                init_res = run_cli(
+                    root, "init",
+                    "--project-key", "TEAM",
+                    "--jira-url", f"http://127.0.0.1:{port}",
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "super-secret-token-999",
+                    "--roles-json", json.dumps(roles_input),
+                    "--role-tokens-json", json.dumps(role_tokens_input),
+                )
+                self.assertEqual(init_res.returncode, 0, init_res.stderr)
+                init_out = json.loads(init_res.stdout)
+                self.assertTrue(init_out["ok"])
+                self.assertEqual(init_out["project_key"], "TEAM")
+                self.assertEqual(init_out["jira_base_url"], f"http://127.0.0.1:{port}")
+                self.assertEqual(init_out["jira_mode"], "live")
+                self.assertTrue(init_out["credentials_configured"])
+                self.assertEqual(init_out["credentials_path"], ".ai-workflow/credentials.json")
+                self.assertTrue(init_out["jira_verification"]["verified"])
+                self.assertEqual(init_out["jira_verification"]["account_id"], "acc-alice")
+                self.assertTrue(init_out["role_has_api_token"]["developer"])
+                self.assertTrue(init_out["role_has_api_token"]["qa"])
+                self.assertEqual(init_out["role_verifications"]["developer"]["account_id"], "acc-bob-from-token")
+                self.assertEqual(init_out["role_verifications"]["qa"]["account_id"], "acc-carol-from-token")
+
+                # Verify auto-resolved jira_account_id from role token /rest/api/3/myself
+                self.assertEqual(init_out["auto_resolved_account_ids"]["developer"], "acc-bob-from-token")
+                self.assertEqual(init_out["auto_resolved_account_ids"]["qa"], "acc-carol-from-token")
+
+                # Verify .ai-workflow/credentials.json exists (0600) and .ai-workflow/team-config.json NEVER contains ANY tokens
+                cred_path = root / ".ai-workflow/credentials.json"
+                self.assertTrue(cred_path.exists())
+                cred_data = json.loads(cred_path.read_text(encoding="utf-8"))
+                self.assertEqual(cred_data["jira_email"], "alice@team.io")
+                self.assertEqual(cred_data["jira_api_token"], "super-secret-token-999")
+                self.assertEqual(cred_data["role_credentials"]["developer"]["jira_api_token"], "dev-token-bob")
+                self.assertEqual(cred_data["role_credentials"]["qa"]["jira_api_token"], "qa-token-carol")
+
+                cfg_raw = (root / ".ai-workflow/team-config.json").read_text(encoding="utf-8")
+                self.assertNotIn("super-secret-token-999", cfg_raw)
+                self.assertNotIn("dev-token-bob", cfg_raw)
+                self.assertNotIn("qa-token-carol", cfg_raw)
+                cfg_data = json.loads(cfg_raw)
+                self.assertEqual(cfg_data["roles"]["developer"]["jira_account_id"], "acc-bob-from-token")
+                self.assertEqual(cfg_data["roles"]["qa"]["jira_account_id"], "acc-carol-from-token")
+
+                # Verify .gitignore ignores credentials.json and .env
+                gitignore_text = (root / ".gitignore").read_text(encoding="utf-8")
+                self.assertIn(".ai-workflow/credentials.json", gitignore_text)
+                self.assertIn(".ai-workflow/.env", gitignore_text)
+
+                # 3. Verify subsequent sync-story and record-qa automatically use per-role credentials in live mode!
+                sync_res = run_cli(
+                    root, "sync-story",
+                    "--key", "TEAM-101",
+                    "--title", "Live Sync via Saved Credentials",
+                    "--ac", "AC-001:Auto load credentials.json",
+                    "--status", "approved",
+                    "--create",
+                )
+                self.assertEqual(sync_res.returncode, 0, sync_res.stderr)
+                sync_out = json.loads(sync_res.stdout)
+                self.assertEqual(sync_out["jira_sync"]["mode"], "live")
+                self.assertEqual(sync_out["handoff"]["assigned_account_id"], "acc-bob-from-token")
+
+                MockJiraHandler.requests_log.clear()
+                qa_res = run_cli(
+                    root, "record-qa",
+                    "--key", "TEAM-101",
+                    "--mode", "plan",
+                    "--tc", "TC-001:AC-001:automated:Verify QA comment uses Carol's token and QA Owner badge",
+                )
+                self.assertEqual(qa_res.returncode, 0, qa_res.stderr)
+                qa_out = json.loads(qa_res.stdout)
+                self.assertEqual(qa_out["qa_owner"], "Carol")
+                comment_reqs = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1].endswith("/comment")]
+                self.assertEqual(len(comment_reqs), 1)
+                import base64
+                expected_carol_auth = "Basic " + base64.b64encode(b"carol@team.io:qa-token-carol").decode("ascii")
+                self.assertEqual(comment_reqs[0][3].get("Authorization"), expected_carol_auth)
+                comment_body_str = json.dumps(comment_reqs[0][2], ensure_ascii=False)
+                self.assertIn("QA Owner", comment_body_str)
+                self.assertIn("Carol", comment_body_str)
+
+                # 4. Verify interactive mode (-i / --interactive) with piped stdin (including per-role API token prompt)
+                with tempfile.TemporaryDirectory() as tmp_i:
+                    root_i = Path(tmp_i)
+                    stdin_lines = "\n".join([
+                        f"http://127.0.0.1:{port}",  # 1. Jira Base URL
+                        "INTP",                      # 2. Project Key
+                        "alice@team.io",             # 3. Jira Email
+                        "interactive-tok-777",       # 4. Jira API Token
+                        "Alice", "alice@team.io", "", "",             # pm (Name, Email, Token, AccountId)
+                        "Alice", "alice@team.io", "", "",             # tech_lead
+                        "Bob", "bob@team.io", "bob-tok-123", "",      # developer
+                        "Alice", "alice@team.io", "", "",             # reviewer
+                        "Carol", "carol@team.io", "carol-tok-456", "",# qa
+                        "Alice", "alice@team.io", "", "",             # release_manager
+                    ]) + "\n"
+                    env_clean = os.environ.copy()
+                    env_clean.pop("JIRA_BASE_URL", None)
+                    env_clean.pop("JIRA_EMAIL", None)
+                    env_clean.pop("JIRA_API_TOKEN", None)
+                    proc = subprocess.run(
+                        [sys.executable, str(JIRA_SYNC), "--repo-root", str(root_i), "init", "--interactive"],
+                        input=stdin_lines,
+                        capture_output=True,
+                        text=True,
+                        env=env_clean,
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    i_out = json.loads(proc.stdout)
+                    self.assertEqual(i_out["project_key"], "INTP")
+                    self.assertEqual(i_out["jira_mode"], "live")
+                    self.assertTrue(i_out["credentials_configured"])
+                    self.assertTrue(i_out["role_has_api_token"]["developer"])
+                    self.assertTrue(i_out["role_has_api_token"]["qa"])
+                    self.assertEqual(i_out["auto_resolved_account_ids"]["developer"], "acc-bob-from-token")
+                    self.assertEqual(i_out["auto_resolved_account_ids"]["qa"], "acc-carol-from-token")
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

@@ -130,6 +130,124 @@ def get_config_path(repo_root: Path) -> Path:
     return get_workflow_dir(repo_root) / "team-config.json"
 
 
+def get_credentials_path(repo_root: Path) -> Path:
+    return get_workflow_dir(repo_root) / "credentials.json"
+
+
+def get_dotenv_path(repo_root: Path) -> Path:
+    return get_workflow_dir(repo_root) / ".env"
+
+
+def _read_credentials_from_dir(wf_dir: Path) -> dict:
+    creds = {"role_credentials": {}}
+    cred_file = wf_dir / "credentials.json"
+    if cred_file.exists():
+        try:
+            raw = json.loads(cred_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for k in ("jira_base_url", "jira_email", "jira_api_token"):
+                    if raw.get(k):
+                        creds[k] = str(raw[k]).strip()
+                raw_rc = raw.get("role_credentials")
+                if isinstance(raw_rc, dict):
+                    for r_key, r_val in raw_rc.items():
+                        if isinstance(r_val, dict):
+                            r_em = str(r_val.get("jira_email") or r_val.get("email") or "").strip()
+                            r_tk = str(r_val.get("jira_api_token") or r_val.get("api_token") or r_val.get("token") or "").strip()
+                            if r_em or r_tk:
+                                creds["role_credentials"][str(r_key).strip()] = {
+                                    "jira_email": r_em,
+                                    "jira_api_token": r_tk,
+                                }
+        except Exception:
+            pass
+    env_file = wf_dir / ".env"
+    if env_file.exists():
+        try:
+            env_map = {
+                "JIRA_BASE_URL": "jira_base_url",
+                "JIRA_EMAIL": "jira_email",
+                "JIRA_API_TOKEN": "jira_api_token",
+            }
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                k = k.strip()
+                if k.startswith("export "):
+                    k = k[len("export "):].strip()
+                v = v.strip().strip("'").strip('"')
+                if k in env_map and v and not creds.get(env_map[k]):
+                    creds[env_map[k]] = v
+        except Exception:
+            pass
+    return creds
+
+
+def load_jira_credentials(repo_root: Path = None) -> dict:
+    """Load local gitignored Jira credentials (.ai-workflow/credentials.json or .env), with worktree fallback."""
+    if repo_root is None:
+        return {"role_credentials": {}}
+    creds = _read_credentials_from_dir(get_workflow_dir(repo_root))
+    main_root = _resolve_main_worktree_root(repo_root)
+    if main_root:
+        main_creds = _read_credentials_from_dir(get_workflow_dir(main_root))
+        for k in ("jira_base_url", "jira_email", "jira_api_token"):
+            if main_creds.get(k) and not creds.get(k):
+                creds[k] = main_creds[k]
+        for r_key, r_val in (main_creds.get("role_credentials") or {}).items():
+            if r_key not in creds["role_credentials"]:
+                creds["role_credentials"][r_key] = r_val
+    return creds
+
+
+def save_jira_credentials(
+    repo_root: Path,
+    jira_url: str = None,
+    jira_email: str = None,
+    jira_token: str = None,
+    role_credentials: dict = None,
+) -> Path:
+    """Save Jira credentials (including per-role tokens) to gitignored .ai-workflow/credentials.json with 0600 permissions."""
+    wf_dir = get_workflow_dir(repo_root)
+    wf_dir.mkdir(parents=True, exist_ok=True)
+    cred_path = get_credentials_path(repo_root)
+    existing = _read_credentials_from_dir(wf_dir)
+    if jira_url is not None and jira_url.strip():
+        existing["jira_base_url"] = jira_url.strip().rstrip("/")
+    if jira_email is not None:
+        existing["jira_email"] = jira_email.strip()
+    if jira_token is not None:
+        existing["jira_api_token"] = jira_token.strip()
+    if isinstance(role_credentials, dict):
+        rc_map = existing.setdefault("role_credentials", {})
+        for r_key, r_val in role_credentials.items():
+            norm_role = str(r_key).strip()
+            if isinstance(r_val, str) and r_val.strip():
+                prev = rc_map.get(norm_role) or {}
+                rc_map[norm_role] = {
+                    "jira_email": prev.get("jira_email", ""),
+                    "jira_api_token": r_val.strip(),
+                }
+            elif isinstance(r_val, dict):
+                prev = rc_map.get(norm_role) or {}
+                r_em = str(r_val.get("jira_email") or r_val.get("email") or prev.get("jira_email") or "").strip()
+                r_tk = str(r_val.get("jira_api_token") or r_val.get("api_token") or r_val.get("token") or prev.get("jira_api_token") or "").strip()
+                if r_em or r_tk:
+                    rc_map[norm_role] = {
+                        "jira_email": r_em,
+                        "jira_api_token": r_tk,
+                    }
+    existing["updated_at"] = now_iso()
+    cred_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        cred_path.chmod(0o600)
+    except Exception:
+        pass
+    return cred_path
+
+
 def load_team_config(repo_root: Path) -> dict:
     cfg_path = get_config_path(repo_root)
     if not cfg_path.exists():
@@ -237,6 +355,16 @@ def resolve_role_person(config: dict, role: str) -> dict:
     }
 
 
+def format_role_badge(config: dict, role: str) -> str:
+    """Format a clear role/owner attribution string for Jira comments."""
+    p = resolve_role_person(config, role)
+    name = p.get("name") or role
+    email = p.get("email") or ""
+    if email:
+        return f"`{role}` — **{name}** ({email})"
+    return f"`{role}` — **{name}**"
+
+
 def validate_jira_key(raw_key: str) -> str:
     """Normalize and validate Jira Story key, preventing path traversal."""
     key = (raw_key or "").strip().upper()
@@ -290,17 +418,57 @@ def resolve_effective_reviewer(config: dict) -> tuple:
 
 
 class JiraClient:
-    """Dependency-free Jira REST API v3 client with automatic local/offline fallback."""
+    """Dependency-free Jira REST API v3 client with per-role credential resolution and local/offline fallback."""
 
-    def __init__(self, config: dict, offline: bool = False):
+    def __init__(self, config: dict, offline: bool = False, repo_root: Path = None, role: str = None):
         self.config = config
-        self.base_url = (os.environ.get("JIRA_BASE_URL") or config.get("jira_base_url") or "").rstrip("/")
+        self.role = (role or "").strip()
+        local_creds = load_jira_credentials(repo_root) if repo_root else {"role_credentials": {}}
+        self.base_url = (
+            os.environ.get("JIRA_BASE_URL")
+            or config.get("jira_base_url")
+            or local_creds.get("jira_base_url")
+            or ""
+        ).rstrip("/")
         if self.base_url:
             scheme = urllib.parse.urlparse(self.base_url).scheme.lower()
             if scheme not in ("http", "https"):
                 raise ValueError(f"Invalid jira_base_url scheme '{scheme}'. Only http and https are allowed.")
-        self.email = (os.environ.get("JIRA_EMAIL") or "").strip()
-        self.api_token = (os.environ.get("JIRA_API_TOKEN") or "").strip()
+
+        role_creds_map = local_creds.get("role_credentials") or {}
+        role_cred = role_creds_map.get(self.role) if self.role else None
+        role_person = resolve_role_person(config, self.role) if self.role else {}
+
+        env_role_email = os.environ.get(f"JIRA_EMAIL_{self.role.upper()}", "").strip() if self.role else ""
+        env_role_token = os.environ.get(f"JIRA_API_TOKEN_{self.role.upper()}", "").strip() if self.role else ""
+
+        default_email = (os.environ.get("JIRA_EMAIL") or local_creds.get("jira_email") or "").strip()
+        default_token = (os.environ.get("JIRA_API_TOKEN") or local_creds.get("jira_api_token") or "").strip()
+
+        resolved_email = ""
+        resolved_token = ""
+        if env_role_token:
+            resolved_token = env_role_token
+            resolved_email = env_role_email or (role_cred or {}).get("jira_email") or role_person.get("email") or default_email
+        elif isinstance(role_cred, dict) and role_cred.get("jira_api_token"):
+            resolved_token = role_cred["jira_api_token"].strip()
+            resolved_email = (role_cred.get("jira_email") or role_person.get("email") or default_email).strip()
+        else:
+            # If another role belongs to the same person (same email) and has a token configured, reuse it
+            target_email = (role_person.get("email") or "").strip().lower()
+            if target_email:
+                for other_role, other_cred in role_creds_map.items():
+                    if isinstance(other_cred, dict) and other_cred.get("jira_api_token"):
+                        other_person = resolve_role_person(config, other_role)
+                        other_em = (other_cred.get("jira_email") or other_person.get("email") or "").strip().lower()
+                        if other_em == target_email:
+                            resolved_token = other_cred["jira_api_token"].strip()
+                            resolved_email = (other_cred.get("jira_email") or role_person.get("email")).strip()
+                            break
+
+        self.email = resolved_email or default_email
+        self.api_token = resolved_token or default_token
+        self.using_role_token = bool(resolved_token)
         self.offline = offline or not (self.base_url and self.email and self.api_token)
 
     @property
@@ -315,7 +483,7 @@ class JiraClient:
             "Content-Type": "application/json",
         }
 
-    def _request(self, method: str, path: str, payload: dict = None) -> dict:
+    def _request(self, method: str, path: str, payload: dict = None):
         url = f"{self.base_url}{path}"
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         req = urllib.request.Request(url, data=body, headers=self._headers(), method=method)
@@ -328,6 +496,37 @@ class JiraClient:
             raise RuntimeError(f"Jira API {method} {path} failed with HTTP {exc.code}: {err_body}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Jira API {method} {path} connection error: {exc.reason}") from exc
+
+    def verify_connection(self) -> dict:
+        """Verify Jira REST API v3 credentials via GET /rest/api/3/myself."""
+        if not self.is_live:
+            return {"mode": "offline", "verified": False}
+        res = self._request("GET", "/rest/api/3/myself")
+        if isinstance(res, dict):
+            return {
+                "mode": "live",
+                "verified": True,
+                "account_id": res.get("accountId", ""),
+                "display_name": res.get("displayName", ""),
+                "email": res.get("emailAddress", self.email),
+            }
+        return {"mode": "live", "verified": True}
+
+    def resolve_account_id_by_email(self, email: str) -> str:
+        """Query Jira REST API v3 user search to resolve accountId from email."""
+        if not self.is_live or not email or not email.strip():
+            return ""
+        q = urllib.parse.quote(email.strip())
+        res = self._request("GET", f"/rest/api/3/user/search?query={q}")
+        if isinstance(res, list) and res:
+            target = email.strip().lower()
+            for item in res:
+                if isinstance(item, dict) and (item.get("emailAddress") or "").strip().lower() == target:
+                    return str(item.get("accountId") or "").strip()
+            first = res[0]
+            if isinstance(first, dict):
+                return str(first.get("accountId") or "").strip()
+        return ""
 
     @staticmethod
     def text_to_adf(text: str, mention_account_id: str = "", mention_name: str = "") -> dict:
@@ -603,12 +802,22 @@ class JiraClient:
         if not self.is_live:
             return
         try:
-            desc_md = format_story_description(story)
-            adf = self.text_to_adf(desc_md)
-            payload = {"fields": {"summary": story.get("title") or jira_key, "description": adf}}
-            self._request("PUT", f"/rest/api/3/issue/{urllib.parse.quote(jira_key)}", payload)
+            prop_path = f"/rest/api/3/issue/{urllib.parse.quote(jira_key)}/properties/ai_workflow_state"
+            self._request("PUT", prop_path, story)
         except Exception:
             pass
+
+    def get_state_snapshot(self, jira_key: str):
+        if not self.is_live:
+            return None
+        try:
+            prop_path = f"/rest/api/3/issue/{urllib.parse.quote(jira_key)}/properties/ai_workflow_state"
+            res = self._request("GET", prop_path)
+            if isinstance(res, dict) and isinstance(res.get("value"), dict):
+                return res["value"]
+        except Exception:
+            pass
+        return None
 
 
 def _adf_to_plain_text(node) -> str:
@@ -675,8 +884,8 @@ def _hydrate_story_from_worktree(repo_root: Path, clean_key: str):
 def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str):
     """
     Auto-hydrate .ai-workflow/active/<KEY>.json from remote Jira issue when local file is missing.
-    Supports both 100% lossless [ai-workflow-state] snapshot extraction and structural reconstruction
-    from standard Jira fields (summary, description AC-###, subtasks, issuelinks, status).
+    Supports hidden Jira Issue Property (ai_workflow_state), legacy [ai-workflow-state] snapshot
+    extraction, and structural reconstruction from standard Jira fields.
     """
     if not client or not client.is_live:
         return None
@@ -692,19 +901,18 @@ def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str
     if not fields and issue.get("key") != clean_key:
         return None
 
-    # 1. Check comments (newest first) and description for lossless [ai-workflow-state] JSON snapshot
-    snapshot = None
+    # 1. Check hidden Jira Issue Property (ai_workflow_state) first, then legacy comments/description
+    snapshot = client.get_state_snapshot(clean_key)
     comments_list = ((fields.get("comment") or {}).get("comments")) or []
-    for c_item in reversed(comments_list):
-        c_text = _adf_to_plain_text(c_item.get("body"))
-        snapshot = _extract_state_snapshot_from_text(c_text)
-        if snapshot:
-            break
     if not snapshot:
-        desc_text = _adf_to_plain_text(fields.get("description"))
+        for c_item in reversed(comments_list):
+            c_text = _adf_to_plain_text(c_item.get("body"))
+            snapshot = _extract_state_snapshot_from_text(c_text)
+            if snapshot:
+                break
+    desc_text = _adf_to_plain_text(fields.get("description"))
+    if not snapshot:
         snapshot = _extract_state_snapshot_from_text(desc_text)
-    else:
-        desc_text = _adf_to_plain_text(fields.get("description"))
 
     if snapshot:
         story = dict(snapshot)
@@ -822,7 +1030,7 @@ def load_active_story(repo_root: Path, jira_key: str, client: JiraClient = None)
     eff_client = client
     if eff_client is None:
         try:
-            eff_client = JiraClient(load_team_config(repo_root))
+            eff_client = JiraClient(load_team_config(repo_root), repo_root=repo_root)
         except Exception:
             eff_client = None
     if eff_client is not None and eff_client.is_live:
@@ -872,15 +1080,20 @@ def execute_role_handoff(
     status_key: str,
     comment_md: str,
 ) -> dict:
-    """Execute role handoff with multi-role consolidation awareness."""
+    """Execute role handoff with multi-role consolidation awareness and Jira assignee update."""
     from_person = resolve_role_person(config, from_role)
     to_person = resolve_role_person(config, to_role)
     target_jira_status = config.get("status_mapping", {}).get(status_key, status_key)
     jira_key = story["jira_key"]
 
+    attribution_line = f"- **Station Role & Owner**: {format_role_badge(config, from_role)} → {format_role_badge(config, to_role)}"
+    full_comment_md = f"{comment_md}\n{attribution_line}" if attribution_line not in comment_md else comment_md
+
     if is_same_person(from_person, to_person):
-        # Same person holds both roles: skip notification noise and approval friction
-        client.add_comment(jira_key, comment_md)
+        # Same person holds both roles: skip @mention notification noise, but ensure issue is assigned to them
+        if to_person.get("jira_account_id"):
+            client.assign_issue(jira_key, to_person["jira_account_id"])
+        client.add_comment(jira_key, full_comment_md)
         client.transition_issue(jira_key, target_jira_status)
         handoff_record = {
             "timestamp": now_iso(),
@@ -891,6 +1104,7 @@ def execute_role_handoff(
             "same_person": True,
             "handoff_mode": "auto-consolidated",
             "target_jira_status": target_jira_status,
+            "assigned_account_id": to_person.get("jira_account_id", ""),
             "notified": False,
         }
     else:
@@ -900,7 +1114,7 @@ def execute_role_handoff(
             client.assign_issue(jira_key, to_person["jira_account_id"])
         client.add_comment(
             jira_key,
-            comment_md,
+            full_comment_md,
             mention_account_id=to_person.get("jira_account_id", ""),
             mention_name=to_person.get("name", to_role),
         )
@@ -1077,13 +1291,187 @@ def extract_and_trim_agents_md(agents_path: Path, standards_path: Path) -> dict:
     }
 
 
+def _are_roles_unconfigured(roles: dict) -> bool:
+    default_names = {k: v["name"] for k, v in DEFAULT_TEAM_CONFIG["roles"].items()}
+    for r_key, def_name in default_names.items():
+        entry = (roles or {}).get(r_key) or {}
+        if isinstance(entry, str):
+            if entry.strip() and entry.strip() != def_name:
+                return False
+        elif isinstance(entry, dict):
+            name = (entry.get("name") or "").strip()
+            email = (entry.get("email") or "").strip()
+            acct = (entry.get("jira_account_id") or "").strip()
+            if (name and name != def_name) or email or acct:
+                return False
+    return True
+
+
+def _inspect_init_state(repo_root: Path) -> dict:
+    cfg_path = get_config_path(repo_root)
+    cred_path = get_credentials_path(repo_root)
+    dotenv_path = get_dotenv_path(repo_root)
+    cfg = load_team_config(repo_root)
+    local_creds = load_jira_credentials(repo_root)
+
+    eff_url = (
+        os.environ.get("JIRA_BASE_URL")
+        or cfg.get("jira_base_url")
+        or local_creds.get("jira_base_url")
+        or ""
+    ).strip()
+    eff_email = (os.environ.get("JIRA_EMAIL") or local_creds.get("jira_email") or "").strip()
+    eff_token = (os.environ.get("JIRA_API_TOKEN") or local_creds.get("jira_api_token") or "").strip()
+    role_creds = local_creds.get("role_credentials") or {}
+    has_any_role_token = any(isinstance(v, dict) and v.get("jira_api_token") for v in role_creds.values())
+    has_any_creds = bool((eff_email and eff_token) or has_any_role_token)
+
+    missing = []
+    if not eff_url:
+        missing.append("project_url")
+    if not cfg_path.exists():
+        missing.append("project_key")
+    if not has_any_creds:
+        missing.append("jira_credentials")
+    if _are_roles_unconfigured(cfg.get("roles", {})):
+        missing.append("roles")
+
+    role_token_status = {
+        r_key: bool((role_creds.get(r_key) or {}).get("jira_api_token"))
+        for r_key in DEFAULT_TEAM_CONFIG["roles"]
+    }
+
+    questions_to_ask = [
+        {
+            "id": "project_url_and_key",
+            "title": "1. 專案 Jira URL 與 Project Key",
+            "prompt": "請提供 Jira 專案網址（例如 https://your-org.atlassian.net）與 Project Key（例如 PROJ / TEAM）。若僅使用本地離線模式請明確告知。",
+            "configured": bool(eff_url and cfg_path.exists()),
+            "current_value": {"jira_base_url": eff_url, "project_key": cfg.get("project_key", "PROJ")},
+        },
+        {
+            "id": "role_definitions_and_tokens",
+            "title": "2. 六大角色定義、對應人員帳號（Name / Email）與 API Token",
+            "prompt": (
+                "請確認 pm、tech_lead、developer、reviewer、qa、release_manager 六大角色分別由哪位成員負責（姓名、Email、Jira Account ID），"
+                "以及各角色成員的 Jira API Token（若不同角色為不同 Jira 帳號，提供各自的 API Token 可讓各站點的 Jira 評論直接以該角色本人的 Jira 帳號頭像發出；"
+                "若同一人兼任或共用預設 Token 亦可直接指定）。所有 Token 將安全儲存於受 .gitignore 保護的 .ai-workflow/credentials.json（權限 0600），絕不寫入版控。"
+            ),
+            "configured": (not _are_roles_unconfigured(cfg.get("roles", {}))) and has_any_creds,
+            "current_value": {
+                "default_jira_email": eff_email,
+                "has_default_api_token": bool(eff_token),
+                "roles": cfg.get("roles", {}),
+                "role_has_api_token": role_token_status,
+            },
+        },
+        {
+            "id": "status_and_issue_types",
+            "title": "3. Jira 狀態與單據類型映射（選填確認）",
+            "prompt": "預設狀態為 To Do / In Progress / In Review / In QA / Ready for Release / Done，單據類型為 Story / Sub-task / Bug，是否直接沿用或需自訂？",
+            "configured": True,
+            "current_value": {
+                "status_mapping": cfg.get("status_mapping", {}),
+                "issue_type_mapping": cfg.get("issue_type_mapping", {}),
+            },
+        },
+    ]
+
+    return {
+        "ok": True,
+        "action": "init-inspect",
+        "config_exists": cfg_path.exists(),
+        "credentials_file_exists": cred_path.exists() or dotenv_path.exists(),
+        "credentials_configured": has_any_creds,
+        "role_has_api_token": role_token_status,
+        "ready_for_live_jira": bool(eff_url and has_any_creds),
+        "missing_confirmations": missing,
+        "requires_user_inquiry": len(missing) > 0,
+        "agent_instruction": (
+            "STOP and ask the user to confirm the items in `questions_to_ask` (especially project URL, Project Key, "
+            "each role's person/email, and their Jira API token(s)) BEFORE executing `jira_sync.py init`."
+            if missing
+            else "All core settings are present. Confirm with the user if any updates are needed before running `init`."
+        ),
+        "questions_to_ask": questions_to_ask,
+    }
+
+
+def _prompt_interactive_init(cfg: dict, local_creds: dict) -> tuple:
+    """Interactive terminal prompt for project URL, key, default Jira account/token, and per-role person/email/token."""
+    def _ask(prompt_text: str, default: str = "") -> str:
+        suffix = f" [{default}]" if default else ""
+        sys.stderr.write(f"{prompt_text}{suffix}: ")
+        sys.stderr.flush()
+        line = sys.stdin.readline()
+        if not line:
+            return default
+        val = line.strip()
+        return val if val else default
+
+    sys.stderr.write("=== Team Init Interactive Setup (專案與角色互動式設定) ===\n")
+    cur_url = cfg.get("jira_base_url") or local_creds.get("jira_base_url") or ""
+    jira_url = _ask("1. Jira Project Base URL (e.g. https://your-org.atlassian.net)", cur_url)
+    cfg["jira_base_url"] = jira_url.rstrip("/")
+
+    cur_key = cfg.get("project_key") or "PROJ"
+    proj_key = _ask("2. Jira Project Key (e.g. PROJ, TEAM)", cur_key)
+    if proj_key:
+        cfg["project_key"] = proj_key.upper()
+
+    cur_email = local_creds.get("jira_email") or os.environ.get("JIRA_EMAIL") or ""
+    jira_email = _ask("3. Default Jira Account Email (JIRA_EMAIL)", cur_email)
+
+    cur_token_hint = "***configured***" if (local_creds.get("jira_api_token") or os.environ.get("JIRA_API_TOKEN")) else ""
+    raw_token = _ask("4. Default Jira API Token (JIRA_API_TOKEN, saved to gitignored .ai-workflow/credentials.json)", cur_token_hint)
+    jira_token = None
+    if raw_token and raw_token != "***configured***":
+        jira_token = raw_token
+
+    sys.stderr.write("\n--- 5. Role-to-Person & Per-Role API Token Mapping (支援一人兼任多職與各角色獨立 Token) ---\n")
+    role_order = ("pm", "tech_lead", "developer", "reviewer", "qa", "release_manager")
+    role_creds_existing = local_creds.get("role_credentials") or {}
+    interactive_role_creds = {}
+    for r_key in role_order:
+        prev = cfg["roles"].get(r_key) if isinstance(cfg["roles"].get(r_key), dict) else {}
+        r_name = _ask(f"  Role [{r_key}] Name", prev.get("name", r_key))
+        r_email = _ask(f"  Role [{r_key}] Email", prev.get("email", ""))
+        prev_rc = role_creds_existing.get(r_key) or {}
+        rc_hint = "***configured***" if prev_rc.get("jira_api_token") else ""
+        r_tok = _ask(f"  Role [{r_key}] Jira API Token (optional, leave blank to reuse default/same-email token)", rc_hint)
+        r_acct = _ask(f"  Role [{r_key}] Jira Account ID (optional, auto-resolved from token/email if blank)", prev.get("jira_account_id", ""))
+        cfg["roles"][r_key] = {
+            "name": r_name,
+            "email": r_email,
+            "jira_account_id": r_acct,
+        }
+        if r_tok and r_tok != "***configured***":
+            interactive_role_creds[r_key] = {"jira_email": r_email or jira_email, "jira_api_token": r_tok}
+
+    return jira_email, jira_token, interactive_role_creds
+
+
 def cmd_init(args) -> int:
     repo_root = Path(args.repo_root).resolve()
+
+    if getattr(args, "inspect", False):
+        print(json.dumps(_inspect_init_state(repo_root), ensure_ascii=False, indent=2))
+        return 0
+
     wf_dir = get_workflow_dir(repo_root)
     wf_dir.mkdir(parents=True, exist_ok=True)
     get_active_dir(repo_root).mkdir(parents=True, exist_ok=True)
 
     cfg = load_team_config(repo_root)
+    local_creds = load_jira_credentials(repo_root)
+
+    interactive_email = None
+    interactive_token = None
+    interactive_role_creds = {}
+    if getattr(args, "interactive", False):
+        interactive_email, interactive_token, interactive_role_creds = _prompt_interactive_init(cfg, local_creds)
+
+    extracted_role_creds = dict(interactive_role_creds)
     if args.project_key:
         cfg["project_key"] = args.project_key.strip().upper()
     if args.jira_url is not None:
@@ -1100,15 +1488,117 @@ def cmd_init(args) -> int:
                         "jira_account_id": prev_role.get("jira_account_id", ""),
                     }
                 elif isinstance(r_val, dict):
+                    r_email_val = r_val.get("email", prev_role.get("email", ""))
+                    # Strip any secret token fields before writing to git-tracked team-config.json!
+                    r_tok_val = (
+                        r_val.get("api_token")
+                        or r_val.get("jira_api_token")
+                        or r_val.get("token")
+                        or ""
+                    ).strip()
+                    if r_tok_val:
+                        extracted_role_creds[r_key] = {
+                            "jira_email": r_email_val,
+                            "jira_api_token": r_tok_val,
+                        }
                     cfg["roles"][r_key] = {
                         "name": r_val.get("name", prev_role.get("name", r_key)),
-                        "email": r_val.get("email", prev_role.get("email", "")),
+                        "email": r_email_val,
                         "jira_account_id": r_val.get("jira_account_id", prev_role.get("jira_account_id", "")),
                     }
+    if getattr(args, "role_tokens_json", None):
+        custom_rt = load_json_arg(args.role_tokens_json)
+        if isinstance(custom_rt, dict):
+            for r_key, r_val in custom_rt.items():
+                r_person = cfg["roles"].get(r_key) if isinstance(cfg["roles"].get(r_key), dict) else {}
+                if isinstance(r_val, str) and r_val.strip():
+                    extracted_role_creds[r_key] = {
+                        "jira_email": r_person.get("email", ""),
+                        "jira_api_token": r_val.strip(),
+                    }
+                elif isinstance(r_val, dict):
+                    r_em = r_val.get("jira_email") or r_val.get("email") or r_person.get("email", "")
+                    r_tk = r_val.get("jira_api_token") or r_val.get("api_token") or r_val.get("token") or ""
+                    if r_tk:
+                        extracted_role_creds[r_key] = {
+                            "jira_email": str(r_em).strip(),
+                            "jira_api_token": str(r_tk).strip(),
+                        }
     if args.status_mapping_json:
         custom_status = load_json_arg(args.status_mapping_json)
         if isinstance(custom_status, dict):
             cfg["status_mapping"].update(custom_status)
+    if getattr(args, "issue_type_mapping_json", None):
+        custom_itypes = load_json_arg(args.issue_type_mapping_json)
+        if isinstance(custom_itypes, dict):
+            cfg["issue_type_mapping"].update(custom_itypes)
+
+    jira_email_arg = getattr(args, "jira_email", None)
+    jira_token_arg = getattr(args, "jira_token", None)
+    eff_email_to_save = jira_email_arg if jira_email_arg is not None else interactive_email
+    eff_token_to_save = jira_token_arg if jira_token_arg is not None else interactive_token
+
+    # If no default email/token was passed but at least one role token was provided, use the first role's email/token as fallback default
+    if not eff_token_to_save and not local_creds.get("jira_api_token") and extracted_role_creds:
+        first_rc = next(iter(extracted_role_creds.values()))
+        if isinstance(first_rc, dict) and first_rc.get("jira_api_token"):
+            eff_token_to_save = first_rc["jira_api_token"]
+            if not eff_email_to_save and first_rc.get("jira_email"):
+                eff_email_to_save = first_rc["jira_email"]
+
+    cred_saved_path = None
+    if eff_email_to_save is not None or eff_token_to_save is not None or extracted_role_creds:
+        cred_saved_path = save_jira_credentials(
+            repo_root,
+            jira_url=cfg.get("jira_base_url") or None,
+            jira_email=eff_email_to_save,
+            jira_token=eff_token_to_save,
+            role_credentials=extracted_role_creds if extracted_role_creds else None,
+        )
+    elif cfg.get("jira_base_url") and get_credentials_path(repo_root).exists():
+        cred_saved_path = save_jira_credentials(
+            repo_root,
+            jira_url=cfg.get("jira_base_url"),
+        )
+
+    client = JiraClient(cfg, offline=args.offline, repo_root=repo_root)
+    jira_verification = {"mode": "live" if client.is_live else "offline", "verified": False}
+    resolved_accounts = {}
+    role_verifications = {}
+
+    if client.is_live:
+        try:
+            jira_verification = client.verify_connection()
+        except Exception as exc:
+            jira_verification = {"mode": "live", "verified": False, "warning": str(exc)}
+
+    # Verify per-role tokens (if any) and auto-resolve missing jira_account_id for roles
+    for r_key, r_entry in cfg.get("roles", {}).items():
+        if not isinstance(r_entry, dict):
+            continue
+        r_client = JiraClient(cfg, offline=args.offline, repo_root=repo_root, role=r_key)
+        r_email = (r_entry.get("email") or "").strip()
+        r_acct = (r_entry.get("jira_account_id") or "").strip()
+        if r_client.is_live and r_client.using_role_token:
+            try:
+                rv = r_client.verify_connection()
+                role_verifications[r_key] = rv
+                if not r_acct and rv.get("account_id"):
+                    r_entry["jira_account_id"] = rv["account_id"]
+                    r_acct = rv["account_id"]
+                    resolved_accounts[r_key] = r_acct
+            except Exception as exc:
+                role_verifications[r_key] = {"mode": "live", "verified": False, "warning": str(exc)}
+        if r_email and not r_acct:
+            lookup_client = r_client if r_client.is_live else client
+            if lookup_client.is_live:
+                try:
+                    found_acct = lookup_client.resolve_account_id_by_email(r_email)
+                    if found_acct:
+                        r_entry["jira_account_id"] = found_acct
+                        resolved_accounts[r_key] = found_acct
+                except Exception:
+                    pass
 
     cfg_path = get_config_path(repo_root)
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1122,15 +1612,23 @@ def cmd_init(args) -> int:
         shutil.copy2(src_script, cli_dst)
     cli_dst.chmod(0o755)
 
-    # Ensure .gitignore ignores .ai-workflow/active/
+    # Ensure .gitignore ignores .ai-workflow/active/, .ai-workflow/credentials.json, and .ai-workflow/.env
     gitignore_path = repo_root / ".gitignore"
-    ignore_entry = ".ai-workflow/active/"
+    required_ignores = [
+        (".ai-workflow/active/", (".ai-workflow/active/", ".ai-workflow/active")),
+        (".ai-workflow/credentials.json", (".ai-workflow/credentials.json",)),
+        (".ai-workflow/.env", (".ai-workflow/.env",)),
+    ]
     existing_gitignore = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
     lines = [ln.strip() for ln in existing_gitignore.splitlines()]
+    missing_ignores = [
+        canonical for canonical, aliases in required_ignores
+        if not any(a in lines for a in aliases)
+    ]
     gitignore_updated = False
-    if ignore_entry not in lines and ".ai-workflow/active" not in lines:
+    if missing_ignores:
         prefix = existing_gitignore.rstrip("\n")
-        new_content = (prefix + "\n" if prefix else "") + ignore_entry + "\n"
+        new_content = (prefix + "\n" if prefix else "") + "\n".join(missing_ignores) + "\n"
         gitignore_path.write_text(new_content, encoding="utf-8")
         gitignore_updated = True
 
@@ -1146,12 +1644,39 @@ def cmd_init(args) -> int:
         key = p["jira_account_id"] or p["email"] or p["name"]
         person_to_roles.setdefault(key, []).append(role_name)
 
+    final_creds = load_jira_credentials(repo_root)
+    final_role_creds = final_creds.get("role_credentials") if isinstance(final_creds.get("role_credentials"), dict) else {}
+    has_creds = bool(
+        (os.environ.get("JIRA_EMAIL") or final_creds.get("jira_email"))
+        and (os.environ.get("JIRA_API_TOKEN") or final_creds.get("jira_api_token"))
+    ) or any(
+        bool((v or {}).get("jira_email") and (v or {}).get("jira_api_token"))
+        for v in final_role_creds.values()
+    )
+    role_has_api_token = {}
+    for r_key in cfg["roles"]:
+        rc = final_role_creds.get(r_key) if isinstance(final_role_creds.get(r_key), dict) else {}
+        env_tok = os.environ.get(f"JIRA_API_TOKEN_{r_key.upper()}", "").strip()
+        role_has_api_token[r_key] = bool((rc.get("jira_api_token") or "").strip() or env_tok)
+
     result = {
         "ok": True,
         "action": "init",
         "config_path": str(cfg_path.relative_to(repo_root)),
         "cli_path": ".ai-workflow/bin/jira_sync.py",
         "project_key": cfg["project_key"],
+        "jira_base_url": cfg.get("jira_base_url", ""),
+        "jira_mode": "live" if client.is_live else "offline",
+        "credentials_configured": has_creds,
+        "credentials_path": (
+            str(cred_saved_path.relative_to(repo_root))
+            if cred_saved_path is not None
+            else (".ai-workflow/credentials.json" if get_credentials_path(repo_root).exists() else None)
+        ),
+        "role_has_api_token": role_has_api_token,
+        "jira_verification": jira_verification,
+        "role_verifications": role_verifications,
+        "auto_resolved_account_ids": resolved_accounts,
         "gitignore_updated": gitignore_updated,
         "standards": standards_result,
         "role_consolidation": person_to_roles,
@@ -1443,7 +1968,7 @@ def cmd_status(args) -> int:
 
     config = load_team_config(repo_root)
     active_dir = get_active_dir(repo_root)
-    client = JiraClient(config, offline=args.offline)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root)
 
     if args.key:
         jira_key = validate_jira_key(args.key)
@@ -1593,20 +2118,25 @@ def format_story_description(story: dict) -> str:
             lines.append(f"- {item}")
         lines.append("")
 
-    snapshot_str = json.dumps(story, ensure_ascii=False, separators=(",", ":"))
-    lines.append(f"{STATE_SNAPSHOT_MARKER} {snapshot_str}")
-
     return "\n".join(lines).strip()
 
 
 def cmd_sync_story(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
-    client = JiraClient(config, offline=args.offline)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="pm")
 
     jira_key = validate_jira_key(args.key)
     active_path = get_active_dir(repo_root) / f"{jira_key}.json"
-    story = json.loads(active_path.read_text(encoding="utf-8")) if active_path.exists() else {"jira_key": jira_key}
+    if active_path.exists():
+        story = json.loads(active_path.read_text(encoding="utf-8"))
+    else:
+        hydrated = None
+        if not args.create and not args.title and not args.spec_json:
+            hydrated = _hydrate_story_from_worktree(repo_root, jira_key)
+            if not hydrated and client.is_live:
+                hydrated = hydrate_story_from_remote(client, repo_root, jira_key)
+        story = hydrated if isinstance(hydrated, dict) else {"jira_key": jira_key}
     prior_status = story.get("spec_status")
     prior_acs = [dict(ac) for ac in (story.get("acceptance_criteria") or []) if isinstance(ac, dict) and ac.get("id")]
     prior_material_decisions = list(story.get("material_decisions") or [])
@@ -1742,8 +2272,8 @@ def cmd_sync_story(args) -> int:
 
     story["spec_status"] = status
     if status == "approved":
-        story["approved_by"] = args.approved_by or resolve_role_person(config, "pm")["name"]
-        story["approved_at"] = now_iso()
+        story["approved_by"] = args.approved_by or story.get("approved_by") or resolve_role_person(config, "pm")["name"]
+        story["approved_at"] = story.get("approved_at") or now_iso()
 
     desc_md = format_story_description(story)
     sync_res = client.update_or_create_story(
@@ -1757,7 +2287,7 @@ def cmd_sync_story(args) -> int:
         story["jira_key"] = jira_key
 
     handoff_info = None
-    if status == "approved":
+    if status == "approved" and (args.status == "approved" or prior_status != "approved"):
         handoff_info = execute_role_handoff(
             client=client,
             config=config,
@@ -1768,7 +2298,7 @@ def cmd_sync_story(args) -> int:
             comment_md=f"[Station 1: Spec Approved] 規格與設計已確認核准（共 {len(story.get('acceptance_criteria', []))} 項 AC），請進入 Station 2 (`team-dev`) 拆解與實作。",
         )
 
-    saved_path = save_active_story(repo_root, jira_key, story, client=client, sync_remote=bool(handoff_info))
+    saved_path = save_active_story(repo_root, jira_key, story, client=client, sync_remote=True)
     if active_path.exists() and active_path != saved_path:
         active_path.unlink()
     out = {
@@ -1813,7 +2343,7 @@ def has_dependency_cycle(tasks: list) -> bool:
 def cmd_create_subtasks(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
-    client = JiraClient(config, offline=args.offline)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="developer")
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -1941,7 +2471,7 @@ def cmd_create_subtasks(args) -> int:
 def cmd_complete_task(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
-    client = JiraClient(config, offline=args.offline)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="developer")
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -2064,6 +2594,7 @@ def cmd_complete_task(args) -> int:
         )
         comment_md = (
             f"[Task Completed: {target_id}]\n"
+            f"- **Completed By**: {format_role_badge(config, 'developer')}\n"
             f"- Commit: `{commit_sha}`\n"
             f"- Changed Files: {', '.join(changed_files) if changed_files else 'N/A'}\n"
             f"- Verification Evidence: {test_result}"
@@ -2113,14 +2644,14 @@ def cmd_complete_task(args) -> int:
 def cmd_handoff(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
-    client = JiraClient(config, offline=args.offline)
-    jira_key = validate_jira_key(args.key)
-    story = load_active_story(repo_root, jira_key, client=client)
-
     effective_rev_role, _, self_reviewed = resolve_effective_reviewer(config)
     from_role = args.from_role.strip() if args.from_role else effective_rev_role
     if from_role == "reviewer" and effective_rev_role == "independent_reviewer":
         from_role = "independent_reviewer"
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role=from_role)
+    jira_key = validate_jira_key(args.key)
+    story = load_active_story(repo_root, jira_key, client=client)
+
     to_role = args.to_role.strip()
     review_status = args.review_status or "approved"
     commit_sha = (args.commit or story.get("candidate_commit") or _detect_git_head_commit(repo_root) or "unknown").strip()
@@ -2190,6 +2721,7 @@ def cmd_handoff(args) -> int:
 
     comment_lines = [
         f"[Station 3a: Dev Handoff & Code Review — {review_status.upper()}]",
+        f"- **Reviewed By**: {format_role_badge(config, from_role)}",
         f"- Reviewed Commit: `{commit_sha}`",
         f"- Summary: {summary or 'All completed tasks, ACs, and engineering standards verified.'}",
     ]
@@ -2258,11 +2790,16 @@ def parse_junit_xml_results(xml_path: Path) -> dict:
 def cmd_record_qa(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
-    client = JiraClient(config, offline=args.offline)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="qa")
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
+    qa_person = resolve_role_person(config, "qa")
+    qa_badge = format_role_badge(config, "qa")
     qa = story.get("qa") or {"status": "planned", "test_cases": []}
+    qa["owner"] = qa_person["name"]
+    if qa_person.get("email"):
+        qa["owner_email"] = qa_person["email"]
 
     if args.mode == "plan":
         raw_cases = []
@@ -2345,12 +2882,26 @@ def cmd_record_qa(args) -> int:
 
         table_lines = [
             f"[Station 3b: QA Test Plan — {jira_key}]",
+            f"- **QA Owner**: {qa_badge}",
+            "",
             "| TC ID | AC ID | Type (AI Pre-filled) | Title |",
             "|---|---|---|---|",
         ]
         for c in normalized_cases:
             table_lines.append(f"| {c['id']} | {c['ac_id']} | {c['execution_type']} | {c['title']} |")
-        client.add_comment(jira_key, "\n".join(table_lines))
+        qa_acct_id = qa_person.get("jira_account_id") or ""
+        if qa_acct_id:
+            client.assign_issue(jira_key, qa_acct_id)
+        acting_as_qa_self = client.using_role_token or (
+            bool(client.email and qa_person.get("email"))
+            and client.email.strip().lower() == qa_person["email"].strip().lower()
+        )
+        client.add_comment(
+            jira_key,
+            "\n".join(table_lines),
+            mention_account_id=qa_acct_id if (qa_acct_id and not acting_as_qa_self) else "",
+            mention_name=qa_person.get("name") or "qa",
+        )
 
         saved_path = save_active_story(repo_root, jira_key, story, client=client)
         print(json.dumps({
@@ -2358,6 +2909,7 @@ def cmd_record_qa(args) -> int:
             "action": "record-qa",
             "mode": "plan",
             "jira_key": jira_key,
+            "qa_owner": qa_person["name"],
             "tc_count": len(normalized_cases),
             "active_file": str(saved_path.relative_to(repo_root)),
         }, ensure_ascii=False, indent=2))
@@ -2496,6 +3048,7 @@ def cmd_record_qa(args) -> int:
 
     table_lines = [
         f"[Station 3b: QA Verification Report — {qa_status.upper()}]",
+        f"- **QA Owner**: {qa_badge}",
         f"- Tested Commit: `{tested_commit}`",
         f"- Summary Counts: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}",
         f"- Execution Breakdown: automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}",
@@ -2526,6 +3079,7 @@ def cmd_record_qa(args) -> int:
         "action": "record-qa",
         "mode": "verify",
         "jira_key": jira_key,
+        "qa_owner": qa_person["name"],
         "qa_status": qa_status,
         "fast_track": fast_tracked_qa,
         "tested_commit": tested_commit,
@@ -2546,7 +3100,7 @@ def cmd_record_qa(args) -> int:
 def cmd_create_bug(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
-    client = JiraClient(config, offline=args.offline)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="qa")
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -2554,6 +3108,7 @@ def cmd_create_bug(args) -> int:
     bug_idx = len(bugs) + 1
     desc_md = (
         f"Linked Story: {jira_key}\n"
+        f"Reported By: {format_role_badge(config, 'qa')}\n"
         f"Failed Test Case: {args.tc_id}\n"
         f"Affected AC: {args.ac_id or 'N/A'}\n"
         f"Severity: {args.severity}\n"
@@ -2615,7 +3170,7 @@ def cmd_create_bug(args) -> int:
 def cmd_close_story(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
-    client = JiraClient(config, offline=args.offline)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="release_manager")
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -2682,6 +3237,7 @@ def cmd_close_story(args) -> int:
         qa_breakdown[et] = qa_breakdown.get(et, 0) + 1
     release_md = (
         f"[Station 4: Release & Closure — {version}]\n"
+        f"- **Released By**: {format_role_badge(config, 'release_manager')}\n"
         f"- Jira Story: `{jira_key}`\n"
         f"- Release Version / Tag: `{version}`\n"
         f"- Verified Commit: `{commit_sha}`\n"
@@ -2735,11 +3291,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="subcommand", required=True)
 
     # 1. init
-    p_init = sub.add_parser("init", help="Initialize .ai-workflow/team-config.json, .gitignore, and engineering-standards.md")
-    p_init.add_argument("--project-key", default="PROJ", help="Jira project key (e.g. PROJ)")
+    p_init = sub.add_parser("init", help="Initialize .ai-workflow/team-config.json, gitignored credentials.json, .gitignore, and engineering-standards.md")
+    p_init.add_argument("--inspect", action="store_true", help="Inspect current initialization state and return required user inquiry questions without modifying files")
+    p_init.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for Jira URL, project key, account email, API token, and role mappings")
+    p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")
     p_init.add_argument("--jira-url", default=None, help="Jira base URL (e.g. https://org.atlassian.net)")
-    p_init.add_argument("--roles-json", help="JSON string or file mapping roles to people")
+    p_init.add_argument("--jira-email", default=None, help="Jira account email (stored in gitignored .ai-workflow/credentials.json)")
+    p_init.add_argument("--jira-token", default=None, help="Jira API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
+    p_init.add_argument("--roles-json", help="JSON string or file mapping roles to people (optional api_token fields are extracted to credentials.json)")
+    p_init.add_argument("--role-tokens-json", help="JSON string or file mapping roles to Jira API tokens (stored in gitignored .ai-workflow/credentials.json)")
     p_init.add_argument("--status-mapping-json", help="JSON string or file mapping workflow states to Jira statuses")
+    p_init.add_argument("--issue-type-mapping-json", help="JSON string or file mapping story/subtask/bug to Jira issue types")
     p_init.add_argument("--agents-md", default="AGENTS.md", help="Relative path to AGENTS.md")
     p_init.add_argument("--standards-md", default="docs/shared/engineering-standards.md", help="Relative path to engineering-standards.md")
     p_init.set_defaults(func=cmd_init)
@@ -2846,6 +3408,16 @@ def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        src_script = Path(__file__).resolve()
+        repo_root = Path(args.repo_root).resolve()
+        local_bin = get_workflow_dir(repo_root) / "bin" / "jira_sync.py"
+        if local_bin.exists() and local_bin.resolve() != src_script:
+            try:
+                if local_bin.read_bytes() != src_script.read_bytes():
+                    shutil.copy2(src_script, local_bin)
+                    local_bin.chmod(0o755)
+            except Exception:
+                pass
         return args.func(args)
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
