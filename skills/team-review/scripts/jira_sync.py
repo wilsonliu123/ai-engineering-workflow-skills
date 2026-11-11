@@ -484,6 +484,7 @@ class JiraClient:
         self.email = resolved_email or default_email
         self.api_token = resolved_token or default_token
         self.using_role_token = bool(resolved_token)
+        self._explicit_offline = bool(offline)
         self.offline = offline or not (self.base_url and self.email and self.api_token)
 
     @property
@@ -542,6 +543,46 @@ class JiraClient:
             if isinstance(first, dict):
                 return str(first.get("accountId") or "").strip()
         return ""
+
+    def search_active_stories(self, project_key: str, bug_type_name: str = "Bug", max_results: int = 20) -> list:
+        """Discover non-Done parent Stories in Jira via POST /rest/api/3/search/jql (fallback /rest/api/3/search)."""
+        if not self.is_live or not (project_key or "").strip():
+            return []
+        proj = project_key.strip()
+        jql = f'project = "{proj}" AND statusCategory != Done AND issuetype not in subTaskIssueTypes() ORDER BY updated DESC'
+        payload = {
+            "jql": jql,
+            "maxResults": max_results,
+            "fields": ["summary", "status", "issuetype", "parent", "assignee"],
+        }
+        try:
+            res = self._request("POST", "/rest/api/3/search/jql", payload)
+        except RuntimeError as exc:
+            if "HTTP 404" in str(exc):
+                res = self._request("POST", "/rest/api/3/search", payload)
+            else:
+                raise
+        issues = (res or {}).get("issues") if isinstance(res, dict) else []
+        if not isinstance(issues, list):
+            return []
+        excluded_types = {"sub-task", "subtask", "子任務", (bug_type_name or "bug").strip().lower(), "epic"}
+        found_keys = []
+        for iss in issues:
+            if not isinstance(iss, dict):
+                continue
+            key = (iss.get("key") or "").strip().upper()
+            if not key:
+                continue
+            fields = iss.get("fields") or {}
+            itype = fields.get("issuetype") or {}
+            if itype.get("subtask") is True:
+                continue
+            itype_name = (itype.get("name") or "").strip().lower()
+            if itype_name in excluded_types:
+                continue
+            if key not in found_keys:
+                found_keys.append(key)
+        return found_keys
 
     @staticmethod
     def text_to_adf(text: str, mention_account_id: str = "", mention_name: str = "") -> dict:
@@ -1733,8 +1774,208 @@ def _prompt_interactive_init(cfg: dict, local_creds: dict) -> tuple:
     return jira_email, jira_token, interactive_role_creds
 
 
+def ensure_live_or_explicit_offline(client: JiraClient, config: dict, offline_flag: bool) -> bool:
+    """Block silent offline fallback when team-config.json has jira_base_url but local credentials are missing."""
+    base_url = (config.get("jira_base_url") or "").strip()
+    if base_url and not offline_flag and not client.is_live:
+        print(
+            f"ERROR: Project is configured for live Jira ({base_url}), but local Jira credentials are missing "
+            f"(.ai-workflow/credentials.json is gitignored per collaborator machine). "
+            f"Run 'jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN>' to bind your personal credentials, "
+            f"or pass --offline explicitly.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _ensure_gitignore_entries(repo_root: Path) -> bool:
+    """Ensure .gitignore ignores .ai-workflow/active/, .ai-workflow/credentials.json, and .ai-workflow/.env."""
+    gitignore_path = repo_root / ".gitignore"
+    required_ignores = [
+        (".ai-workflow/active/", (".ai-workflow/active/", ".ai-workflow/active")),
+        (".ai-workflow/credentials.json", (".ai-workflow/credentials.json",)),
+        (".ai-workflow/.env", (".ai-workflow/.env",)),
+    ]
+    existing_gitignore = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
+    lines = [ln.strip() for ln in existing_gitignore.splitlines()]
+    missing_ignores = [
+        canonical for canonical, aliases in required_ignores
+        if not any(a in lines for a in aliases)
+    ]
+    if missing_ignores:
+        prefix = existing_gitignore.rstrip("\n")
+        new_content = (prefix + "\n" if prefix else "") + "\n".join(missing_ignores) + "\n"
+        gitignore_path.write_text(new_content, encoding="utf-8")
+        return True
+    return False
+
+
+def cmd_auth(args) -> int:
+    """Bind personal Jira (and optional Qase) credentials to local gitignored .ai-workflow/credentials.json without modifying team-config.json."""
+    repo_root = Path(args.repo_root).resolve()
+    cfg_path = get_config_path(repo_root)
+    if not cfg_path.exists():
+        print(
+            "ERROR: .ai-workflow/team-config.json does not exist yet. Run 'jira_sync.py init' first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = load_team_config(repo_root)
+    creds = load_jira_credentials(repo_root)
+    role_creds = creds.get("role_credentials") if isinstance(creds.get("role_credentials"), dict) else {}
+    qa_backend = (config.get("qa_test_backend") or "").strip().lower()
+    qase_token_configured = bool((os.environ.get("QASE_API_TOKEN") or creds.get("qase_api_token") or "").strip())
+    has_creds = bool(
+        (os.environ.get("JIRA_EMAIL") or creds.get("jira_email"))
+        and (os.environ.get("JIRA_API_TOKEN") or creds.get("jira_api_token"))
+    ) or any(
+        bool((v or {}).get("jira_email") and (v or {}).get("jira_api_token"))
+        for v in role_creds.values()
+    )
+
+    if getattr(args, "inspect", False):
+        roles_summary = {}
+        for r_key, r_val in (config.get("roles") or {}).items():
+            p = resolve_role_person(config, r_key)
+            rc = role_creds.get(r_key) if isinstance(role_creds.get(r_key), dict) else {}
+            roles_summary[r_key] = {
+                "name": p["name"],
+                "email": p["email"],
+                "jira_account_id": p["jira_account_id"],
+                "has_local_token": bool((rc.get("jira_api_token") or "").strip()),
+            }
+        print(json.dumps({
+            "ok": True,
+            "action": "auth-inspect",
+            "project_key": config.get("project_key", ""),
+            "jira_base_url": config.get("jira_base_url", ""),
+            "credentials_configured": has_creds,
+            "qa_test_backend": qa_backend,
+            "qase_required": qa_backend == "qase",
+            "qase_project_code": (config.get("qase") or {}).get("project_code", ""),
+            "qase_token_configured": qase_token_configured,
+            "roles": roles_summary,
+            "agent_instruction": (
+                "Ask this collaborator for their personal Jira account Email and Jira API Token "
+                "(plus Qase API Token if they act as QA and qase_required is true), then run "
+                "`jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN> [--qase-token <QASE_TOKEN>]`."
+            ),
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    jira_email = getattr(args, "jira_email", None)
+    jira_token = getattr(args, "jira_token", None)
+    qase_token = getattr(args, "qase_token", None)
+
+    if getattr(args, "interactive", False):
+        print("=== Collaborator Local Credential Binding (.ai-workflow/credentials.json) ===", file=sys.stderr)
+        if not jira_email:
+            print("Jira Account Email: ", end="", file=sys.stderr, flush=True)
+            jira_email = sys.stdin.readline().strip()
+        if not jira_token:
+            if sys.stdin.isatty():
+                jira_token = getpass.getpass("Jira API Token (hidden): ", stream=sys.stderr).strip()
+            else:
+                print("Jira API Token: ", end="", file=sys.stderr, flush=True)
+                jira_token = sys.stdin.readline().strip()
+        if qa_backend == "qase" and not qase_token:
+            if sys.stdin.isatty():
+                qase_token = getpass.getpass("Qase API Token (optional unless QA, hidden): ", stream=sys.stderr).strip()
+            else:
+                print("Qase API Token (optional): ", end="", file=sys.stderr, flush=True)
+                qase_token = sys.stdin.readline().strip()
+
+    role_tokens_to_save = {}
+    if getattr(args, "role_tokens_json", None):
+        raw_rt = load_json_arg(args.role_tokens_json)
+        if isinstance(raw_rt, dict):
+            for rk, rv in raw_rt.items():
+                if isinstance(rv, str) and rv.strip():
+                    rp = resolve_role_person(config, rk)
+                    role_tokens_to_save[rk] = {"jira_email": rp.get("email") or (jira_email or ""), "jira_api_token": rv.strip()}
+                elif isinstance(rv, dict) and rv.get("jira_api_token"):
+                    rp = resolve_role_person(config, rk)
+                    role_tokens_to_save[rk] = {
+                        "jira_email": (rv.get("jira_email") or rp.get("email") or jira_email or "").strip(),
+                        "jira_api_token": str(rv["jira_api_token"]).strip(),
+                    }
+
+    if not ((jira_email and jira_token) or role_tokens_to_save or qase_token):
+        print(
+            "ERROR: Provide --jira-email <EMAIL> and --jira-token <TOKEN> (or --qase-token / --interactive).",
+            file=sys.stderr,
+        )
+        return 1
+
+    jira_verification = {"mode": "offline", "verified": False}
+    base_url = (config.get("jira_base_url") or "").strip()
+    if jira_email and jira_token and base_url and not args.offline:
+        probe_cfg = dict(config)
+        probe_client = JiraClient(probe_cfg, offline=True, repo_root=None)
+        probe_client.base_url = base_url.rstrip("/")
+        probe_client.email = jira_email.strip()
+        probe_client.api_token = jira_token.strip()
+        probe_client._explicit_offline = False
+        probe_client.offline = False
+        try:
+            jira_verification = probe_client.verify_connection()
+        except Exception as exc:
+            print(f"ERROR: Jira credential verification failed: {exc}", file=sys.stderr)
+            return 1
+
+    matched_roles = []
+    explicit_role = (getattr(args, "role", None) or "").strip()
+    if explicit_role and jira_email and jira_token:
+        role_tokens_to_save[explicit_role] = {
+            "jira_email": jira_email.strip(),
+            "jira_api_token": jira_token.strip(),
+        }
+        matched_roles.append(explicit_role)
+
+    if jira_email and jira_token:
+        norm_em = jira_email.strip().lower()
+        for r_key in (config.get("roles") or {}):
+            rp = resolve_role_person(config, r_key)
+            if (rp.get("email") or "").strip().lower() == norm_em:
+                role_tokens_to_save.setdefault(r_key, {
+                    "jira_email": jira_email.strip(),
+                    "jira_api_token": jira_token.strip(),
+                })
+                if r_key not in matched_roles:
+                    matched_roles.append(r_key)
+
+    saved_cred_path = save_jira_credentials(
+        repo_root,
+        jira_url=base_url or None,
+        jira_email=jira_email,
+        jira_token=jira_token,
+        role_credentials=role_tokens_to_save or None,
+        qase_token=qase_token,
+    )
+    gitignore_updated = _ensure_gitignore_entries(repo_root)
+
+    print(json.dumps({
+        "ok": True,
+        "action": "auth",
+        "project_key": config.get("project_key", ""),
+        "jira_base_url": base_url,
+        "credentials_path": str(saved_cred_path.relative_to(repo_root)),
+        "matched_roles": matched_roles,
+        "qase_token_saved": bool(qase_token),
+        "jira_verification": jira_verification,
+        "gitignore_updated": gitignore_updated,
+        "team_config_modified": False,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_init(args) -> int:
     repo_root = Path(args.repo_root).resolve()
+
+    if getattr(args, "auth_only", False):
+        return cmd_auth(args)
 
     if getattr(args, "inspect", False):
         print(json.dumps(_inspect_init_state(repo_root), ensure_ascii=False, indent=2))
@@ -1908,24 +2149,7 @@ def cmd_init(args) -> int:
     cli_dst.chmod(0o755)
 
     # Ensure .gitignore ignores .ai-workflow/active/, .ai-workflow/credentials.json, and .ai-workflow/.env
-    gitignore_path = repo_root / ".gitignore"
-    required_ignores = [
-        (".ai-workflow/active/", (".ai-workflow/active/", ".ai-workflow/active")),
-        (".ai-workflow/credentials.json", (".ai-workflow/credentials.json",)),
-        (".ai-workflow/.env", (".ai-workflow/.env",)),
-    ]
-    existing_gitignore = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
-    lines = [ln.strip() for ln in existing_gitignore.splitlines()]
-    missing_ignores = [
-        canonical for canonical, aliases in required_ignores
-        if not any(a in lines for a in aliases)
-    ]
-    gitignore_updated = False
-    if missing_ignores:
-        prefix = existing_gitignore.rstrip("\n")
-        new_content = (prefix + "\n" if prefix else "") + "\n".join(missing_ignores) + "\n"
-        gitignore_path.write_text(new_content, encoding="utf-8")
-        gitignore_updated = True
+    gitignore_updated = _ensure_gitignore_entries(repo_root)
 
     # Extract docs/shared/engineering-standards.md from AGENTS.md and deduplicate AGENTS.md
     agents_path = repo_root / args.agents_md
@@ -2270,6 +2494,8 @@ def cmd_status(args) -> int:
     config = load_team_config(repo_root)
     active_dir = get_active_dir(repo_root)
     client = JiraClient(config, offline=args.offline, repo_root=repo_root)
+    base_url = (config.get("jira_base_url") or "").strip()
+    creds_missing = bool(base_url and not args.offline and not client.is_live)
 
     if args.key:
         jira_key = validate_jira_key(args.key)
@@ -2293,6 +2519,25 @@ def cmd_status(args) -> int:
                     hydrated_source = "jira"
 
         if not target_file.exists():
+            if creds_missing:
+                out = {
+                    "initialized": True,
+                    "standards_exists": standards_exists,
+                    "jira_key": jira_key,
+                    "story_found": False,
+                    "credentials_missing": True,
+                    "requires_member_auth": True,
+                    "recommended_skill": "team-init",
+                    "recommended_mode": "auth",
+                    "reason": (
+                        f"Project is configured for live Jira ({base_url}), but local `.ai-workflow/credentials.json` is missing on this machine "
+                        f"(cannot fetch remote Story {jira_key})."
+                    ),
+                    "done_when": "Collaborator binds personal Jira credentials via `jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN>`.",
+                }
+                print(json.dumps(out, ensure_ascii=False, indent=2))
+                return 0
+
             owner = resolve_role_person(config, "pm")
             out = {
                 "initialized": True,
@@ -2315,6 +2560,8 @@ def cmd_status(args) -> int:
         rec["initialized"] = True
         rec["standards_exists"] = standards_exists
         rec["story_found"] = True
+        if creds_missing:
+            rec["credentials_missing"] = True
         if hydrated_source:
             rec["hydrated_from"] = hydrated_source
         if remote_issue is not None:
@@ -2323,12 +2570,50 @@ def cmd_status(args) -> int:
         return 0
 
     active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+    hydrated_from_source = None
+    discovered_from_jira = []
     if not active_files:
         main_root = _resolve_main_worktree_root(repo_root)
         if main_root and get_active_dir(main_root).exists():
             for mf in sorted(get_active_dir(main_root).glob("*.json")):
                 _hydrate_story_from_worktree(repo_root, mf.stem)
             active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            if active_files:
+                hydrated_from_source = "worktree"
+
+    if not active_files and creds_missing:
+        qa_backend_val = (config.get("qa_test_backend") or "").strip().lower()
+        out = {
+            "initialized": True,
+            "standards_exists": standards_exists,
+            "active_stories": [],
+            "credentials_missing": True,
+            "requires_member_auth": True,
+            "qase_required": qa_backend_val == "qase",
+            "recommended_skill": "team-init",
+            "recommended_mode": "auth",
+            "reason": (
+                f"Repository is already initialized for live Jira ({base_url}), "
+                f"but `.ai-workflow/credentials.json` is gitignored and not yet configured on this machine."
+            ),
+            "done_when": "Personal Jira API token (and Qase token if QA) is bound locally via `jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN>`.",
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    if not active_files and client.is_live:
+        bug_type = (config.get("issue_type_mapping") or {}).get("bug", "Bug")
+        try:
+            remote_keys = client.search_active_stories(config.get("project_key", ""), bug_type_name=bug_type)
+        except Exception:
+            remote_keys = []
+        for rk in remote_keys:
+            rem_st = hydrate_story_from_remote(client, repo_root, rk)
+            if rem_st is not None:
+                discovered_from_jira.append(rk)
+        if discovered_from_jira:
+            active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            hydrated_from_source = "jira"
 
     if not active_files:
         owner = resolve_role_person(config, "pm")
@@ -2356,6 +2641,10 @@ def cmd_status(args) -> int:
             "recommended_skill": None,
             "reason": f"Multiple active stories found ({', '.join(keys)}). Ask the user which Jira Story key to route.",
         }
+        if creds_missing:
+            out["credentials_missing"] = True
+        if discovered_from_jira:
+            out["discovered_from_jira"] = discovered_from_jira
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
 
@@ -2364,6 +2653,12 @@ def cmd_status(args) -> int:
     rec["initialized"] = True
     rec["standards_exists"] = standards_exists
     rec["story_found"] = True
+    if creds_missing:
+        rec["credentials_missing"] = True
+    if hydrated_from_source:
+        rec["hydrated_from"] = hydrated_from_source
+    if discovered_from_jira:
+        rec["discovered_from_jira"] = discovered_from_jira
     print(json.dumps(rec, ensure_ascii=False, indent=2))
     return 0
 
@@ -2426,6 +2721,8 @@ def cmd_sync_story(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="pm")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
 
     jira_key = validate_jira_key(args.key)
     active_path = get_active_dir(repo_root) / f"{jira_key}.json"
@@ -2645,6 +2942,8 @@ def cmd_create_subtasks(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="developer")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -2773,6 +3072,8 @@ def cmd_complete_task(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="developer")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -2950,6 +3251,8 @@ def cmd_handoff(args) -> int:
     if from_role == "reviewer" and effective_rev_role == "independent_reviewer":
         from_role = "independent_reviewer"
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role=from_role)
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -3136,6 +3439,10 @@ def cmd_record_qa(args) -> int:
         print("ERROR: --key and --mode {plan,verify} are required unless --inspect is set.", file=sys.stderr)
         return 1
 
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="qa")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
+
     # Apply any explicit QA backend / Qase configuration updates (validating Qase credentials before persisting)
     config_dirty = False
     if getattr(args, "qa_backend", None):
@@ -3172,7 +3479,6 @@ def cmd_record_qa(args) -> int:
     if config_dirty and get_config_path(repo_root).exists():
         get_config_path(repo_root).write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="qa")
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -3534,6 +3840,8 @@ def cmd_create_bug(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="qa")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -3604,6 +3912,8 @@ def cmd_close_story(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="release_manager")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
     jira_key = validate_jira_key(args.key)
     story = load_active_story(repo_root, jira_key, client=client)
 
@@ -3726,6 +4036,8 @@ def build_parser() -> argparse.ArgumentParser:
     # 1. init
     p_init = sub.add_parser("init", help="Initialize .ai-workflow/team-config.json, gitignored credentials.json, .gitignore, and engineering-standards.md")
     p_init.add_argument("--inspect", action="store_true", help="Inspect current initialization state and return required user inquiry questions without modifying files")
+    p_init.add_argument("--auth-only", action="store_true", help="Collaborator mode: bind only local gitignored credentials.json without modifying team-config.json")
+    p_init.add_argument("--role", help="Optional role key when using --auth-only")
     p_init.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for Jira URL, project key, account email, API token, and role mappings")
     p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")
     p_init.add_argument("--jira-url", default=None, help="Jira base URL (e.g. https://org.atlassian.net)")
@@ -3744,6 +4056,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--agents-md", default="AGENTS.md", help="Relative path to AGENTS.md")
     p_init.add_argument("--standards-md", default="docs/shared/engineering-standards.md", help="Relative path to engineering-standards.md")
     p_init.set_defaults(func=cmd_init)
+
+    # 1b. auth (collaborator personal credential onboarding after git clone)
+    p_auth = sub.add_parser("auth", help="Bind personal Jira/Qase API tokens into local gitignored .ai-workflow/credentials.json without modifying team-config.json")
+    p_auth.add_argument("--inspect", action="store_true", help="Inspect collaborator credential readiness and configured team roles")
+    p_auth.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for personal Jira Email, Jira API Token, and optional Qase API Token")
+    p_auth.add_argument("--jira-email", default=None, help="Personal Jira account email")
+    p_auth.add_argument("--jira-token", default=None, help="Personal Jira API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
+    p_auth.add_argument("--role", default=None, help="Optional explicit role name to bind token to (auto-matched by email if omitted)")
+    p_auth.add_argument("--role-tokens-json", default=None, help="Optional JSON mapping role names to Jira API tokens")
+    p_auth.add_argument("--qase-token", default=None, help="Optional Qase API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
+    p_auth.set_defaults(func=cmd_auth)
 
     # 2. status
     p_status = sub.add_parser("status", help="Inspect active workflow state and recommend the next station/role")

@@ -13,7 +13,8 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 
 ## When to Use
 
-- Onboarding a new or existing repository to the `ai-engineering-workflow` skill suite.
+- Onboarding a new or existing repository to the `ai-engineering-workflow` skill suite (`init` mode).
+- **Collaborator Auth Mode (`auth` mode):** When a teammate has just `git clone`d an already-initialized repository (`.ai-workflow/team-config.json` exists with `jira_base_url`, while `.ai-workflow/credentials.json` is gitignored and missing on their machine), or when `$team-next-step` returns `requires_member_auth: true`.
 - `team-next-step` or any station skill reports that `.ai-workflow/team-config.json` is missing.
 - Configuring or updating the Jira project URL (`jira_base_url`), Jira account email (`JIRA_EMAIL`), or API token (`JIRA_API_TOKEN`).
 - Adding, changing, or consolidating team members and their accounts across roles (`pm`, `tech_lead`, `developer`, `reviewer`, `qa`, `release_manager`).
@@ -40,6 +41,19 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 - **Only One Command to Remember (`$team-next-step`):** Remind the user that after initialization, they only ever need `$team-next-step` (or natural language `"下一步"`) to navigate the entire 4-station lifecycle.
 
 ## Workflow
+
+### Fast Path for Collaborators Cloning an Existing Repo (`auth` Mode)
+When `.ai-workflow/team-config.json` **already exists** with a configured `jira_base_url` and the collaborator simply needs to bind their own local `.ai-workflow/credentials.json` (for example, `status` reported `requires_member_auth: true`):
+1. Run `python3 .ai-workflow/bin/jira_sync.py --repo-root . auth --inspect` to view the configured project key, Jira URL, roles, and whether `qase_required` is `true`.
+2. **STOP and ask the collaborator** only for their **personal Jira Email & Jira API Token** (plus **Qase API Token** if they act as QA and `qase_required` is `true`). Do **NOT** re-ask the full 6-role project setup.
+3. Run:
+   ```bash
+   python3 .ai-workflow/bin/jira_sync.py --repo-root . auth \
+     --jira-email "<COLLABORATOR_EMAIL>" \
+     --jira-token "<COLLABORATOR_JIRA_API_TOKEN>" \
+     [--qase-token "<QASE_API_TOKEN>"]
+   ```
+   `auth` verifies `/rest/api/3/myself`, auto-matches any role(s) in `team-config.json` sharing that email into `role_credentials`, writes gitignored `.ai-workflow/credentials.json` (`0600`), and leaves `team-config.json` **100% untouched** (`git status` stays clean). Then immediately run `status` (`$team-next-step`) to auto-discover active Jira Stories!
 
 ### Step 1: Inspect existing repository state (`init --inspect`)
 1. Run pre-init inspection to check whether `.ai-workflow/team-config.json`, `.ai-workflow/credentials.json`, `AGENTS.md`, `docs/shared/engineering-standards.md`, and `.gitignore` exist:

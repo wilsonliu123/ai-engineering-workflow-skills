@@ -84,7 +84,9 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                     decoded_auth = base64.b64decode(auth_hdr.split(" ", 1)[1]).decode("utf-8")
                 except Exception:
                     decoded_auth = ""
-            if decoded_auth.startswith("carol@team.io:"):
+            if decoded_auth.endswith(":invalid-token"):
+                self._send_json(401, {"errorMessages": ["Client must be authenticated to access this resource."]})
+            elif decoded_auth.startswith("carol@team.io:"):
                 self._send_json(200, {
                     "accountId": "acc-carol-from-token",
                     "displayName": "Carol Wu",
@@ -136,23 +138,58 @@ class MockJiraHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         data = self._read_json()
         self.requests_log.append(("POST", self.path, data, dict(self.headers)))
+        if self.path == "/rest/api/3/search/jql":
+            jql = data.get("jql") or ""
+            issues = []
+            for k, iss in self.stored_issues.items():
+                st_name = (((iss.get("fields") or {}).get("status") or {}).get("name") or "").lower()
+                if "statuscategory != done" in jql.lower() and st_name == "done":
+                    continue
+                issues.append(iss)
+            self._send_json(200, {"issues": issues})
+            return
         if self.path == "/rest/api/3/issue":
             fields = data.get("fields") or {}
+            proj_key = (fields.get("project") or {}).get("key") or "PROJ"
             itype = (fields.get("issuetype") or {}).get("name", "")
             if itype in self.reject_subtask_types:
                 self._send_json(400, {"errorMessages": [f"Issue type '{itype}' invalid"]})
                 return
             if itype in ("Sub-task", "Subtask", "子任務"):
-                self._send_json(201, {"key": "PROJ-102"})
+                sub_key = f"{proj_key}-102"
+                self.stored_issues[sub_key] = {
+                    "key": sub_key,
+                    "fields": {
+                        "summary": fields.get("summary") or sub_key,
+                        "issuetype": {"name": itype, "subtask": True},
+                        "status": {"name": "To Do"},
+                    },
+                }
+                self._send_json(201, {"key": sub_key})
             elif itype == "Bug":
-                self._send_json(201, {"key": "PROJ-999"})
+                bug_key = f"{proj_key}-999"
+                self.stored_issues[bug_key] = {
+                    "key": bug_key,
+                    "fields": {
+                        "summary": fields.get("summary") or bug_key,
+                        "issuetype": {"name": "Bug", "subtask": False},
+                        "status": {"name": "To Do"},
+                    },
+                }
+                self._send_json(201, {"key": bug_key})
             else:
-                key = "PROJ-404" if "404" in (fields.get("summary") or "") else "PROJ-101"
+                if "404" in (fields.get("summary") or ""):
+                    key = f"{proj_key}-404"
+                elif proj_key != "PROJ":
+                    key = f"{proj_key}-1"
+                else:
+                    key = "PROJ-101"
                 self.stored_issues[key] = {
                     "key": key,
                     "fields": {
                         "summary": fields.get("summary") or key,
                         "description": fields.get("description"),
+                        "issuetype": {"name": itype or "Story", "subtask": False},
                         "status": {"name": "In Progress"},
                     },
                 }
@@ -1699,6 +1736,149 @@ class WorkflowTestSuite(unittest.TestCase):
             jira_srv.server_close()
             qase_srv.shutdown()
             qase_srv.server_close()
+
+    def test_12_collaborator_git_clone_auth_onboarding_and_remote_jql_discovery(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp_alice, tempfile.TemporaryDirectory() as tmp_carol:
+                alice_root = Path(tmp_alice)
+                carol_root = Path(tmp_carol)
+
+                roles_input = {
+                    "pm": {"name": "Alice", "email": "alice@team.io"},
+                    "tech_lead": {"name": "Alice", "email": "alice@team.io"},
+                    "developer": {"name": "Bob", "email": "bob@team.io", "api_token": "dev-token-bob"},
+                    "reviewer": {"name": "Alice", "email": "alice@team.io"},
+                    "qa": {"name": "Carol", "email": "carol@team.io", "api_token": "qa-token-carol"},
+                    "release_manager": {"name": "Alice", "email": "alice@team.io"},
+                }
+                # Machine A (Alice): initializes project AP with Qase backend & creates Story AP-1 + Sub-task AP-102
+                init_a = run_cli(
+                    alice_root, "init",
+                    "--project-key", "AP",
+                    "--jira-url", f"http://127.0.0.1:{jira_port}",
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "alice-tok-111",
+                    "--qa-backend", "qase",
+                    "--qase-project-code", "AP",
+                    "--qase-token", "qase-secret-123",
+                    "--roles-json", json.dumps(roles_input),
+                )
+                self.assertEqual(init_a.returncode, 0, init_a.stderr)
+
+                s_a = run_cli(
+                    alice_root, "sync-story",
+                    "--key", "AP-1",
+                    "--title", "Multi-Collaborator Story",
+                    "--ac", "AC-001:Shared via Jira property",
+                    "--status", "approved",
+                    "--create",
+                )
+                self.assertEqual(s_a.returncode, 0, s_a.stderr)
+                sub_a = run_cli(
+                    alice_root, "create-subtasks",
+                    "--key", "AP-1",
+                    "--task", "TASK-001:Implement feature:AC-001:pytest",
+                )
+                self.assertEqual(sub_a.returncode, 0, sub_a.stderr)
+
+                # Simulate `git push` -> `git clone` to Machine B (Carol):
+                # Copy ONLY Git-tracked files (.ai-workflow/team-config.json, .gitignore, docs/shared/engineering-standards.md)
+                # Do NOT copy .ai-workflow/credentials.json or .ai-workflow/active/!
+                (carol_root / ".ai-workflow").mkdir(parents=True, exist_ok=True)
+                cfg_bytes = (alice_root / ".ai-workflow/team-config.json").read_bytes()
+                (carol_root / ".ai-workflow/team-config.json").write_bytes(cfg_bytes)
+                (carol_root / ".gitignore").write_bytes((alice_root / ".gitignore").read_bytes())
+                (carol_root / "docs/shared").mkdir(parents=True, exist_ok=True)
+                (carol_root / "docs/shared/engineering-standards.md").write_bytes(
+                    (alice_root / "docs/shared/engineering-standards.md").read_bytes()
+                )
+                self.assertFalse((carol_root / ".ai-workflow/credentials.json").exists())
+                self.assertFalse((carol_root / ".ai-workflow/active").exists())
+
+                # S1a: Carol runs `status` without --key and without credentials -> must report requires_member_auth!
+                st_no_cred = run_cli(carol_root, "status")
+                self.assertEqual(st_no_cred.returncode, 0, st_no_cred.stderr)
+                st_nc_out = json.loads(st_no_cred.stdout)
+                self.assertTrue(st_nc_out["initialized"])
+                self.assertTrue(st_nc_out["credentials_missing"])
+                self.assertTrue(st_nc_out["requires_member_auth"])
+                self.assertEqual(st_nc_out["recommended_skill"], "team-init")
+                self.assertEqual(st_nc_out["recommended_mode"], "auth")
+
+                # S1b: Carol attempts a mutating command (`record-qa` or `complete-task`) without credentials -> MUST fail closed!
+                mut_no_cred = run_cli(
+                    carol_root, "record-qa",
+                    "--key", "AP-1",
+                    "--mode", "plan",
+                    "--tc", "TC-001:AC-001:automated:Should fail closed without credentials",
+                )
+                self.assertNotEqual(mut_no_cred.returncode, 0)
+                self.assertIn("auth", mut_no_cred.stderr.lower())
+
+                # S4: Explicit --offline flag is still allowed if Carol explicitly chooses offline mode
+                st_offline = run_cli(carol_root, "--offline", "status")
+                self.assertEqual(st_offline.returncode, 0, st_offline.stderr)
+                self.assertFalse(json.loads(st_offline.stdout).get("requires_member_auth", False))
+
+                # S2a: `auth --inspect` shows configured roles & missing local token state
+                auth_insp = run_cli(carol_root, "auth", "--inspect")
+                self.assertEqual(auth_insp.returncode, 0, auth_insp.stderr)
+                ai_out = json.loads(auth_insp.stdout)
+                self.assertFalse(ai_out["credentials_configured"])
+                self.assertTrue(ai_out["qase_required"])
+
+                # S2b: Invalid Jira token fails closed without writing credentials.json
+                bad_auth = run_cli(
+                    carol_root, "auth",
+                    "--jira-email", "carol@team.io",
+                    "--jira-token", "invalid-token",
+                )
+                self.assertNotEqual(bad_auth.returncode, 0)
+                self.assertFalse((carol_root / ".ai-workflow/credentials.json").exists())
+
+                # S2c: Valid `auth` binds Carol's Jira token (auto-matching `qa` role!) and Qase token WITHOUT touching team-config.json!
+                good_auth = run_cli(
+                    carol_root, "auth",
+                    "--jira-email", "carol@team.io",
+                    "--jira-token", "qa-token-carol",
+                    "--qase-token", "qase-secret-123",
+                )
+                self.assertEqual(good_auth.returncode, 0, good_auth.stderr)
+                ga_out = json.loads(good_auth.stdout)
+                self.assertTrue(ga_out["ok"])
+                self.assertIn("qa", ga_out["matched_roles"])
+                # Verify team-config.json is byte-for-byte untouched!
+                self.assertEqual((carol_root / ".ai-workflow/team-config.json").read_bytes(), cfg_bytes)
+                carol_cred = json.loads((carol_root / ".ai-workflow/credentials.json").read_text(encoding="utf-8"))
+                self.assertEqual(carol_cred["jira_email"], "carol@team.io")
+                self.assertEqual(carol_cred["role_credentials"]["qa"]["jira_api_token"], "qa-token-carol")
+                self.assertEqual(carol_cred["qase_api_token"], "qase-secret-123")
+
+                # S3: Now Carol runs `status` (WITHOUT --key!) with empty .ai-workflow/active/ ->
+                # Must automatically query POST /rest/api/3/search/jql, ignore Sub-task AP-102, hydrate AP-1.json, and route!
+                st_live = run_cli(carol_root, "status")
+                self.assertEqual(st_live.returncode, 0, st_live.stderr)
+                sl_out = json.loads(st_live.stdout)
+                self.assertTrue(sl_out["story_found"])
+                self.assertEqual(sl_out["jira_key"], "AP-1")
+                self.assertEqual(sl_out.get("hydrated_from"), "jira")
+                self.assertEqual(sl_out.get("discovered_from_jira"), ["AP-1"])
+                self.assertEqual(sl_out["recommended_skill"], "team-dev")
+                self.assertEqual(sl_out["recommended_mode"], "implement")
+                self.assertTrue((carol_root / ".ai-workflow/active/AP-1.json").exists())
+                self.assertFalse((carol_root / ".ai-workflow/active/AP-102.json").exists())
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
 
 
 if __name__ == "__main__":
