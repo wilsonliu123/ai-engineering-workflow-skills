@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../skills" || exit 2
 rc=0
-EXPECTED_SKILLS=7
+EXPECTED_SKILLS=8
 
 for f in scripts/jira_sync.py references/common-workflow-governance.md; do
   files=(*/$f)

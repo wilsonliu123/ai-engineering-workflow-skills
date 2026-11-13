@@ -75,8 +75,14 @@ Whenever creating or updating `docs/manuals/<manual-name>/<manual-name>.html`, e
      2. **視覺焦點 (Visual Focus):** Which region or callout badge (`① ② ③`) to inspect first.
      3. **狀態變化 (State Delta):** What changed compared with the prior state.
 
-3. **Pillar 3 — Structured Architecture & Lifecycle Diagrams:**
-   - Include system architecture and core resource lifecycle state-machine visuals under `./diagrams/` (using `drawio-skill` `.drawio` + 2x `.png` if available in the environment, or clean high-contrast inline `<svg>` / `.png`).
+3. **Pillar 3 — Decision-Useful Architecture & Lifecycle Diagrams:**
+   - Create or update diagrams only when the Story adds or changes a documented boundary, API/data flow, resource state, or user decision. Otherwise keep the existing asset and record the diagram decision as `unchanged`; do not redraw it for a minor enhancement.
+   - For a greenfield or major feature, include one architecture diagram and one lifecycle diagram when those concepts exist. Backend/API-only work may omit the lifecycle diagram when no stateful resource is exposed.
+   - **Architecture check:** show the real runtime boundaries (for example UI, API, domain/service, store, external system); use one arrow per call direction; label the operation or response; make reads, writes, and returned data distinguishable.
+   - **Lifecycle check:** show the initial state and terminal states; give every edge an event/guard and, where permissions matter, the actor; draw FIFO or other ordering rules on the transition that uses them. Separate cancellation edges from promotion/normal-flow edges.
+   - Keep connectors orthogonal and non-crossing where possible. Do not use a shared unlabeled rail or one arrowhead that appears to originate from multiple states. Validate node names and transitions against the current code and state fields.
+   - Prefer an editable `.drawio` source when `drawio-skill` is available, with a single PNG/SVG export referenced by the HTML. If no diagram editor is available, one clean high-contrast PNG/SVG is sufficient; do not require duplicate exports.
+   - Add concise alternative text or a nearby text summary so the documented flow remains reviewable without the image.
    - **Strict CJK Box Ban:** Never draw ASCII/Unicode `+---+` or `│...│` boxes containing CJK characters inside `<pre><code>` (mixed CJK/monospace widths misalign borders).
 
 4. **Pillar 4 — Anti-Stub Section Rule (Zero Image-Only Sections):**

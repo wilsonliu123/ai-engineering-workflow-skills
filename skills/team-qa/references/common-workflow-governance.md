@@ -1,6 +1,6 @@
-# Common Workflow Governance (v1.0 — 4-Station Jira-Centered Workflow)
+# Common Workflow Governance (v1.1 — Planning Layer + 4-Station Jira-Centered Workflow)
 
-All 7 skills in the `ai-engineering-workflow` suite share this governance contract. If any older wording conflicts with this file, this governance reference takes precedence.
+All 8 skills in the `ai-engineering-workflow` suite share this governance contract. If any older wording conflicts with this file, this governance reference takes precedence.
 
 ---
 
@@ -32,11 +32,12 @@ Only system-wide rules, project workflow configuration, and long-lived architect
 
 ---
 
-## 2. The 4-Station, 7-Skill Architecture & Zero-CLI Experience
+## 2. The Planning Layer, 4 Stations, 8 Skills & Zero-CLI Experience
 
 | Station | Skill | Modes | Primary Responsibility | Jira & Local State Action |
 |---|---|---|---|---|
 | **Init** | `team-init` | — | Interactive inquiry to confirm Jira URL, Project Key, Jira account email & API token (saved to gitignored `.ai-workflow/credentials.json`), and role-to-person mappings; configure `.ai-workflow/team-config.json`, install `.ai-workflow/bin/jira_sync.py`, update `.gitignore`, and extract `docs/shared/engineering-standards.md` from `AGENTS.md` | `jira_sync.py init --inspect` / `jira_sync.py init` |
+| **Planning** | `team-plan` | `epic` / `sprint` / `commit` / `status` | Manage Epic context, Future/Active Sprint planning, candidate Story membership, preview/apply boundaries, and read-only Sprint status. Planning does not transition Story workflow states or close Stories. | `jira_sync.py sprint-plan` / `jira_sync.py sprint-status` |
 | **Router** | `team-next-step` | — | Read-only inspection of `team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json` (with auto-hydration), and Jira state to recommend the exact next action | `jira_sync.py status` |
 | **Station 1** | `team-spec` | `one-pass` / `draft` | Scale-aware Spec: Small/clear stories in one pass; Large/complex stories via iterative `draft` deep-dive + 6-Dimension AC Checklist | `jira_sync.py sync-story` |
 | **Station 2** | `team-dev` | `plan` / `implement` | Decompose into `TASK-001..N` (`Sub-task`), implement code & tests, and check off completed tasks/bugs/review findings (Dev Fast-Track guarded to `<= 3` ACs & `low/medium` risk) | `jira_sync.py create-subtasks` / `complete-task` |
@@ -46,7 +47,8 @@ Only system-wide rules, project workflow configuration, and long-lived architect
 
 ### 2.1 Zero-CLI Burden for Humans & Single-Command Entry (`$team-next-step`)
 - **CLI Completely Hidden in Background:** Humans never need to memorize or manually type `jira_sync.py` flags. Users interact in plain natural language (e.g., `"幫我規劃 PROJ-101 訂單匯出"`, `"核准"`, `"繼續下一步"`), and the AI agent assembles and executes `python3 .ai-workflow/bin/jira_sync.py ...` automatically.
-- **Only One Command to Remember (`$team-next-step`):** Team members do not need to memorize all 7 skill names. Invoking `$team-next-step` (or saying `"下一步"` / `"目前進度"`) at any point automatically inspects local/remote state and routes to the right station (including reporting `pending_automated_tcs`, `pending_external_tcs`, and `pending_manual_tcs` during QA verification).
+- **Only One Command to Remember (`$team-next-step`):** Team members do not need to memorize all 8 skill names. Invoking `$team-next-step` (or saying `"下一步"` / `"目前進度"`) at any point automatically inspects planning and local/remote Story state and routes to the right skill (including reporting `pending_automated_tcs`, `pending_external_tcs`, and `pending_manual_tcs` during QA verification).
+- **Planning Boundary:** Epic is the cross-Sprint product container. Sprint is a board-level timebox. Story, Task, and Bug issues are Sprint members by default; Epic and Sub-task are excluded unless the user explicitly opts in. Sprint planning requires a preview before live mutation, and Sprint state is never a Story release gate.
 - **Scale-Aware Fast-Track & Anti-False-Pass Guardrails:**
   - `complete-task` automatically detects `--commit` (from `git rev-parse --short HEAD`) and `--files` (from `git show` / `git diff`) when omitted, and supports comma-separated multi-ID completion (`--task-id TASK-001,TASK-002` or `REV-001,REV-002`).
   - **Dev Fast-Track (with Complexity Guard):** Only allowed for small stories (`len(acceptance_criteria) <= 3` AND `risk_level in ("low", "medium")`). When `tasks` is empty and `spec_status == "approved"`, running `complete-task --key <KEY> --task-id TASK-001` automatically creates `TASK-001` covering all Story ACs and marks it completed in one step. Stories with `> 3` ACs or `high`/`critical` risk are rejected by the Dev Fast-Track guard and MUST be decomposed via `create-subtasks` (`plan` mode) first.

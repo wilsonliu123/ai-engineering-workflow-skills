@@ -1,0 +1,129 @@
+{
+  "metadata": {
+    "skill_name": "team-plan",
+    "skill_path": "<path/to/skill>",
+    "executor_model": "<model-name>",
+    "analyzer_model": "<model-name>",
+    "timestamp": "2026-11-12T05:00:51Z",
+    "evals_run": [
+      1
+    ],
+    "runs_per_configuration": 3
+  },
+  "runs": [
+    {
+      "eval_id": 1,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 3,
+        "failed": 0,
+        "total": 3,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Keeps Epic as planning context and treats the named Stories as Sprint candidates.",
+          "passed": true,
+          "evidence": "Output labels PROJ-EPIC-12 as the Epic and lists PROJ-101, PROJ-102, PROJ-103 as included candidates."
+        },
+        {
+          "text": "Shows Sprint name, dates, goal, board id, and dry_run true.",
+          "passed": true,
+          "evidence": "Output includes Sprint 2026-11 Sprint 3, dates, goal, Board 42, and dry_run: true."
+        },
+        {
+          "text": "Does not route into team-dev or claim that Jira was mutated.",
+          "passed": true,
+          "evidence": "Output says team-plan commit is next, says Jira has not created a Sprint or moved Issues, and does not route to team-dev."
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 1,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.6666666666666666,
+        "passed": 2,
+        "failed": 1,
+        "total": 3,
+        "time_seconds": 0.0,
+        "tokens": 0,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "Keeps Epic as planning context and treats the named Stories as Sprint candidates.",
+          "passed": true,
+          "evidence": "Baseline lists PROJ-EPIC-12 and the three named Story candidates."
+        },
+        {
+          "text": "Shows Sprint name, dates, goal, board id, and dry_run true.",
+          "passed": false,
+          "evidence": "Baseline shows the planning fields and Board 42 but has no dry_run field or structured payload."
+        },
+        {
+          "text": "Does not route into team-dev or claim that Jira was mutated.",
+          "passed": true,
+          "evidence": "Baseline says this is a preview and will not write to Jira, and it does not route to team-dev."
+        }
+      ],
+      "notes": []
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {
+        "mean": 1.0,
+        "stddev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 0.0,
+        "stddev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "tokens": {
+        "mean": 0.0,
+        "stddev": 0.0,
+        "min": 0,
+        "max": 0
+      }
+    },
+    "without_skill": {
+      "pass_rate": {
+        "mean": 0.6667,
+        "stddev": 0.0,
+        "min": 0.6667,
+        "max": 0.6667
+      },
+      "time_seconds": {
+        "mean": 0.0,
+        "stddev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "tokens": {
+        "mean": 0.0,
+        "stddev": 0.0,
+        "min": 0,
+        "max": 0
+      }
+    },
+    "delta": {
+      "pass_rate": "+0.33",
+      "time_seconds": "+0.0",
+      "tokens": "+0"
+    }
+  },
+  "notes": []
+}

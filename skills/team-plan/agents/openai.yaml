@@ -1,0 +1,3 @@
+interface:
+  display_name: "Team Plan"
+  short_description: "Plan Jira Epics and Sprints, preview membership, and apply issue assignments safely."

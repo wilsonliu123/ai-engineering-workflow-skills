@@ -1,6 +1,6 @@
 {
   "skill_name": "team-next-step",
-  "evaluation_instructions": "Run each prompt independently with SKILL.md. The supplied snapshots and state facts are verified fixture evidence for the 4-station, 7-skill Jira-centered workflow (team-init, team-next-step, team-spec, team-dev, team-review, team-qa, team-release). Do not mutate state or execute downstream work during routing.",
+  "evaluation_instructions": "Run each prompt independently with SKILL.md. The supplied snapshots and state facts are verified fixture evidence for the Epic/Sprint planning layer plus 4-station, 8-skill Jira-centered workflow (team-init, team-plan, team-next-step, team-spec, team-dev, team-review, team-qa, team-release). Do not mutate state or execute downstream work during routing.",
   "evals": [
     {
       "id": 1,

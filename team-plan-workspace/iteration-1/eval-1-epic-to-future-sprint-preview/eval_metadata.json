@@ -1,0 +1,10 @@
+{
+  "eval_id": 1,
+  "eval_name": "epic-to-future-sprint-preview",
+  "prompt": "請幫我規劃 Epic PROJ-EPIC-12 的下一個 Sprint。Board 是 42，Sprint 叫做 2026-11 Sprint 3，日期是 2026-11-16 到 2026-11-27，目標是完成 CSV 匯出。候選 Story 是 PROJ-101、PROJ-102、PROJ-103。先預覽，不要寫入 Jira。",
+  "assertions": [
+    "Keeps Epic as planning context and treats the named Stories as Sprint candidates.",
+    "Shows Sprint name, dates, goal, board id, and dry_run true.",
+    "Does not route into team-dev or claim that Jira was mutated."
+  ]
+}

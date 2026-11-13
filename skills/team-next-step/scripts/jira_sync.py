@@ -131,6 +131,7 @@ def _build_multipart_form_data(validated_files: list, field_name: str = "file") 
 DEFAULT_TEAM_CONFIG = {
     "version": "1.0",
     "project_key": "PROJ",
+    "jira_board_id": "",
     "jira_base_url": "",
     "language": "zh-TW",
     "sync_mode": "auto",
@@ -952,6 +953,58 @@ class JiraClient:
             if key not in found_keys:
                 found_keys.append(key)
         return found_keys
+
+    def list_boards(self, project_key: str, board_type: str = "Scrum", max_results: int = 50) -> list:
+        if not self.is_live:
+            return []
+        query = urllib.parse.urlencode({
+            "projectKeyOrId": project_key,
+            "type": board_type,
+            "maxResults": max_results,
+        })
+        res = self._request("GET", f"/rest/agile/1.0/board?{query}")
+        return (res or {}).get("values", []) if isinstance(res, dict) else []
+
+    def list_sprints(self, board_id: str, state: str = "", max_results: int = 50) -> list:
+        if not self.is_live:
+            return []
+        params = {"maxResults": max_results}
+        if state:
+            params["state"] = state
+        query = urllib.parse.urlencode(params)
+        res = self._request("GET", f"/rest/agile/1.0/board/{urllib.parse.quote(str(board_id))}/sprint?{query}")
+        return (res or {}).get("values", []) if isinstance(res, dict) else []
+
+    def get_sprint(self, sprint_id: str) -> dict:
+        if not self.is_live:
+            return {"id": int(sprint_id) if str(sprint_id).isdigit() else sprint_id}
+        return self._request("GET", f"/rest/agile/1.0/sprint/{urllib.parse.quote(str(sprint_id))}")
+
+    def create_sprint(self, payload: dict) -> dict:
+        if not self.is_live:
+            return {"id": "offline-sprint", **payload}
+        return self._request("POST", "/rest/agile/1.0/sprint", payload)
+
+    def update_sprint(self, sprint_id: str, payload: dict) -> dict:
+        if not self.is_live:
+            return {"id": sprint_id, **payload}
+        return self._request("PUT", f"/rest/agile/1.0/sprint/{urllib.parse.quote(str(sprint_id))}", payload)
+
+    def get_sprint_issues(self, sprint_id: str, max_results: int = 50) -> list:
+        if not self.is_live:
+            return []
+        query = urllib.parse.urlencode({"maxResults": max_results})
+        res = self._request("GET", f"/rest/agile/1.0/sprint/{urllib.parse.quote(str(sprint_id))}/issue?{query}")
+        return (res or {}).get("issues", []) if isinstance(res, dict) else []
+
+    def move_issues_to_sprint(self, sprint_id: str, issue_keys: list) -> None:
+        if not self.is_live:
+            return
+        self._request(
+            "POST",
+            f"/rest/agile/1.0/sprint/{urllib.parse.quote(str(sprint_id))}/issue",
+            {"issues": issue_keys},
+        )
 
     @staticmethod
     def text_to_adf(
@@ -2937,6 +2990,163 @@ def ensure_live_or_explicit_offline(client: JiraClient, config: dict, offline_fl
     return True
 
 
+def _resolve_planning_board_id(client: JiraClient, config: dict, explicit_board_id: str = None) -> str:
+    board_id = str(explicit_board_id or config.get("jira_board_id") or "").strip()
+    if board_id:
+        return board_id
+    if not client.is_live:
+        raise ValueError("A Jira board id is required in offline mode; pass --board-id or set jira_board_id.")
+    boards = client.list_boards(config.get("project_key", ""))
+    if len(boards) == 1 and boards[0].get("id") is not None:
+        return str(boards[0]["id"])
+    if not boards:
+        raise ValueError("No Scrum board was found for the configured Jira project.")
+    ids = ", ".join(str(b.get("id")) for b in boards if b.get("id") is not None)
+    raise ValueError(f"Multiple Scrum boards found ({ids}); pass --board-id explicitly.")
+
+
+def _planning_issue_keys(client: JiraClient, config: dict, issue_keys: list, jql: str = "", epic_key: str = "") -> list:
+    explicit = []
+    for key in issue_keys or []:
+        clean = validate_jira_key(key)
+        if clean not in explicit:
+            explicit.append(clean)
+    if explicit or not client.is_live:
+        return explicit
+    query = (jql or "").strip()
+    if not query and epic_key:
+        query = f'parent = "{validate_jira_key(epic_key)}"'
+    if not query:
+        return []
+    payload = {
+        "jql": query,
+        "maxResults": 100,
+        "fields": ["summary", "status", "issuetype", "parent"],
+    }
+    try:
+        res = client._request("POST", "/rest/api/3/search/jql", payload)
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+        res = client._request("POST", "/rest/api/3/search", payload)
+    found = []
+    for issue in (res or {}).get("issues", []) if isinstance(res, dict) else []:
+        if isinstance(issue, dict) and issue.get("key"):
+            key = str(issue["key"]).strip().upper()
+            if key not in found:
+                found.append(key)
+    return found
+
+
+def _planning_preview(client: JiraClient, issue_keys: list) -> list:
+    rows = []
+    for key in issue_keys:
+        issue = client.get_issue(key) if client.is_live else {"key": key, "fields": {}}
+        fields = issue.get("fields") or {}
+        issue_type = str(((fields.get("issuetype") or {}).get("name")) or "").strip().lower()
+        status = str(((fields.get("status") or {}).get("name")) or "").strip()
+        reason = ""
+        if issue_type in {"epic", "sub-task", "subtask", "子任務"}:
+            reason = "Epic and Sub-task are not sprint members by default"
+        elif status.lower() in {"done", "closed", "resolved"}:
+            reason = "Issue is already completed"
+        rows.append({
+            "key": key,
+            "summary": fields.get("summary") or key,
+            "issue_type": issue_type or "unknown",
+            "status": status,
+            "included": not bool(reason),
+            "reason": reason,
+        })
+    return rows
+
+
+def cmd_sprint_plan(args) -> int:
+    repo_root = Path(args.repo_root).resolve()
+    config = load_team_config(repo_root)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="pm")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 2
+    board_id = _resolve_planning_board_id(client, config, args.board_id)
+    issue_keys = _planning_issue_keys(client, config, args.issue_key or [], args.jql, args.epic_key)
+    rows = _planning_preview(client, issue_keys)
+    selected = [row["key"] for row in rows if row["included"]]
+    payload = {
+        "name": (args.name or "").strip(),
+        "originBoardId": int(board_id) if str(board_id).isdigit() else board_id,
+    }
+    if not payload["name"] and not args.sprint_id:
+        raise ValueError("--name is required when creating a new Sprint.")
+    for field in ("start_date", "end_date", "goal"):
+        value = getattr(args, field, None)
+        if value:
+            payload[{"start_date": "startDate", "end_date": "endDate", "goal": "goal"}[field]] = value
+    out = {
+        "mode": "live" if client.is_live else "offline",
+        "action": "sprint-plan",
+        "board_id": board_id,
+        "sprint_id": str(args.sprint_id) if args.sprint_id else None,
+        "sprint_payload": payload,
+        "issues": rows,
+        "selected_issue_keys": selected,
+        "dry_run": not args.apply,
+        "applied": False,
+    }
+    if args.sprint_id:
+        current_sprint = client.get_sprint(args.sprint_id)
+        update_payload = {
+            "name": (args.name or current_sprint.get("name") or "").strip(),
+            "originBoardId": current_sprint.get("originBoardId", payload["originBoardId"]),
+            "state": current_sprint.get("state") or "future",
+        }
+        for arg_name, api_name in (("start_date", "startDate"), ("end_date", "endDate"), ("goal", "goal")):
+            value = getattr(args, arg_name, None)
+            if value is not None:
+                update_payload[api_name] = value
+            elif current_sprint.get(api_name) is not None:
+                update_payload[api_name] = current_sprint.get(api_name)
+        out["sprint_update_payload"] = update_payload
+    if not args.apply:
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+    if args.sprint_id:
+        sprint = current_sprint
+        if any(getattr(args, key, None) is not None for key in ("name", "start_date", "end_date", "goal")):
+            sprint = client.update_sprint(args.sprint_id, out["sprint_update_payload"])
+    else:
+        sprint = client.create_sprint(payload)
+    sprint_id = str(sprint.get("id") or args.sprint_id or "")
+    if not sprint_id:
+        raise RuntimeError("Jira did not return a Sprint id.")
+    moved = []
+    for idx in range(0, len(selected), 50):
+        chunk = selected[idx:idx + 50]
+        if chunk:
+            client.move_issues_to_sprint(sprint_id, chunk)
+            moved.extend(chunk)
+    out.update({"sprint_id": sprint_id, "sprint": sprint, "moved_issue_keys": moved, "dry_run": False, "applied": True})
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_sprint_status(args) -> int:
+    repo_root = Path(args.repo_root).resolve()
+    config = load_team_config(repo_root)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="pm")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 2
+    if args.sprint_id:
+        sprint = client.get_sprint(args.sprint_id)
+        issues = client.get_sprint_issues(args.sprint_id)
+        out = {"mode": "live" if client.is_live else "offline", "sprint": sprint, "issues": issues}
+    else:
+        board_id = _resolve_planning_board_id(client, config, args.board_id)
+        sprints = client.list_sprints(board_id, args.state or "")
+        out = {"mode": "live" if client.is_live else "offline", "board_id": board_id, "sprints": sprints}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _ensure_gitignore_entries(repo_root: Path) -> bool:
     """Ensure .gitignore ignores .ai-workflow/active/, .ai-workflow/credentials.json, and .ai-workflow/.env."""
     gitignore_path = repo_root / ".gitignore"
@@ -3225,6 +3435,8 @@ def cmd_init(args) -> int:
     extracted_member_creds = {}
     if args.project_key:
         cfg["project_key"] = args.project_key.strip().upper()
+    if getattr(args, "jira_board_id", None) is not None:
+        cfg["jira_board_id"] = str(args.jira_board_id).strip()
     if args.jira_url is not None:
         cfg["jira_base_url"] = args.jira_url.strip().rstrip("/")
     if getattr(args, "language", None):
@@ -5074,7 +5286,6 @@ def parse_junit_xml_results(xml_path: Path) -> dict:
                 results[tc_id] = st
     return results
 
-
 def _inspect_qa_state(repo_root: Path, config: dict) -> dict:
     local_creds = load_jira_credentials(repo_root)
     role_creds = local_creds.get("role_credentials") or {}
@@ -6359,7 +6570,7 @@ def cmd_close_story(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="jira_sync.py",
-        description="Unified Jira & Local Active State CLI for the 4-Station Small-Team Workflow.",
+        description="Unified Jira & Local Active State CLI for Epic/Sprint planning and the 4-Station Small-Team Workflow.",
     )
     p.add_argument("--repo-root", default=".", help="Path to repository root (default: current directory)")
     p.add_argument("--offline", action="store_true", help="Force local/offline mode even if Jira env vars are set")
@@ -6379,6 +6590,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--name", help="Display name for the role(s) claimed via --role (auto-resolved from Jira /myself if omitted)")
     p_init.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for Jira URL, project key, account email, API token, and role mappings")
     p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")
+    p_init.add_argument("--jira-board-id", default=None, help="Optional Jira Scrum board id used by team-plan")
     p_init.add_argument("--jira-url", default=None, help="Jira base URL (e.g. https://org.atlassian.net)")
     p_init.add_argument("--jira-email", default=None, help="Jira account email (stored in gitignored .ai-workflow/credentials.json)")
     p_init.add_argument("--jira-token", default=None, help="Jira API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
@@ -6411,6 +6623,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_auth.set_defaults(func=cmd_auth)
 
     # 2. status
+    p_sprint_plan = sub.add_parser("sprint-plan", parents=[sub_common], help="Preview or apply a Jira Sprint plan and assign Story/Task/Bug issues")
+    p_sprint_plan.add_argument("--name", help="Future Sprint name (required when creating a Sprint)")
+    p_sprint_plan.add_argument("--goal", default=None, help="Sprint goal")
+    p_sprint_plan.add_argument("--start-date", dest="start_date", default=None, help="Sprint start date/time")
+    p_sprint_plan.add_argument("--end-date", dest="end_date", default=None, help="Sprint end date/time")
+    p_sprint_plan.add_argument("--board-id", dest="board_id", default=None, help="Jira Scrum board id (or use jira_board_id in team-config.json)")
+    p_sprint_plan.add_argument("--sprint-id", dest="sprint_id", default=None, help="Existing Sprint id; omit to create a Future Sprint")
+    p_sprint_plan.add_argument("--epic-key", dest="epic_key", default=None, help="Epic key used to derive Story candidates")
+    p_sprint_plan.add_argument("--jql", default=None, help="JQL used to select candidate issues")
+    p_sprint_plan.add_argument("--issue-key", action="append", default=[], help="Explicit Story/Task/Bug key; repeatable")
+    p_sprint_plan.add_argument("--apply", action="store_true", help="Create/update Sprint membership after preview")
+    p_sprint_plan.set_defaults(func=cmd_sprint_plan)
+
+    p_sprint_status = sub.add_parser("sprint-status", parents=[sub_common], help="Show Jira Sprint state and issues")
+    p_sprint_status.add_argument("--board-id", dest="board_id", default=None, help="Jira Scrum board id")
+    p_sprint_status.add_argument("--sprint-id", dest="sprint_id", default=None, help="Specific Sprint id")
+    p_sprint_status.add_argument("--state", default=None, help="Filter board sprints by future, active, or closed")
+    p_sprint_status.set_defaults(func=cmd_sprint_status)
+
+    # 2b. status
     p_status = sub.add_parser("status", parents=[sub_common], help="Inspect active workflow state, reconcile live Jira changes, and recommend the next station/role")
     p_status.add_argument("--key", help="Specific Jira Story key (e.g. PROJ-101)")
     p_status.add_argument("--fetch-remote", action="store_true", help="Fetch remote Jira issue details when in live mode")

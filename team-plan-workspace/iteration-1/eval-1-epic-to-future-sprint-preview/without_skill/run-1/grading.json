@@ -1,0 +1,29 @@
+{
+  "expectations": [
+    {
+      "text": "Keeps Epic as planning context and treats the named Stories as Sprint candidates.",
+      "passed": true,
+      "evidence": "Baseline lists PROJ-EPIC-12 and the three named Story candidates."
+    },
+    {
+      "text": "Shows Sprint name, dates, goal, board id, and dry_run true.",
+      "passed": false,
+      "evidence": "Baseline shows the planning fields and Board 42 but has no dry_run field or structured payload."
+    },
+    {
+      "text": "Does not route into team-dev or claim that Jira was mutated.",
+      "passed": true,
+      "evidence": "Baseline says this is a preview and will not write to Jira, and it does not route to team-dev."
+    }
+  ],
+  "summary": {
+    "passed": 2,
+    "failed": 1,
+    "total": 3,
+    "pass_rate": 0.6666666666666666
+  },
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "Assertions distinguish the structured dry-run contract from a plain planning summary."
+  }
+}

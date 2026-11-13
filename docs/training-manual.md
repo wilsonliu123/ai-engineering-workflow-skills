@@ -1,12 +1,12 @@
-# AI 工程工作流技能套件（ai-engineering-workflow-skills v1.2）教育訓練與情境實戰手冊
+# AI 工程工作流技能套件（ai-engineering-workflow-skills v1.3）教育訓練與情境實戰手冊
 
-本手冊為 `ai-engineering-workflow-skills`（v1.2 四站七技能 Jira 核心工程工作流，另附動態多代理系統編排技能 `run-workflow`）之完整教育訓練教材與實戰操作指南。全書採用**真實使用情境驅動（Scenario-Driven Training）**編排，結合視覺化架構圖、終端機與 Jira 雙視窗實況對照圖、CLI 參數規格表與標準操作步驟，協助工程團隊從零完成專案導入、協作者認領、規格定義、任務拆解、AI 編碼、同儕審查、三層混合測試、探索／獨立缺陷閉環與正式發佈結案。
+本手冊為 `ai-engineering-workflow-skills`（v1.3 規劃層 + 四站八技能 Jira 核心工程工作流，另附動態多代理系統編排技能 `run-workflow`）之完整教育訓練教材與實戰操作指南。全書採用**真實使用情境驅動（Scenario-Driven Training）**編排，結合視覺化架構圖、終端機與 Jira 雙視窗實況對照圖、CLI 參數規格表與標準操作步驟，協助工程團隊從零完成專案導入、協作者認領、規格定義、任務拆解、AI 編碼、同儕審查、三層混合測試、探索／獨立缺陷閉環與正式發佈結案。
 
 ---
 
 ## 1. 文件目的、適用角色與訓練導覽
 
-### 1.1 為什麼需要「四站七技能 Jira 核心工作流」？
+### 1.1 為什麼需要「規劃層 + 四站八技能 Jira 核心工作流」？
 
 在中小型與成長型工程團隊（1 至 15 人）導入 AI 輔助開發時，傳統多階段文件工作流常面臨三大痛點：
 
@@ -14,10 +14,10 @@
 2. **一人兼多職或多人共職時交接摩擦大（Handoff Ceremony Fatigue）**：團隊既常由同一位成員兼任多職（例如 PM 兼 Release Manager），也常由多位成員共擔同一角色（例如前後端多位 Developer 或多位 QA），傳統流程不是被迫自己簽核自己，就是單據長期留白無人指派。
 3. **細枝末節追問耗盡人類審查精力，大需求又漏掉邊界（Review Fatigue vs. Edge-Case Blindness）**：AI 若將常規分頁筆數、標準錯誤碼逐題追問人類會耗盡耐心；但若把複雜架構硬壓成單回合快審，又容易遺漏併發與權限邊界。
 
-為解決上述問題，`ai-engineering-workflow-skills` v1.2 確立了四大核心設計支柱：
+為解決上述問題，`ai-engineering-workflow-skills` v1.3 確立了四大核心設計支柱：
 
 - **第一性原理資產邊界（First-Principles Asset Boundary）**：單一功能的生命週期資產永久保存於 **Jira**（`User Story`、`Sub-task`、`Bug`、結構化評論與隱藏屬性 `ai_workflow_state`）及選用之 **Qase TestOps**；本地僅在開發期間維護受 `.gitignore` 保護的暫存狀態檔 `.ai-workflow/active/<JIRA-KEY>.json`（結案自動刪除）與個人憑證檔 `.ai-workflow/credentials.json`（權限 `0600`）。Git 儲存庫僅保留全系統常駐活資產（`.ai-workflow/team-config.json`、`.ai-workflow/bin/jira_sync.py`、`AGENTS.md`、`docs/shared/engineering-standards.md`，以及選用之 `glossary.md`、`adr/` 與 `docs/manuals/<manual-name>/<manual-name>.html` 常駐產品手冊）。
-- **四站七技能精煉架構與雙向對帳（4-Station Architecture & Bidirectional Sync）**：將傳統十餘個零碎步驟收斂為 **Init 初始化／協作者認領**、**Router 導航員**及 **Station 1 至 Station 4** 共 7 個工作流技能（預設繁體中文 `zh-TW` 輸出），支援開發與 QA 平行推進、跨機自動水合，以及與 Jira 網頁端手動修改的即時雙向對帳。
+- **規劃層 + 四站八技能精煉架構與雙向對帳（4-Station Architecture & Bidirectional Sync）**：將傳統十餘個零碎步驟收斂為 **Init 初始化／協作者認領**、**Router 導航員**及 **Station 1 至 Station 4** 共 8 個工作流技能（預設繁體中文 `zh-TW` 輸出），支援開發與 QA 平行推進、跨機自動水合，以及與 Jira 網頁端手動修改的即時雙向對帳。
 - **一人兼多職整併與 1 對多角色池自動指派（Smart Handoff & 1-to-N Role Pools）**：透過 `team-config.json` 同時支援「一人兼多職」（`auto-consolidated` 零自我通知噪音並自動連貫推進）與「一職多人池」（`roles.<role>.members` 搭配 `specialty` 專長標籤自動指派子任務、自動避開作者選取同儕審查、自動追蹤原開發者派發 Bug）。
 - **按規模分軌之「抓大放小」審查（Scale-Aware Focus-on-Material-Risks）**：常規工程與 UI 細節由 AI 依專案標準自動拍板並列入**AI 預設細節清單**（`auto_decisions`）；小型明確需求單趟最多問 **3 題**關鍵問題即核准，中大型複雜需求則透過多輪 `draft` 深挖（每輪 3 至 5 題）與 6 大 AC 維度檢查把關。
 
@@ -42,6 +42,7 @@
 | 階段與情境 | 你只需要對 AI 說這 1 句話（人類零 CLI 負擔） | AI 在背景自動幫你完成的事（無須手敲指令） |
 | :--- | :--- | :--- |
 | **隨時迷路 / 接手工作** | **「執行 `$team-next-step`（或：下一步要做什麼？）」** | 自動以 JQL 探索進行中單據並與遠端 Jira 雙向對帳（若換電腦或開新 Worktree 缺少本地檔案則無損回填），給出唯一具體行動。 |
+| **規劃 Epic / Sprint (`team-plan`)** | **「請用 `$team-plan` 預覽 Epic `PROJ-EPIC-12` 的下一個 Sprint，先不要寫入 Jira。」** | 讀取 Scrum Board、Future/Active Sprint 與候選 Story/Task/Bug，產出 `dry_run: true` 預覽；只有確認後才套用 Sprint 成員變更。 |
 | **初次設定專案 (`init`)** | **「請用 `$team-init` 初始化專案，代號 `TEAM`，我先認領 PM 與 Tech Lead。」** | 支援漸進式認領個人角色，建立 `team-config.json`、安全寫入本機 `credentials.json` (`0600`)、安裝 `.ai-workflow/bin/jira_sync.py` 並萃取工程標準。 |
 | **協作者加入 (`auth`)** | **「我剛 clone 專案，負責前端開發（或 QA），請幫我綁定憑證！」** | 執行 `auth` 驗證個人 Jira/Qase Token（僅存本機 `credentials.json`），並非破壞性追加至 `team-config.json` 對應角色池（`members`）。 |
 | **Station 1 定規格** | **「請用 `$team-spec` 規劃 `PROJ-101` 訂單 CSV 匯出，確認沒問題請同步 Jira。」** | 小需求單趟產出 `AC-001..N` 與**AI 預設細節清單**（最多問 3 題）；複雜大需求自動改走多輪 `draft` 深挖與 6 大維度檢查後同步 Jira。 |
@@ -54,17 +55,18 @@
 
 ## 2. 全系統架構總覽與三層源碼功能盤點對帳表
 
-### 2.1 四站七技能架構與第一性原理資產邊界
+### 2.1 規劃層 + 四站八技能架構與第一性原理資產邊界
 
-在進入各使用情境前，請先透過全景架構圖建立對「四站七技能流程」與「Jira vs Git 雙資產邊界」的整體認知：
+在進入各使用情境前，請先透過全景架構圖建立對「規劃層 + 四站八技能流程」與「Jira vs Git 雙資產邊界」的整體認知：
 
-![架構總覽：四站七技能 Jira 核心工作流與第一性原理資產邊界](./screenshots/01-architecture-asset-boundary.png)
-*圖 2-1：四站七技能全景架構與第一性原理資產邊界圖。用途：說明 7 個技能在 4 個工作站中的串聯與平行關係，以及單一功能資產與全系統資產的嚴格存放邊界。視覺焦點：請依序查看標註序號 ① 頂部四站七技能主幹流程與 `team-qa` 平行軌道；② 左下角單一功能生命週期資產（Jira 永久保存 + `.ai-workflow/active/<JIRA-KEY>.json` 本地暫存）；③ 右下角全系統常駐活資產（Git 版控之 `team-config.json`、`AGENTS.md`、`engineering-standards.md`、`glossary.md`、`adr/` 與選用之 `docs/manuals/`）。狀態變化：功能開發期間狀態讀寫於本地 Active JSON 與 Jira，結案時本地 Active JSON 自動刪除，實現 Git 儲存庫零流程文件堆積。*
+![架構總覽：規劃層 + 四站八技能 Jira 核心工作流與第一性原理資產邊界](./screenshots/01-architecture-asset-boundary.png)
+*圖 2-1：規劃層 + 四站八技能全景架構與第一性原理資產邊界圖。用途：說明 8 個技能在 4 個工作站中的串聯與平行關係，以及單一功能資產與全系統資產的嚴格存放邊界。視覺焦點：請依序查看標註序號 ① 頂部規劃層 + 四站八技能主幹流程與 `team-qa` 平行軌道；② 左下角單一功能生命週期資產（Jira 永久保存 + `.ai-workflow/active/<JIRA-KEY>.json` 本地暫存）；③ 右下角全系統常駐活資產（Git 版控之 `team-config.json`、`AGENTS.md`、`engineering-standards.md`、`glossary.md`、`adr/` 與選用之 `docs/manuals/`）。狀態變化：功能開發期間狀態讀寫於本地 Active JSON 與 Jira，結案時本地 Active JSON 自動刪除，實現 Git 儲存庫零流程文件堆積。*
 
-以下為全系統 7 個核心工作流技能模組（以及隨附之 `run-workflow` 系統編排技能）的工作站定位、執行模式與底層動作總表：
+以下為全系統 8 個核心工作流技能模組（以及隨附之 `run-workflow` 系統編排技能）的工作站定位、執行模式與底層動作總表：
 
 | 工作站 (Station) | 技能名稱 (Skill) | 執行模式 (Modes) | 負責角色 | 底層 `jira_sync.py` 子命令 | 核心產出與狀態變更 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Planning 規劃層** | `team-plan` | `epic` / `sprint` / `commit` / `status` | `pm` / `tech_lead` | `sprint-status` / `sprint-plan` | 維護 Epic 脈絡、Future/Active Sprint、候選 Story/Task/Bug 與預覽後套用；不改寫 Story 交付閘門 |
 | **Init 初始化** | `team-init` | `init` / `auth` | `tech_lead` / `pm` / 協作者 | `init` / `auth` | 建立 `team-config.json`（支援漸進認領與 1 對多角色池）、本機 `credentials.json` (`0600`)、`.gitignore`，並萃取 `engineering-standards.md` |
 | **Router 導航員** | `team-next-step` | 無（導航與對帳） | 全體成員 | `status` / `pull` | 自動執行遠端 JQL 探索與 Jira 網頁端雙向對帳，依優先序推薦唯一具體下一步行動與負責人 |
 | **Station 1 規格設計** | `team-spec` | `one-pass` / `draft` | `pm` (+ `tech_lead`) | `sync-story` | 按規模單趟或多輪 `draft` 產出 Scope、`AC-001..N`、條件式 UI/API 規格與抓大放小決策，同步至 Jira Story（含描述漂移防護） |
@@ -101,7 +103,8 @@
 
 | 層級與源碼路徑 | 功能名稱（對齊源碼定義） | 次級介面 / 模式 / 子命令 / 閘門 | 適用角色 | 對應章節與視覺圖表 |
 | :--- | :--- | :--- | :--- | :--- |
-| **L1/L3** `common-workflow-governance.md` | 四站七技能共同治理契約 | 第一性原理資產邊界、1 對多角色池自動指派、抓大放小、Jira 網頁雙向對帳、預設 `zh-TW` 與證據鐵律 | 全體角色 | 2.1 - 2.3（圖 2-1：`01-architecture-asset-boundary.png`、圖 2-2：`02-state-machine-and-roles.png`） |
+| **L1/L3** `common-workflow-governance.md` | 規劃層 + 四站八技能共同治理契約 | 第一性原理資產邊界、1 對多角色池自動指派、抓大放小、Jira 網頁雙向對帳、預設 `zh-TW` 與證據鐵律 | 全體角色 | 2.1 - 2.3（圖 2-1：`01-architecture-asset-boundary.png`、圖 2-2：`02-state-machine-and-roles.png`） |
+| **L1/L2** `skills/team-plan/SKILL.md` | Epic / Sprint 規劃層 (`team-plan`) | `epic` / `sprint` / `commit` / `status`、`sprint-status`、`sprint-plan`、預覽後確認、最多 50 張單批次移動 | `pm` / `tech_lead` | 第 2.4 節；`skills/team-plan/evals/evals.json` |
 | **L1/L2** `skills/team-init/SKILL.md` | 專案初始化與協作者認領 (`team-init`) | `jira_sync.py init` / `auth`、漸進式角色認領、`credentials.json` (`0600`)、`AGENTS.md` 規範萃取去重 | `tech_lead` / `pm` / 協作者 | 第 3 章 情境 0（圖 3-1：`03-scenario0-team-init.png`） |
 | **L1/L2** `skills/team-spec/SKILL.md` | 一體化規格、UX 與技術設計 (`team-spec`) | `jira_sync.py sync-story`、大小需求雙軌制（`one-pass` vs 多輪 `draft`）、6 大 AC 維度、遠端描述漂移防護 | `pm` / `tech_lead` | 第 4 章 情境 1（圖 4-1：`04-scenario1-team-spec.png`） |
 | **L1/L2** `skills/team-dev/SKILL.md` (`plan`) | 開發任務垂直拆解 (`team-dev` `plan` 模式) | `jira_sync.py create-subtasks`、`TASK-001..N`、前後端 `specialty` 子任務自動指派、DFS 循環依賴檢查 | `developer` | 5.1 - 5.2 情境 2A（圖 5-1：`05-scenario2-team-dev-plan.png`） |
@@ -111,9 +114,52 @@
 | **L1/L2** `skills/team-qa/SKILL.md` (`report`) + `team-dev` | 探索缺陷、獨立線上 Bug 與修復閉環 | `jira_sync.py create-bug`、探索缺陷 `TC-EXP-###`、獨立報修 `--standalone`/`--adopt`、Jira/Qase 附件與重審重驗 | `qa` / `developer` / `reviewer` | 7.3 情境 4C、第 8 章 情境 5（圖 8-1：`10-scenario5-bug-loop.png`） |
 | **L1/L2** `skills/team-release/SKILL.md` | 發佈閘門對帳、HTML 手冊與清除 (`team-release`) | `jira_sync.py close-story`、五大發佈閘門、按規模同步 `docs/manuals/<name>/<name>.html`、刪除本地 Active JSON | `release_manager` | 第 9 章 情境 6（圖 9-1：`11-scenario6-team-release.png`） |
 | **L1/L2** `skills/team-next-step/SKILL.md` | 導航員與雙向對帳 (`team-next-step`) | `jira_sync.py status` / `pull`、遠端 JQL 探索、Jira 網頁人工變更雙向對帳、協作者 `auth` 攔截提示 | 全體角色 | 第 10 章 情境 7（圖 10-1：`12-scenario7-and-8-router-and-modes.png`） |
-| **L3** `scripts/jira_sync.py` + `system/run-workflow` + `tools/*` | 同步引擎、多代理編排與 17 項測試套件 | Jira REST API v3（含隱藏屬性 `ai_workflow_state`）、Qase API v1、`run-workflow`、`check_shared.sh`、`test_workflow.py` | 維運 / 全體角色 | 第 11 - 13 章 情境 8（圖 10-1） |
+| **L3** `scripts/jira_sync.py` + `system/run-workflow` + `tools/*` | 同步引擎、多代理編排與 18 項測試套件 | Jira REST API v3（含隱藏屬性 `ai_workflow_state`）、Qase API v1、`run-workflow`、`check_shared.sh`、`test_workflow.py` | 維運 / 全體角色 | 第 11 - 13 章 情境 8（圖 10-1） |
 
 ---
+
+
+### 2.4 Epic / Sprint 規劃層（`team-plan`）
+
+`team-plan` 位於 Story 交付工作流之前，負責把產品脈絡與時間盒整理成可審查的 Jira 規劃。Epic 是可跨多個 Sprint 的產品容器；Sprint 是具有名稱、目標、日期與成員的 Scrum 時間盒。Story、Task 與 Bug 可以加入 Sprint，Sub-task 則跟隨父 Story，不作為獨立 Sprint 項目。
+
+規劃層有四種模式：
+
+- `epic`：採用既有 Epic 的 key，整理目標、範圍與候選 Story 邊界。若 Jira 已有 Epic，不能重複建立。
+- `sprint`：檢視或建立 Future / Active Sprint，先列出 Board 與現有 Sprint 狀態。
+- `commit`：把使用者選定的 Story、Task、Bug 放入既有或新建的 Sprint。
+- `status`：唯讀查看 Board、Sprint 狀態、項目數量與排除原因。
+
+規劃工作必須先產生預覽，再決定是否寫入 Jira。典型操作如下：
+
+```bash
+# 先檢視 Board 上的 Future / Active Sprint
+python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-status \\
+  --board-id "42"
+
+# 產生 Future Sprint 與候選項目的 dry-run 預覽
+python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \\
+  --board-id "42" \\
+  --name "2026-11 Sprint 3" \\
+  --goal "完成 CSV 匯出" \\
+  --start-date "2026-11-16" \\
+  --end-date "2026-11-27" \\
+  --epic-key "PROJ-EPIC-12" \\
+  --issue-key "PROJ-101" \\
+  --issue-key "PROJ-102"
+
+# 預覽確認後，才套用既有 Sprint 的成員變更
+python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \\
+  --sprint-id "881" \\
+  --issue-key "PROJ-201" \\
+  --issue-key "PROJ-202" \\
+  --apply
+```
+
+預覽結果必須列出 Project Key、Board id、Epic key、Sprint id / name / state、每個候選 Issue 的納入或排除原因，以及 `dry_run: true`。預設排除 Epic、Sub-task 與已完成項目；遇到多個相似 Issue 時，保留候選清單並要求選擇，不能猜測。套用時 CLI 以最多 50 張單為一批移動 Issue，並回報實際移動的 Jira keys。Sprint 規劃不會改變 Story 的規格、指派、Review、QA 或 Release 狀態。
+
+完成 Sprint 規劃後，將每張 Story 導回既有交付站點：新需求進入 `team-spec`，規格核准後進入 `team-dev`，再依序通過 `team-review`、`team-qa` 與 `team-release`。Sprint 尚未加入不會自動阻塞 Story 交付，除非團隊另行採用「必須先進 Sprint」的治理政策。
+
 
 ## 3. 情境 0：專案初次導入、漸進式角色認領與協作者加入（`team-init`）
 
@@ -715,20 +761,20 @@ python3 skills/team-qa/scripts/jira_sync.py \
 python3 skills/team-release/scripts/jira_sync.py \
   --repo-root . close-story \
   --key "PROJ-101" \
-  --version "v1.2.0" \
+  --version "v1.3.0" \
   --commit "999beef" \
   --notes "完成 CSV 匯出並同步更新 docs/manuals/order-guide/"
 ```
 
 4. **步驟四：產出最終交付報告**
-   - 向團隊回報 Jira Story `PROJ-101` 已轉為 `Done`、發佈版本號 `v1.2.0`、驗證通過之 Commit SHA `999beef`、累計驗證之 AC / Sub-task / TC 數量、HTML 手冊同步狀態（`docs/manuals/<manual-name>/<manual-name>.html` 新建／增量更新／略過），並確認 `.ai-workflow/active/PROJ-101.json` 已自動清除。
+   - 向團隊回報 Jira Story `PROJ-101` 已轉為 `Done`、發佈版本號 `v1.3.0`、驗證通過之 Commit SHA `999beef`、累計驗證之 AC / Sub-task / TC 數量、HTML 手冊同步狀態（`docs/manuals/<manual-name>/<manual-name>.html` 新建／增量更新／略過），並確認 `.ai-workflow/active/PROJ-101.json` 已自動清除。
 
 ### 9.3 `jira_sync.py close-story` 參數與五大發佈閘門規格表
 
 | 類別 | 參數或閘門名稱 | 必填 / 驗證規則 | 失敗阻斷行為與狀態影響 |
 | :--- | :--- | :--- | :--- |
 | **CLI 旗標** | `--key` | **必填**（字串） | 目標 Jira Story 代號（如 `PROJ-101`） |
-| **CLI 旗標** | `--version` | 選填（預設 `v1.0.0`） | 發佈版本號或 Git Tag（如 `v1.2.0`；未傳時自動預設為 `v1.0.0`） |
+| **CLI 旗標** | `--version` | 選填（預設 `v1.0.0`） | 發佈版本號或 Git Tag（如 `v1.3.0`；未傳時自動預設為 `v1.0.0`） |
 | **CLI 旗標** | `--commit` | 選填（自動讀取 `candidate_commit` 或 Git `HEAD`） | 預計發佈之候選 Git Commit SHA（如 `999beef`） |
 | **CLI 旗標** | `--notes` | 選填（字串） | 發佈摘要說明（包含交付範圍、遷移/回滾說明與殘餘風險） |
 | **Gate 1** | **規格核准閘門** | `story.spec_status == "approved"` | 若未核准，列入 `unmet_gates` 並拒絕結案（exit code 1） |
@@ -838,8 +884,8 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 | **Jira API** | `/rest/api/3/issue/{key}/transitions` & `/assignee` | `GET` / `POST` / `PUT` | 查詢可用 Transition 轉換狀態，並於各站自動指派 Story、`Sub-task` 與 `Bug` 經辦人 | 遠端無對應狀態名稱時安全回傳 `warning` 不崩潰 |
 | **Jira API** | `/rest/api/3/issueLink` & `/issue/{key}/attachments` | `POST` | `create-bug` 建立 `Blocks` 關聯，並以 `multipart/form-data`（`X-Atlassian-Token: no-check`）上傳截圖/錄影/日誌附件 | 內建檔案存在、大小與路徑檢查 |
 | **Qase API** | `https://api.qase.io/v1/*` (`suite`, `case`, `run`, `result`, `attachment`, `defect`) | `GET` / `POST` / `PATCH` | 當 `qa_test_backend == "qase"` 時，自動同步測試套件、案例、執行輪次、附件與 Qase Defect（`complete-task` 時自動結案） | `Token` Header 認證（`qase_api_token` 僅存於 `credentials.json`） |
-| **自檢工具** | `tools/check_shared.sh` | `bash tools/check_shared.sh` | 驗證全部 7 個工作流技能目錄下的 `scripts/jira_sync.py` 與 `references/common-workflow-governance.md` 是否 100% SHA256 一致 | 任何一個技能副本發生漂移（Drift）立即回傳 exit code 1 |
-| **測試套件** | `tools/test_workflow.py` | `python3 tools/test_workflow.py` | 執行 **17 項**端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試 | 涵蓋初始化、漸進認領、多人角色池、雙向對帳、雙軌深挖、三層 QA、Qase/媒體附件、`report` 獨立 Bug 與結案全流程 |
+| **自檢工具** | `tools/check_shared.sh` | `bash tools/check_shared.sh` | 驗證全部 8 個工作流技能目錄下的 `scripts/jira_sync.py` 與 `references/common-workflow-governance.md` 是否 100% SHA256 一致 | 任何一個技能副本發生漂移（Drift）立即回傳 exit code 1 |
+| **測試套件** | `tools/test_workflow.py` | `python3 tools/test_workflow.py` | 執行 **18 項**端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試 | 涵蓋初始化、漸進認領、多人角色池、雙向對帳、雙軌深挖、三層 QA、Qase/媒體附件、`report` 獨立 Bug 與結案全流程 |
 
 ---
 
@@ -867,14 +913,16 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 
 ### 13.1 附錄 A：全系統技能、CLI 子命令與狀態轉換完整對帳表
 
-本表彙整 `scripts/jira_sync.py` 全部 2 個全域旗標、11 個子命令以及隨附系統編排技能之完整語法對帳（預設語言 `"language": "zh-TW"`，所有 Jira 評論、Story/Sub-task/Bug 描述預設皆以繁體中文輸出，技術代號維持標準 ASCII）：
+本表彙整 `scripts/jira_sync.py` 全部 2 個全域旗標、13 個子命令以及隨附系統編排技能之完整語法對帳（預設語言 `"language": "zh-TW"`，所有 Jira 評論、Story/Sub-task/Bug 描述預設皆以繁體中文輸出，技術代號維持標準 ASCII）：
 
 | 子命令 / 層級 | 對應技能與工作站 | 完整支援旗標清單 | 核心讀取檔案 | 核心寫入 / 更新標的 |
 | :--- | :--- | :--- | :--- | :--- |
-| **Global 全域旗標** | 全部 7 個工作流技能 | `--repo-root <PATH>`（預設 `.`）、`--offline`（強制離線模式） | 環境變數或 `.ai-workflow/credentials.json` | 控制工作目錄與 `JiraClient` / `QaseClient` 連線或離線模式 |
+| **Global 全域旗標** | 全部 8 個工作流技能 | `--repo-root <PATH>`（預設 `.`）、`--offline`（強制離線模式） | 環境變數或 `.ai-workflow/credentials.json` | 控制工作目錄與 `JiraClient` / `QaseClient` 連線或離線模式 |
 | `init` | `team-init` (Init) | `--inspect`, `-i`, `--auth-only`, `--role`, `--specialty`, `--language`, `--name`, `--project-key`, `--jira-url`, `--jira-email`, `--jira-token`, `--roles-json`, `--role-tokens-json`, `--status-mapping-json`, `--issue-type-mapping-json`, `--qa-backend`, `--qase-*`, `--agents-md`, `--standards-md` | 既有 `AGENTS.md`、既有 `.gitignore` 與 `team-config.json` | `.ai-workflow/team-config.json`（含 1 對多角色池 `members` 與預設 `zh-TW`）、`credentials.json`、`.ai-workflow/bin/jira_sync.py`、`.gitignore`、`docs/shared/engineering-standards.md`、`AGENTS.md` |
 | `auth` | `team-init` (`auth` 協作者認領) | `--inspect`, `-i`, `--role`, `--specialty`, `--replace-role`, `--name`, `--jira-email`, `--jira-token`, `--role-tokens-json`, `--qase-token` | `team-config.json`, `credentials.json` | 將協作者非破壞性追加至 `team-config.json` 角色池（`members`），並將個人 Token 安全寫入本機 `credentials.json` (`member_credentials`) |
 | `status` | `team-next-step` (Router) | `--key`, `--fetch-remote` | `team-config.json`, `.ai-workflow/active/*.json`, `engineering-standards.md` | 自動與遠端 Jira 雙向對帳（含新建 Story JQL 探索、人工新增/改狀態之 Sub-task 與 Bug 同步）並推薦下一步 |
+| `sprint-status` | `team-plan` (`status`) | `--board-id` | `team-config.json`, Jira Scrum Board | 唯讀列出 Board 的 Future / Active Sprint、成員數量與排除資訊，不修改 Sprint 或 Story |
+| `sprint-plan` | `team-plan` (`epic` / `sprint` / `commit`) | `--board-id`, `--sprint-id`, `--epic-key`, `--jql`, `--issue-key`, `--name`, `--goal`, `--start-date`, `--end-date`, `--apply` | `team-config.json`, Jira Backlog / Sprint | 先產生 `dry_run: true` 預覽；確認後建立或更新 Sprint，並以最多 50 張單為一批移動選定 Story / Task / Bug |
 | `pull` | `team-next-step` (雙向對帳) | `--key` | `team-config.json`, `active/*.json`, 遠端 Jira Issues | 主動拉取並融合 Jira 網頁端人工新增/修改之 Story、Sub-task、連結 Bug、Assignee 與描述 `AC-###`（含描述覆寫防護 `remote_description_modified`） |
 | `sync-story` | `team-spec` (Station 1) | `--key`, `--title`, `--scope-in`, `--scope-out`, `--has-ui`, `--no-ui`, `--has-api`, `--no-api`, `--has-data`, `--no-data`, `--risk-level`, `--ac`, `--replace-acs`, `--design-summary`, `--ui-spec`, `--api-spec`, `--auto-decision`, `--material-decision`, `--spec-json`, `--status`, `--approved-by`, `--to-assignee`, `--accept-remote-description`, `--force-overwrite`, `--create` | `team-config.json`, 既有 `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`, Jira `Story`（`draft` 自動指派 `pm`、`approved` 自動交接指派 `developer`，並保護網頁端人工描述變更） |
 | `create-subtasks` | `team-dev` (`plan`, Station 2) | `--key`, `--tasks-json`, `--task`, `--assignee`, `--task-assignee`, `--proceed-at-risk` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json` (`tasks`), 建立 Jira `Sub-task` 並依專長/指定自動指派各子任務經辦人（Assignee） |
@@ -891,7 +939,7 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 
 | 圖表編號 | 檔案名稱 (`docs/screenshots/`) | 對應章節與情境 | 標註框數量 (`--box`) | 驗證狀態（多模態實看 & SHA256 唯一） |
 | :--- | :--- | :--- | :--- | :--- |
-| **圖 2-1** | `01-architecture-asset-boundary.png` | 2.1 四站七技能全景架構與資產邊界 | ① ② ③（3 處紅框徽章） | 已通過視覺驗收（無破版、無亂碼） |
+| **圖 2-1** | `01-architecture-asset-boundary.png` | 2.1 規劃層 + 四站八技能全景架構與資產邊界 | ① ② ③（3 處紅框徽章） | 已通過視覺驗收（無破版、無亂碼） |
 | **圖 2-2** | `02-state-machine-and-roles.png` | 2.2 Jira 狀態轉換機與多角色智慧交接 | ① ② ③（3 處紅框徽章） | 已通過視覺驗收（無破版、無亂碼） |
 | **圖 3-1** | `03-scenario0-team-init.png` | 第 3 章 情境 0：`team-init` 專案初始化 | ① ② ③（3 處紅框徽章） | 已通過視覺驗收（無破版、無亂碼） |
 | **圖 4-1** | `04-scenario1-team-spec.png` | 第 4 章 情境 1：`team-spec` 規格與抓大放小 | ① ② ③（3 處紅框徽章） | 已通過視覺驗收（無破版、無亂碼） |
@@ -922,7 +970,7 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 
 ### 13.4 交付前品質檢查清單（Quality Checklist）
 
-- [x] **源碼 100% 對帳**：三層盤點表中的所有 7 個核心工作流技能、1 個系統編排技能（`run-workflow`）、11 個 `jira_sync.py` 子命令、所有 CLI 旗標、多人角色池設定與五大發佈閘門皆已在正文中完整說明，無任何遺漏模組。
+- [x] **源碼 100% 對帳**：三層盤點表中的所有 8 個核心工作流技能、1 個系統編排技能（`run-workflow`）、13 個 `jira_sync.py` 子命令、所有 CLI 旗標、多人角色池設定與五大發佈閘門皆已在正文中完整說明，無任何遺漏模組。
 - [x] **零空殼章節（Zero Image-Only Stubs）**：每一個含圖片的章節皆具備結構化參數規格表與具體操作步驟清單。
 - [x] **視覺圖表 100% 多模態驗收**：已使用讀圖工具逐張檢視全部 12 張 `.png` 圖表，確認排版清晰、繁體中文顯示正確、紅框與編號徽章（① ② ③）精準對齊。
 - [x] **圖說三要素齊全**：每張圖下方皆完整包含「用途、視覺焦點（對應標註序號 ① ② ③）、狀態變化」。

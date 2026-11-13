@@ -1,5 +1,14 @@
 # Changelog
 
+# v1.3.0 — 2026-11-13 — Epic/Sprint Planning Layer
+
+- Added `team-plan` for Epic context, Future/Active Sprint planning, preview-before-apply membership changes, and read-only Sprint status.
+- Added `sprint-plan` and `sprint-status` to the shared stdlib-only Jira CLI, including board resolution, JQL/explicit issue selection, and 50-issue move batching.
+- Existing Sprint plans now update the Jira Sprint name/goal/date fields before moving issues when those fields are supplied.
+- Updated `team-next-step`, shared governance, README, and bundle checks from 7 to 8 self-contained skills.
+- Refreshed `docs/training-manual.md` to document `team-plan`, 13 CLI subcommands, and the 18-test verification suite.
+
+
 ## v1.2.0 — 2026-11-11 — Multi-Member Collaboration, Qase & Media Sync, QA `report` Mode, Living Manuals & `run-workflow`
 
 - **Interactive Auth, Progressive Role Claiming & 1-to-N Role Pools (`acf5c4a`, `0e99eac`, `b66a91f`, `45728e4`):**

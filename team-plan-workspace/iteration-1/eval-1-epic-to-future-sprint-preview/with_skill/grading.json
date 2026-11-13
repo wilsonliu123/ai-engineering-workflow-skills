@@ -1,0 +1,29 @@
+{
+  "expectations": [
+    {
+      "text": "Keeps Epic as planning context and treats the named Stories as Sprint candidates.",
+      "passed": true,
+      "evidence": "Output labels PROJ-EPIC-12 as the Epic and lists PROJ-101, PROJ-102, PROJ-103 as included candidates."
+    },
+    {
+      "text": "Shows Sprint name, dates, goal, board id, and dry_run true.",
+      "passed": true,
+      "evidence": "Output includes Sprint 2026-11 Sprint 3, dates, goal, Board 42, and dry_run: true."
+    },
+    {
+      "text": "Does not route into team-dev or claim that Jira was mutated.",
+      "passed": true,
+      "evidence": "Output says team-plan commit is next, says Jira has not created a Sprint or moved Issues, and does not route to team-dev."
+    }
+  ],
+  "summary": {
+    "passed": 3,
+    "failed": 0,
+    "total": 3,
+    "pass_rate": 1.0
+  },
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "Assertions distinguish the structured dry-run contract from a plain planning summary."
+  }
+}

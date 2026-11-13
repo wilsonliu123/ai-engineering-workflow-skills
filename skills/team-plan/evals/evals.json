@@ -1,0 +1,42 @@
+{
+  "skill_name": "team-plan",
+  "evaluation_instructions": "Run each prompt independently with SKILL.md. Planning must separate Epic context from Sprint membership, preview live writes, and keep Story delivery stations unchanged.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "epic-to-future-sprint-preview",
+      "prompt": "請幫我規劃 Epic PROJ-EPIC-12 的下一個 Sprint。Board 是 42，Sprint 叫做 2026-11 Sprint 3，日期是 2026-11-16 到 2026-11-27，目標是完成 CSV 匯出。候選 Story 是 PROJ-101、PROJ-102、PROJ-103。先預覽，不要寫入 Jira。",
+      "expected_output": "Produce a dry-run planning result with the board, Epic context, Future Sprint payload, candidate issue list, and no claim that Jira was changed.",
+      "assertions": [
+        "Keeps Epic as planning context and treats the named Stories as Sprint candidates.",
+        "Shows Sprint name, dates, goal, board id, and dry_run true.",
+        "Does not route into team-dev or claim that Jira was mutated."
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "apply-after-preview",
+      "prompt": "預覽已確認。請把 PROJ-201、PROJ-202 放進現有 Jira Sprint 881，現在可以套用。請說明會執行什麼以及完成條件。",
+      "expected_output": "Use team-plan commit behavior, apply only after explicit confirmation, target Sprint 881, and report the exact moved keys as the completion condition.",
+      "assertions": [
+        "Targets the existing Sprint 881 instead of creating a duplicate Sprint.",
+        "Applies only the named Story keys and reports exact moved keys.",
+        "Does not change Story review, QA, or release state."
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "sprint-status-and-routing",
+      "prompt": "請查看目前 Scrum Board 42 的 Future 和 Active Sprint，並告訴我 PROJ-301 下一步要進哪個 Skill。不要修改 Jira。",
+      "expected_output": "Read Sprint status, leave Jira unchanged, and route PROJ-301 to the appropriate Story skill only after planning context is clear.",
+      "assertions": [
+        "Uses read-only status behavior and states that Jira was not changed.",
+        "Shows Sprint state or asks for the missing board/Sprint choice without guessing.",
+        "Routes Story work to team-spec or the existing delivery station, not to team-plan indefinitely."
+      ],
+      "files": []
+    }
+  ]
+}

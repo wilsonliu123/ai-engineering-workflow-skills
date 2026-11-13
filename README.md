@@ -1,12 +1,13 @@
-# ai-engineering-workflow skills (v1.2 — 4-Station Jira-Centered Small-Team Workflow)
+# ai-engineering-workflow skills (v1.3 — Epic/Sprint Planning + 4-Station Jira-Centered Small-Team Workflow)
 
-Seven Jira-centered engineering workflow skills — plus a dynamic multi-agent orchestration system skill — designed for small and growing teams where one person may hold multiple roles, one role may be shared by multiple members (`1-to-N` role pools), and **Jira** serves as the single permanent per-feature lifecycle asset.
+Eight Jira-centered engineering workflow skills — plus a dynamic multi-agent orchestration system skill — designed for small and growing teams where one person may hold multiple roles, one role may be shared by multiple members (`1-to-N` role pools), and **Jira** serves as the single permanent planning and per-feature lifecycle asset.
 
-## 4-Station Workflow Skills (`skills/team-*`)
+## Planning + 4-Station Workflow Skills (`skills/team-*`)
 
 | Station | Skill | Modes | Purpose |
 |---|---|---|---|
 | **Init** | `skills/team-init/` | `init` / `auth` | Interactive inquiry-first setup of `.ai-workflow/team-config.json`, `.ai-workflow/bin/jira_sync.py`, and `docs/shared/engineering-standards.md`. Supports **progressive role claiming** (`claimed_roles` / `unclaimed_roles`), **1-to-N multi-member role pools** (`specialty` tags), and non-destructive collaborator **`auth`** onboarding (all Jira/Qase tokens stored exclusively in gitignored `.ai-workflow/credentials.json` with `0600` permissions). |
+| **Planning** | `skills/team-plan/` | `epic` / `sprint` / `commit` / `status` | Plans Epic context and Future/Active Sprint membership with preview-before-apply safeguards. Keeps Epic as the cross-Sprint container and routes selected Stories/Tasks/Bugs into the existing delivery workflow. |
 | **Router** | `skills/team-next-step/` | — | Read-only single-command entry (`$team-next-step`) inspecting `team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json`, and live Jira state (auto-discovering active Stories via JQL and hydrating/reconciling cross-machine or Jira Web UI edits) to recommend the exact next station, mode, and owner. |
 | **Station 1** | `skills/team-spec/` | `one-pass` / `draft` | Scale-aware unified specification & design: small/clear stories finish in one pass (**"抓大放小"**, ≤ 3 material questions); complex/ambiguous stories iterate via multi-round `draft` deep-dives + 6-Dimension AC Completeness Checklist. Supports incremental AC upsert, Jira description drift guard, and conditional UI (`has_ui`) / API (`has_api`) specs synced to the Jira `User Story`. |
 | **Station 2** | `skills/team-dev/` | `plan` / `implement` | Decomposes approved specs into verifiable slices (`TASK-001..N` → Jira `Sub-task` with specialty-matched developer auto-assignment) or runs **Dev Fast-Track** (guarded to `<= 3` ACs & `low`/`medium` risk). Implements code & tests in strict priority (`BUG-*` > `TASK-###` > `REV-###`), composes specialist craft skills (Bring-Your-Own-Skill hook), enforces a 4-check review-aligned exit gate, and checks off completion via `complete-task`. |
@@ -23,6 +24,7 @@ Seven Jira-centered engineering workflow skills — plus a dynamic multi-agent o
 ## Core Workflow Capabilities
 
 - **Zero-CLI Single-Entry UX & `zh-TW` Default Prose:** Humans interact in plain natural language or invoke `$team-next-step` at any point; AI executes `.ai-workflow/bin/jira_sync.py` in the background and writes human-facing specs, reviews, QA tables, and release notes in **Traditional Chinese (繁體中文)** by default.
+- **Epic/Sprint Planning Layer:** `$team-plan` previews Epic context, creates or inspects Future/Active Sprints, and assigns selected Story/Task/Bug issues only after explicit confirmation. Sprint membership does not replace Story delivery gates.
 - **Cross-Machine Hydration & Bidirectional Jira Web UI Reconciliation:** Syncs structured state via hidden Jira Issue Property (`ai_workflow_state`) and automatically reconciles manual Jira Web UI changes (Sub-tasks added/reopened, linked Bugs, Assignee updates, and Story Description edits) before station actions.
 - **1-to-N Role Pools, End-to-End Auto-Assignment & Smart Handoff:** Supports both multi-role individuals (auto-consolidated same-person chaining without self-`@mention` noise) and multi-member teams (automatic Story/Sub-task/Bug assignee resolution, specialty matching, and peer-review selection).
 - **Lightweight Standalone Production Bug Track:** Standalone or adopted CS/production `Bug` tickets registered via `$team-qa` (`report --standalone`) bypass `team-spec` and Sub-task ceremony, flowing directly through `team-dev -> team-review -> team-qa (verify) -> team-release`.
@@ -44,7 +46,7 @@ Seven Jira-centered engineering workflow skills — plus a dynamic multi-agent o
 
 ## Shared Files & Verification
 
-- `scripts/jira_sync.py` (dependency-free Python 3 stdlib CLI supporting live Jira REST API v3, Qase TestOps API v1, and offline mode) and `references/common-workflow-governance.md` are intentionally duplicated across all 7 `team-*` skills so each packaged skill `.zip` is self-contained.
-- Run `./tools/check_shared.sh` to verify all 7 copies remain byte-identical.
-- Run `python3 tools/test_workflow.py` to execute the 17-test end-to-end lifecycle and mock Jira/Qase REST API suite.
+- `scripts/jira_sync.py` (dependency-free Python 3 stdlib CLI supporting live Jira REST API v3, Jira Agile Sprint endpoints, Qase TestOps API v1, and offline mode) and `references/common-workflow-governance.md` are intentionally duplicated across all 8 `team-*` skills so each packaged skill `.zip` is self-contained.
+- Run `./tools/check_shared.sh` to verify all 8 copies remain byte-identical.
+- Run `python3 tools/test_workflow.py` to execute the 18-test end-to-end lifecycle and mock Jira/Qase REST API suite.
 - Routing and QA evaluation scenarios live in `skills/team-next-step/evals/evals.json` and `skills/team-qa/evals/evals.json`.

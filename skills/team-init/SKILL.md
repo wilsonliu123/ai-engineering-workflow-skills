@@ -27,7 +27,7 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 
 | Output / Target | Purpose | Committed to Git? |
 |---|---|---|
-| `.ai-workflow/team-config.json` | Project key, Jira base URL, status/issue-type mapping, and role-to-person mapping (`name`, `email`, `jira_account_id`) | **Yes** |
+| `.ai-workflow/team-config.json` | Project key, Jira base URL, optional Scrum `jira_board_id`, status/issue-type mapping, and role-to-person mapping (`name`, `email`, `jira_account_id`) | **Yes** |
 | `.ai-workflow/credentials.json` | Local Jira authentication credentials (`jira_base_url`, `jira_email`, `jira_api_token`, `chmod 0600`) auto-loaded by `jira_sync.py` | **No (Gitignored)** |
 | `.ai-workflow/bin/jira_sync.py` | Project-local unified CLI wrapper (works even when skills are installed globally) | **Yes** |
 | `.gitignore` | Ignores `.ai-workflow/active/`, `.ai-workflow/credentials.json`, and `.ai-workflow/.env` | **Yes** |
@@ -77,6 +77,7 @@ If any of the following items have not been explicitly provided or confirmed by 
 1. **專案 Jira URL 與 Project Key (Project URL & Project Key)**
    - 請問專案的 Jira Base URL（例如 `https://your-org.atlassian.net`）與 Project Key（例如 `PROJ` / `TEAM`）為何？
    - *(若團隊確定不使用遠端 Jira、僅走純本地離線模式，請使用者明確回覆「離線模式」)*。
+   - *(若已知 Scrum Board id，可一併提供；未提供時 `team-plan` 會在只有一個候選 Board 時自動解析，多個 Board 時再請使用者選擇。)*
 2. **預設 Jira 認證帳號與 API Token (Default Jira Account Email & API Token)**
    - 請提供預設用於呼叫 Jira REST API v3 的登入帳號 Email（`JIRA_EMAIL`）與 `JIRA_API_TOKEN`（當某角色未設定專屬 API Token 時，系統會以此預設帳號作為 fallback）。
 3. **角色認領與 API Token（支援「僅先填自己的角色，其他交由協作者後續認領」）**

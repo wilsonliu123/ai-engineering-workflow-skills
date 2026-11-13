@@ -1,6 +1,7 @@
 {
   "version": "1.0",
   "project_key": "PROJ",
+  "jira_board_id": "",
   "jira_base_url": "https://your-org.atlassian.net",
   "sync_mode": "auto",
   "notification_channel": "jira",

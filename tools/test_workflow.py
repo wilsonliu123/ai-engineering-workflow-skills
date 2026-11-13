@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-End-to-end and unit test suite for the 7-skill, 4-station Jira-centered workflow.
+End-to-end and unit test suite for the planning layer + 4-station, 8-skill Jira-centered workflow.
 Tests:
   1. Skill structure, YAML frontmatter, evals.json validity, and shared-file byte-identity
   2. team-init: .ai-workflow/team-config.json, .gitignore, AGENTS.md extraction & deduplication, idempotency
@@ -11,6 +11,7 @@ Tests:
   7. team-qa (record-qa & create-bug): plan mode pre-filled types, verify mode JUnit XML & CLI intake, create-bug routing back to developer
   8. team-release (close-story): gate enforcement (blocks on open bug, incomplete task, commit drift), Story closure, and active JSON deletion
   9. Live Jira REST API v3 mode against a local mock HTTP server (Basic Auth, ADF payloads, transitions, assignee updates, issue links)
+ 10. team-plan Sprint preview/apply/status against mocked Jira Agile Sprint endpoints
 """
 
 import hashlib
@@ -38,6 +39,7 @@ EXPECTED_SKILLS = {
     "team-review",
     "team-qa",
     "team-release",
+    "team-plan",
 }
 
 
@@ -78,6 +80,8 @@ class MockJiraHandler(BaseHTTPRequestHandler):
     stored_issues = {}
     stored_properties = {}
     stored_attachments = {}
+    stored_sprints = {}
+    next_sprint_id = 900
     simulate_put_404_keys = set()
     reject_subtask_types = set()
     reject_attachment_keys = set()
@@ -103,6 +107,7 @@ class MockJiraHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.requests_log.append(("GET", self.path, None, dict(self.headers)))
+        clean_path = self.path.split("?", 1)[0]
         if self.path == "/rest/api/3/myself":
             auth_hdr = self.headers.get("Authorization", "")
             decoded_auth = ""
@@ -138,6 +143,21 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                     "displayName": "Alice Chen",
                     "emailAddress": "alice@team.io",
                 })
+        elif self.path.startswith("/rest/agile/1.0/board/") and "/sprint" in self.path:
+            board_id = self.path.split("/rest/agile/1.0/board/", 1)[1].split("/", 1)[0]
+            sprints = [s for s in self.stored_sprints.values() if str(s.get("originBoardId")) == board_id]
+            self._send_json(200, {"values": sprints, "isLast": True})
+        elif clean_path.startswith("/rest/agile/1.0/sprint/") and clean_path.endswith("/issue"):
+            sprint_id = clean_path.split("/rest/agile/1.0/sprint/", 1)[1].split("/", 1)[0]
+            sprint = self.stored_sprints.get(sprint_id) or {}
+            issues = [self.stored_issues[k] for k in sprint.get("issue_keys", []) if k in self.stored_issues]
+            self._send_json(200, {"issues": issues})
+        elif clean_path.startswith("/rest/agile/1.0/sprint/"):
+            sprint_id = clean_path.split("/rest/agile/1.0/sprint/", 1)[1].split("/", 1)[0]
+            if sprint_id in self.stored_sprints:
+                self._send_json(200, self.stored_sprints[sprint_id])
+            else:
+                self._send_json(404, {"errorMessages": ["Sprint not found"]})
         elif self.path.startswith("/rest/api/3/user/search"):
             if "bob%40team.io" in self.path or "bob@team.io" in self.path:
                 self._send_json(200, [{"accountId": "acc-bob-resolved", "emailAddress": "bob@team.io", "displayName": "Bob Lin"}])
@@ -201,6 +221,30 @@ class MockJiraHandler(BaseHTTPRequestHandler):
 
         data = self._read_json()
         self.requests_log.append(("POST", self.path, data, dict(self.headers)))
+        if self.path == "/rest/agile/1.0/sprint":
+            sprint_id = str(self.next_sprint_id)
+            self.next_sprint_id += 1
+            sprint = {
+                "id": int(sprint_id),
+                "state": "future",
+                "name": data.get("name") or sprint_id,
+                "originBoardId": data.get("originBoardId"),
+                "goal": data.get("goal"),
+                "startDate": data.get("startDate"),
+                "endDate": data.get("endDate"),
+                "issue_keys": [],
+            }
+            self.stored_sprints[sprint_id] = sprint
+            self._send_json(201, sprint)
+            return
+        if self.path.startswith("/rest/agile/1.0/sprint/") and self.path.endswith("/issue"):
+            sprint_id = self.path.split("/rest/agile/1.0/sprint/", 1)[1].split("/", 1)[0]
+            sprint = self.stored_sprints.setdefault(sprint_id, {"id": int(sprint_id), "issue_keys": []})
+            for key in data.get("issues") or []:
+                if key not in sprint.setdefault("issue_keys", []):
+                    sprint["issue_keys"].append(key)
+            self._send_json(204, {})
+            return
         if self.path == "/rest/api/3/search/jql":
             jql = data.get("jql") or ""
             issues = []
@@ -297,6 +341,12 @@ class MockJiraHandler(BaseHTTPRequestHandler):
     def do_PUT(self):
         data = self._read_json()
         self.requests_log.append(("PUT", self.path, data, dict(self.headers)))
+        if self.path.startswith("/rest/agile/1.0/sprint/"):
+            sprint_id = self.path.split("/rest/agile/1.0/sprint/", 1)[1].split("/", 1)[0]
+            sprint = self.stored_sprints.setdefault(sprint_id, {"id": int(sprint_id), "issue_keys": []})
+            sprint.update({k: v for k, v in data.items() if k != "id"})
+            self._send_json(200, sprint)
+            return
         if self.path.startswith("/rest/api/3/issue/") and "/properties/ai_workflow_state" in self.path:
             key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
             self.stored_properties[key] = data
@@ -513,7 +563,7 @@ class WorkflowTestSuite(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
 
         # Verify evals.json files are valid JSON
-        for eval_skill in ("team-next-step", "team-qa"):
+        for eval_skill in ("team-next-step", "team-qa", "team-plan"):
             eval_path = SKILLS_DIR / eval_skill / "evals" / "evals.json"
             self.assertTrue(eval_path.exists())
             data = json.loads(eval_path.read_text(encoding="utf-8"))
@@ -1890,6 +1940,77 @@ class WorkflowTestSuite(unittest.TestCase):
             jira_srv.server_close()
             qase_srv.shutdown()
             qase_srv.server_close()
+
+    def test_18_team_plan_sprint_preview_apply_and_status(self):
+        MockJiraHandler.requests_log = []
+        MockJiraHandler.stored_issues = {
+            "PROJ-101": {"key": "PROJ-101", "fields": {"summary": "匯出報表", "issuetype": {"name": "Story"}, "status": {"name": "To Do"}}},
+            "PROJ-102": {"key": "PROJ-102", "fields": {"summary": "權限檢查", "issuetype": {"name": "Story"}, "status": {"name": "To Do"}}},
+            "PROJ-EPIC-12": {"key": "PROJ-EPIC-12", "fields": {"summary": "報表 Epic", "issuetype": {"name": "Epic"}, "status": {"name": "To Do"}}},
+        }
+        MockJiraHandler.stored_sprints = {}
+        MockJiraHandler.next_sprint_id = 900
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jt = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        jt.start()
+        jira_url = f"http://127.0.0.1:{jira_srv.server_port}"
+        live_env = {
+            "JIRA_BASE_URL": jira_url,
+            "JIRA_EMAIL": "alice@team.io",
+            "JIRA_API_TOKEN": "secret-token-123",
+        }
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                init = run_cli(
+                    root, "init", "--project-key", "PROJ", "--jira-url", jira_url,
+                    "--jira-email", "alice@team.io", "--jira-token", "secret-token-123",
+                    "--jira-board-id", "42",
+                )
+                self.assertEqual(init.returncode, 0, init.stderr)
+
+                preview = run_cli(
+                    root, "sprint-plan", "--board-id", "42", "--name", "2026-11 Sprint 3",
+                    "--goal", "完成 CSV 匯出", "--start-date", "2026-11-16", "--end-date", "2026-11-27",
+                    "--issue-key", "PROJ-101", "--issue-key", "PROJ-102", "--issue-key", "PROJ-EPIC-12",
+                    env_override=live_env,
+                )
+                self.assertEqual(preview.returncode, 0, preview.stderr)
+                preview_out = json.loads(preview.stdout)
+                self.assertTrue(preview_out["dry_run"])
+                self.assertFalse(preview_out["applied"])
+                self.assertEqual(preview_out["selected_issue_keys"], ["PROJ-101", "PROJ-102"])
+                self.assertEqual(MockJiraHandler.stored_sprints, {})
+
+                applied = run_cli(
+                    root, "sprint-plan", "--board-id", "42", "--name", "2026-11 Sprint 3",
+                    "--goal", "完成 CSV 匯出", "--start-date", "2026-11-16", "--end-date", "2026-11-27",
+                    "--issue-key", "PROJ-101", "--issue-key", "PROJ-102", "--issue-key", "PROJ-EPIC-12",
+                    "--apply", env_override=live_env,
+                )
+                self.assertEqual(applied.returncode, 0, applied.stderr)
+                applied_out = json.loads(applied.stdout)
+                self.assertTrue(applied_out["applied"])
+                sprint_id = str(applied_out["sprint_id"])
+                self.assertEqual(MockJiraHandler.stored_sprints[sprint_id]["issue_keys"], ["PROJ-101", "PROJ-102"])
+
+                status = run_cli(root, "sprint-status", "--sprint-id", sprint_id, env_override=live_env)
+                self.assertEqual(status.returncode, 0, status.stderr)
+                status_out = json.loads(status.stdout)
+                self.assertEqual(status_out["sprint"]["name"], "2026-11 Sprint 3")
+                self.assertEqual(sorted(i["key"] for i in status_out["issues"]), ["PROJ-101", "PROJ-102"])
+
+                MockJiraHandler.requests_log.clear()
+                renamed = run_cli(
+                    root, "sprint-plan", "--sprint-id", sprint_id, "--name", "2026-11 Sprint 3 Renamed",
+                    "--issue-key", "PROJ-101", "--apply", env_override=live_env,
+                )
+                self.assertEqual(renamed.returncode, 0, renamed.stderr)
+                self.assertEqual(MockJiraHandler.stored_sprints[sprint_id]["name"], "2026-11 Sprint 3 Renamed")
+                self.assertTrue(any(m == "PUT" and p == f"/rest/agile/1.0/sprint/{sprint_id}" for m, p, _, _ in MockJiraHandler.requests_log))
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
 
     def test_12_collaborator_git_clone_auth_onboarding_and_remote_jql_discovery(self):
         MockJiraHandler.requests_log.clear()
