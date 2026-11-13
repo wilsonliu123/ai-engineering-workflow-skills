@@ -1,5 +1,13 @@
 # AI 工程工作流技能套件（ai-engineering-workflow-skills v1.3）教育訓練與情境實戰手冊
 
+> **版本記錄**
+>
+> - **目前版本：** `v1.3.0`
+> - **更新日期：** 2026-11-13
+> - **本次變更：** 新增 `team-plan` Epic / Sprint 規劃層，並同步 8 個 workflow skills、13 個 CLI 子命令與 18 項驗證。
+> - **完整變更：** 請參閱根目錄的 `CHANGELOG.md`。
+
+
 本手冊為 `ai-engineering-workflow-skills`（v1.3 規劃層 + 四站八技能 Jira 核心工程工作流，另附動態多代理系統編排技能 `run-workflow`）之完整教育訓練教材與實戰操作指南。全書採用**真實使用情境驅動（Scenario-Driven Training）**編排，結合視覺化架構圖、終端機與 Jira 雙視窗實況對照圖、CLI 參數規格表與標準操作步驟，協助工程團隊從零完成專案導入、協作者認領、規格定義、任務拆解、AI 編碼、同儕審查、三層混合測試、探索／獨立缺陷閉環與正式發佈結案。
 
 ---
