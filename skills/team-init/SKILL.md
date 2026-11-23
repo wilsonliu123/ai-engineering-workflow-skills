@@ -31,7 +31,7 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 | `.ai-workflow/credentials.json` | Local Jira authentication credentials (`jira_base_url`, `jira_email`, `jira_api_token`, `chmod 0600`) auto-loaded by `jira_sync.py` | **No (Gitignored)** |
 | `.ai-workflow/bin/jira_sync.py` | Project-local unified CLI wrapper (works even when skills are installed globally) | **Yes** |
 | `.gitignore` | Ignores `.ai-workflow/active/`, `.ai-workflow/credentials.json`, and `.ai-workflow/.env` | **Yes** |
-| `docs/shared/engineering-standards.md` | Canonical repository-wide engineering, testing, and security standards | **Yes** |
+| `docs/shared/engineering-standards.md` | Canonical repository-wide engineering, testing, security, and Git Commit/PR standards (§1–§4) | **Yes** |
 | `AGENTS.md` | Trimmed of duplicated standards; links to `docs/shared/engineering-standards.md` | **Yes** |
 
 ## Zero-CLI Burden & Single-Command Principle
@@ -109,7 +109,9 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   --role "<FOUNDER_ROLES_COMMA_SEPARATED>" \
   --name "<FOUNDER_NAME>" \
   --jira-email "<JIRA_EMAIL>" \
-  --jira-token "<JIRA_API_TOKEN>"
+  --jira-token "<JIRA_API_TOKEN>" \
+  [--commit-policy "confirm_before_commit|auto_on_test_pass"] \
+  [--commit-message-pattern '<OPTIONAL_REGEX>']
 
 # Option B: Full multi-person mapping upfront
 python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
@@ -118,10 +120,12 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   --jira-email "<JIRA_EMAIL>" \
   --jira-token "<JIRA_API_TOKEN>" \
   --roles-json '<JSON_MAPPING>' \
-  [--role-tokens-json '<ROLE_TOKENS_JSON>']
+  [--role-tokens-json '<ROLE_TOKENS_JSON>'] \
+  [--commit-policy "confirm_before_commit|auto_on_test_pass"] \
+  [--commit-message-pattern '<OPTIONAL_REGEX>']
 ```
 
-*(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`.)*
+*(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`. Optional `--commit-policy` defaults to `"confirm_before_commit"` — pause after local tests pass to wait for user confirmation before committing — or can opt in to `"auto_on_test_pass"`; optional `--commit-message-pattern` configures a non-blocking regex check in `complete-task`.)*
 
 What `jira_sync.py init` enforces automatically:
 - Creates or updates `.ai-workflow/team-config.json` (template: `references/team-config-template.json`) with confirmed `project_key`, `jira_base_url`, `roles` (strictly `name`, `email`, `jira_account_id` — never tokens), `status_mapping`, and `issue_type_mapping`.
@@ -129,10 +133,10 @@ What `jira_sync.py init` enforces automatically:
 - When live credentials are provided, verifies Jira connectivity (`GET /rest/api/3/myself`) for both default and per-role tokens (`role_verifications`) and automatically populates missing `jira_account_id` fields from the role token's `/myself` response or `GET /rest/api/3/user/search`.
 - Installs `.ai-workflow/bin/jira_sync.py` (`chmod 0755`) and returns `"cli_path": ".ai-workflow/bin/jira_sync.py"`.
 - Appends `.ai-workflow/active/`, `.ai-workflow/credentials.json`, and `.ai-workflow/.env` to `.gitignore` if not already present.
-- Extracts engineering/coding/testing/security sections from `AGENTS.md` into `docs/shared/engineering-standards.md` (or creates a starter from `references/engineering-standards-template.md` if `AGENTS.md` has none) and **replaces the duplicated sections in `AGENTS.md` with a reference link** to `docs/shared/engineering-standards.md`.
+- Extracts engineering/coding/testing/security/Git Commit & PR sections from `AGENTS.md` into `docs/shared/engineering-standards.md` (or creates a starter from `references/engineering-standards-template.md` including `## 4. Git Commit & PR Standards` if `AGENTS.md` has none) and **replaces the duplicated sections in `AGENTS.md` with a reference link** to `docs/shared/engineering-standards.md`.
 
 ### Step 4: Verify and summarize
-1. Verify that `docs/shared/engineering-standards.md` reflects the repository's actual stack, test commands, and security boundaries. Refine the extracted markdown if needed.
+1. Verify that `docs/shared/engineering-standards.md` reflects the repository's actual stack, test commands, security boundaries, and **§4 Git Commit & PR Standards** (the single source of truth for project commit format). Refine the extracted markdown if needed.
 2. Present a concise initialization summary in Traditional Chinese (繁體中文):
    - **專案連線與憑證狀態**：確認 `project_key`、`jira_base_url`、`jira_mode`（`live` 或 `offline`）、連線驗證結果（`jira_verification`）以及憑證已受 `.gitignore` 保護（`.ai-workflow/credentials.json`）。
    - **角色定義與交接整併表 (`role_consolidation`)**：列出各角色負責人、帳號與哪些相鄰站點為同一人（`auto-consolidated` 僅抑制重複 `@mention` 通知，跨站推進仍需使用者明確授權）、哪些跨人交接會觸發 Jira `@mention` + 指派 + 狀態流轉並執行 Clean Stop。

@@ -5,6 +5,8 @@
   "jira_base_url": "https://your-org.atlassian.net",
   "sync_mode": "auto",
   "notification_channel": "jira",
+  "commit_policy": "confirm_before_commit",
+  "commit_message_pattern": "",
   "qa_test_backend": "",
   "qase": {
     "project_code": "",
