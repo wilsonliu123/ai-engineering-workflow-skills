@@ -28,9 +28,12 @@ Run the status inspector from the repository root (prefer `.ai-workflow/bin/jira
 
 ```bash
 python3 .ai-workflow/bin/jira_sync.py --repo-root . status [--key <JIRA-KEY>] [--fetch-remote]
+# Aggregate workflow progress across all Stories under an Epic (live Jira + local active state):
+python3 .ai-workflow/bin/jira_sync.py --repo-root . status --epic <EPIC-KEY>
 # Or run explicit bidirectional reconciliation across active/remote Stories:
 python3 .ai-workflow/bin/jira_sync.py --repo-root . pull [--key <JIRA-KEY>]
 ```
+- **Epic Progress Aggregation (`status --epic <EPIC-KEY>`):** Queries child Stories under `<EPIC-KEY>` (`parent = "<EPIC>"` with `"Epic Link" = "<EPIC>"` fallback in live mode, or scans `.ai-workflow/active/*.json` offline), merges local and remote state, resolves dependency blockers (`blocked_by_dependencies`), and reports `total_stories`, `completed_stories`, `in_progress_stories`, `blocked_stories`, `ready_to_start_stories`, `progress_pct`, `station_breakdown`, and `next_recommended_story` while enforcing `can_auto_chain_next_station: false` and `requires_user_confirmation: true`.
 
 - If `.ai-workflow/team-config.json` does not exist (`initialized: false`), immediately recommend `$team-init`.
 - If `requires_member_auth: true` (`credentials_missing: true` — a teammate cloned a live Jira repository whose `.ai-workflow/credentials.json` is gitignored), immediately display `claimed_roles` and `unclaimed_roles` from `status`, ask **which role(s) they own** (`--role`, e.g. `developer`, `qa`, or `reviewer,qa`; supports appending multiple members per role and optional `--specialty`) plus their **personal Jira Email + API Token** (and Qase Token if claiming `qa` when `qase_required: true`), run `jira_sync.py auth --role <ROLES> [--specialty <SPEC>] --jira-email <EMAIL> --jira-token <TOKEN>`, and then immediately re-run `status`!
@@ -45,7 +48,7 @@ Follow this strict priority order (matching `jira_sync.py status`):
 |---|---|---|---|
 | **0** | `.ai-workflow/team-config.json` missing | `team-init` | Tech Lead / PM |
 | **0b** | `team-config.json` has `jira_base_url`, but local `.ai-workflow/credentials.json` is missing (`requires_member_auth: true`) | `team-init` (`auth` mode) | Current Collaborator |
-| **1** | Explicit Epic/Sprint/Backlog planning request, or a required board/Sprint choice is missing | `team-plan` (`epic` / `sprint` / `commit` / `status`) | `pm` |
+| **1** | Explicit Epic/Sprint/Backlog planning request, or a required board/Sprint choice is missing | `team-plan` (`epic` / `decompose` / `sprint` / `commit` / `status`) | `pm` |
 | **2** | No active Story yet, or `spec_status != "approved"` | `team-spec` | `pm` (+ `tech_lead`) |
 | **3** | Open Bug ticket (`bugs` with `status == "open"`) from QA or Review | `team-dev` (`implement` mode) | `developer` |
 | **4** | Spec approved, but no `tasks` (`TASK-001..N`) planned yet | `team-dev` (`plan` mode) *(parallel: `team-qa` `plan` mode)* | `developer` |

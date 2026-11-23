@@ -18,8 +18,9 @@ Before drafting, inspect the repository to classify the change surface:
      - **Error Cases:** Status codes (`400`, `401`, `403`, `404`, `409`, `422`, `500`) and error payload structure.
    - When `has_api: false`, omit all API contract sections completely.
 
-3. **`has_data: true`** when database tables, indexes, migrations, cache keys, or file-storage formats change.
-   - Include schema changes, backward compatibility, and rollback/forward-fix strategy inside `--design-summary`.
+3. **`has_data: true`** **ONLY** when database schemas/tables, indexes, migrations, storage formats, or persistent data models are added or modified.
+   - Merely calling an existing persistence or repository API does **NOT** trigger `has_data: true` (`has_data: false`).
+   - When `has_data: true`, include schema changes, backward compatibility, and rollback/forward-fix strategy inside `--design-summary`.
 
 ---
 
@@ -70,3 +71,21 @@ Ask the human **only** if the codebase and prompt leave a genuine ambiguity in:
 - **問題 `Q1`：** Clear 1-sentence question naming the exact behavior or boundary.
 - **為什麼重要：** 1-sentence impact on user experience, security, or cost.
 - **建議方案 (Recommended)：** Concrete recommendation with rationale, plus 1 alternative.
+
+---
+
+## 4. Existing-Story Backfill Mode, Optional Risks/`Q-###`, & Evidence Discipline
+
+When using `sync-story --key <EXISTING-KEY> --backfill` (or `--preserve-owner`) to reconstruct or complete specs for an existing Story:
+
+1. **Preserve Live State:** `--backfill` implies `--preserve-owner`, refuses `--status approved`, preserves `current_owner_role`, Jira Assignee, Jira status, and existing `tasks`/`review`/`qa`/`bugs`, respects the Description Drift Guard, and verifies `last_synced_description_hash` after syncing.
+2. **Evidence Separation (5 Distinct Categories):** Never merge these together:
+   - **Original Requirement / Approved Decision:** Quoted Jira requirement or human-confirmed decision.
+   - **Observed Code Reality:** Facts read directly from source files/APIs (never promote existing code constants/behaviors into "approved requirements" without confirmation).
+   - **AI Suggestions:** Recommended safeguards or implied requirements surfaced in `auto_decisions` or `--risks`.
+   - **Open Questions (`Q-###`):** Unresolved decisions passed via `--open-questions-json` (`id`, `question`, `owner`, `proposed_default`, `impacted_acs`, `blocking`; plain strings auto-number `Q-001`, `Q-002`, ...).
+   - **Verified Evidence:** Only real executed test output; never report test code existence or Jira status as executed verification.
+3. **Scoped Story Description & Artifact Boundaries:**
+   - Render `### 風險與待確認問題 (Risks & Open Questions)` (English: `### Risks & Open Questions`) **only** when `--risks` or `--open-questions-json` is non-empty; simple stories stay concise without extra sections.
+   - Do **not** add a Verification Scenarios table to the Story Description (test scenarios/cases `TC-001..N` belong in Station 3b `team-qa`) and do **not** create `analysis.md` or per-feature Git Markdown files.
+4. **Report Completion State Precisely:** Distinguish **Material Backfilled** (`backfill_stage: "material_backfilled"`), **Spec Pending Confirmation** (`backfill_stage: "spec_pending_confirmation"` when blocking `Q-###` exist), and **Spec Approved** (`spec_status: "approved"` after explicit user confirmation).

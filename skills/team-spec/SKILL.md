@@ -40,7 +40,7 @@ Read `references/common-workflow-governance.md` and `references/spec-method.md` 
 4. Classify the **Change Surface** from codebase facts:
    - `has_ui`: Does this feature add or modify user-facing screens, components, or copy?
    - `has_api`: Does this feature add or modify HTTP/gRPC/GraphQL endpoints, events, or cross-service contracts?
-   - `has_data`: Does this feature add or modify database tables, migrations, caches, or persistent state?
+   - `has_data`: `true` **ONLY** when this feature adds or modifies database schemas/tables, indexes, migrations, storage formats, or persistent data models — **NOT** merely calling an existing persistence/repository API (that is `has_data: false`).
 
 ### 2. Draft the unified specification & check the 6-Dimension AC Checklist
 Follow `references/spec-method.md` to prepare:
@@ -98,6 +98,39 @@ python3 "<skill-dir>/scripts/jira_sync.py" --repo-root . sync-story \
   python3 "<skill-dir>/scripts/jira_sync.py" --repo-root . sync-story --key "<JIRA-KEY>"
   ```
   This automatically updates `.ai-workflow/bin/jira_sync.py`, hydrates `<JIRA-KEY>` (from local `.ai-workflow/active/<JIRA-KEY>.json` or remote Jira), re-writes the clean human-readable Story Description (Sections 1–5 only), and migrates the machine state into Jira's hidden `ai_workflow_state` Issue Property without posting duplicate handoff comments.
+
+### 4b. Existing-Story Backfill Mode (`--backfill` / `--preserve-owner`)
+When backfilling or enriching a specification on an already-created, in-flight, or already-delivered Jira Story (without approving, rolling back, transitioning status, reassigning Assignee, or resetting `tasks`/`review`/`qa`/`bugs`):
+
+```bash
+python3 "<skill-dir>/scripts/jira_sync.py" --repo-root . sync-story \
+  --key "<EXISTING-KEY>" \
+  --backfill \
+  --title "<Story Title>" \
+  --scope-in "<In-Scope Summary>" \
+  --scope-out "<Out-of-Scope Summary>" \
+  --ac "AC-001:<Testable criterion 1>" \
+  --design-summary "<Technical design & observed code reality>" \
+  --risks "<Optional risks / implicit requirements (omit on simple stories)>" \
+  --open-questions-json '[{"id":"Q-001","question":"...","owner":"pm","proposed_default":"...","impacted_acs":["AC-001"],"blocking":true}]'
+```
+
+- **Ownership & Lifecycle Preservation (`--preserve-owner` / `--backfill`):**
+  - `--backfill` implies `--preserve-owner`, strictly operates in draft/preserved mode, and **rejects `--status approved`** (exit `1`) so documentation backfill is never mistaken for spec approval or role handoff.
+  - Never overwrites `current_owner_role`, never calls `safe_assign_issue` to reassign Jira Assignee to PM, never transitions Jira status, and never resets existing `tasks`, `review`, `qa`, or `bugs`.
+  - Works on both already-tracked stories and existing Jira stories adopted via `--key <EXISTING-KEY>`, honoring Description Drift Guard before writing and verifying `last_synced_description_hash` after syncing.
+- **Optional Risks & Open Questions Section:** Only when `--risks` or `--open-questions-json` is non-empty, `format_story_description` appends `### 風險與待確認問題 (Risks & Open Questions)` (English: `### Risks & Open Questions`). Omit both on simple stories so their Story Description stays concise and unchanged.
+- **Strict Asset & Station Boundaries:** Do **NOT** add a Verification Scenarios table to the Story Description (test cases `TC-001..N` belong strictly to Station 3b `team-qa`), and do **NOT** create `analysis.md` or per-feature Markdown files in Git.
+- **Evidence Discipline (Never Conflate Sources):** In `--design-summary`, `--risks`, and review summaries, explicitly separate:
+  1. **Original Requirement / Approved Decision** (explicit Jira ticket text or human-confirmed decision)
+  2. **Observed Code Reality** (what current source files/APIs actually implement — never label code defaults as approved requirements)
+  3. **AI Suggestions** (proposed edge-case protections in `auto_decisions` or risks)
+  4. **Open Questions (`Q-###`)** (unresolved scope/auth/data ambiguities with `owner`, `proposed_default`, `impacted_acs`, `blocking`)
+  5. **Verified Evidence** (actual executed test output; "code/tests exist" is never "verified pass")
+- **3-State Completion Reporting:** Always report which state applies:
+  - **Material Backfilled (`material_backfilled`):** Backfill synced cleanly to Jira and verified (`open_blocking_questions` is empty), while spec approval remains distinct.
+  - **Spec Pending Confirmation (`spec_pending_confirmation`):** Blocking `Q-###` items remain open (`open_blocking_questions` non-empty) and need human confirmation before formal approval.
+  - **Spec Approved (`approved`):** Blocking questions resolved, 6-Dimension AC Checklist verified, and user explicitly confirmed approval (via a separate non-`--backfill` `--status approved` confirmation step).
 
 ### 5. Role-aware handoff & Station Boundary (`team-dev`)
 `jira_sync.py sync-story --status approved` automatically stores the state snapshot in Jira's hidden `ai_workflow_state` Issue Property for cross-machine hydration, returns `can_auto_chain_next_station: false` and `requires_user_confirmation_for_next_station: true`, and checks `.ai-workflow/team-config.json`:
