@@ -28,6 +28,7 @@ import datetime
 import getpass
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import re
@@ -1579,7 +1580,14 @@ class JiraClient:
             content_nodes.append({"type": "paragraph", "content": [{"type": "text", "text": "Updated by ai-engineering-workflow"}]})
         return {"type": "doc", "version": 1, "content": content_nodes}
 
-    def update_or_create_story(self, jira_key: str, title: str, description_md: str, create: bool = False) -> dict:
+    def update_or_create_story(
+        self,
+        jira_key: str,
+        title: str,
+        description_md: str,
+        create: bool = False,
+        allow_create: bool = True,
+    ) -> dict:
         adf = self.text_to_adf(description_md)
         if not self.is_live:
             return {"mode": "offline", "jira_key": jira_key, "action": "sync-story", "summary": title}
@@ -1601,7 +1609,7 @@ class JiraClient:
             self._request("PUT", f"/rest/api/3/issue/{urllib.parse.quote(jira_key)}", payload)
             return {"mode": "live", "jira_key": jira_key, "action": "update-story"}
         except RuntimeError as exc:
-            if "HTTP 404" in str(exc):
+            if "HTTP 404" in str(exc) and allow_create:
                 res = self._request("POST", "/rest/api/3/issue", create_payload)
                 return {"mode": "live", "jira_key": res.get("key", jira_key), "action": "create-story"}
             raise
@@ -1719,6 +1727,7 @@ class JiraClient:
                 raise
 
         epic_link_field = _clean_optional_text(self.config.get("epic_link_field"))
+        epic_link_field_rejected = False
         if epic_link_field:
             try:
                 res2 = self._request("POST", "/rest/api/3/issue", {"fields": {**base_fields, epic_link_field: epic_key}})
@@ -1738,19 +1747,28 @@ class JiraClient:
             except RuntimeError as exc2:
                 if "HTTP 400" not in str(exc2):
                     raise
+                epic_link_field_rejected = True
 
         res3 = self._request("POST", "/rest/api/3/issue", {"fields": base_fields})
         new_key = _clean_optional_text((res3 or {}).get("key")).upper()
         if not new_key:
             raise RuntimeError("Jira API did not return a Story key.")
+        if epic_link_field_rejected:
+            unlinked_warning = (
+                f"Jira rejected both fields.parent and configured epic_link_field '{epic_link_field}' "
+                f"for Epic {epic_key} (HTTP 400); created Story {new_key} without parent Epic link. "
+                f"Verify 'epic_link_field' in .ai-workflow/team-config.json or link manually in Jira."
+            )
+        else:
+            unlinked_warning = (
+                f"Jira rejected fields.parent for Epic {epic_key} (HTTP 400); created Story {new_key} "
+                f"without parent Epic link. Configure 'epic_link_field' in .ai-workflow/team-config.json or link manually in Jira."
+            )
         return {
             "mode": "live",
             "jira_key": new_key,
             "epic_link_mode": "unlinked",
-            "warning": (
-                f"Jira rejected fields.parent for Epic {epic_key} (HTTP 400); created Story {new_key} "
-                f"without parent Epic link. Configure 'epic_link_field' in .ai-workflow/team-config.json or link manually in Jira."
-            ),
+            "warning": unlinked_warning,
         }
 
     def add_comment(self, issue_key: str, body_md: str, mention_account_id: str = "", mention_name: str = "") -> dict:
@@ -4096,17 +4114,22 @@ def _validate_and_plan_epic_stories(raw_stories_arg) -> tuple:
         story_points = None
         if raw_sp is not None and not (isinstance(raw_sp, str) and not raw_sp.strip()):
             if isinstance(raw_sp, bool):
-                raise ValueError(f"Story '{sid}' field 'story_points' must be numeric.")
+                raise ValueError(f"Story '{sid}' field 'story_points' must be a finite non-negative number.")
             if isinstance(raw_sp, (int, float)):
-                story_points = raw_sp
+                num = float(raw_sp)
+                if not math.isfinite(num) or num < 0:
+                    raise ValueError(f"Story '{sid}' field 'story_points' must be a finite non-negative number.")
+                story_points = int(num) if (isinstance(raw_sp, int) or num.is_integer()) else num
             elif isinstance(raw_sp, str):
                 try:
                     num = float(raw_sp.strip())
-                    story_points = int(num) if num.is_integer() else num
                 except ValueError as exc:
-                    raise ValueError(f"Story '{sid}' field 'story_points' must be numeric.") from exc
+                    raise ValueError(f"Story '{sid}' field 'story_points' must be a finite non-negative number.") from exc
+                if not math.isfinite(num) or num < 0:
+                    raise ValueError(f"Story '{sid}' field 'story_points' must be a finite non-negative number.")
+                story_points = int(num) if num.is_integer() else num
             else:
-                raise ValueError(f"Story '{sid}' field 'story_points' must be numeric.")
+                raise ValueError(f"Story '{sid}' field 'story_points' must be a finite non-negative number.")
 
         rec = {
             "id": sid,
@@ -4246,6 +4269,15 @@ def cmd_epic_decompose(args) -> int:
                 e_sum = _clean_optional_text(((epic_issue.get("fields") or {}).get("summary")))
                 if e_sum:
                     epic_summary = e_sum
+        except RuntimeError as exc:
+            if "HTTP 404" in str(exc):
+                if getattr(args, "apply", False):
+                    print(
+                        f"ERROR: Epic {epic_key} was not found in Jira (HTTP 404). Refusing to create Stories under a non-existent Epic.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                warnings.append(f"Epic {epic_key} was not found in Jira (HTTP 404).")
         except Exception:
             pass
         remote_children, _, fetch_warnings = _fetch_epic_children_live(client, config, epic_key)
@@ -4259,12 +4291,18 @@ def cmd_epic_decompose(args) -> int:
                 existing_by_key[rk]["title"] = r_sum or existing_by_key[rk]["title"]
                 existing_by_key[rk]["jira_status"] = r_st or existing_by_key[rk]["jira_status"]
                 existing_by_key[rk]["source"] = "local+jira"
+                if not existing_by_key[rk].get("epic_decompose_id"):
+                    rem_snap = client.get_state_snapshot(rk)
+                    if isinstance(rem_snap, dict):
+                        existing_by_key[rk]["epic_decompose_id"] = _clean_optional_text(rem_snap.get("epic_decompose_id"))
             else:
+                rem_snap = client.get_state_snapshot(rk)
+                snap_dec_id = _clean_optional_text(rem_snap.get("epic_decompose_id")) if isinstance(rem_snap, dict) else ""
                 existing_by_key[rk] = {
                     "key": rk,
                     "title": r_sum,
                     "jira_status": r_st,
-                    "epic_decompose_id": "",
+                    "epic_decompose_id": snap_dec_id,
                     "source": "jira",
                 }
 
@@ -5437,16 +5475,16 @@ def _cmd_status_epic(
                 k = _clean_optional_text(st.get("jira_key") or af.stem).upper()
                 stories_by_key[k] = st
 
-    if not stories_by_key:
-        main_root = _resolve_main_worktree_root(repo_root)
-        if main_root and get_active_dir(main_root).exists():
-            for mf in sorted(get_active_dir(main_root).glob("*.json")):
-                try:
-                    st = json.loads(mf.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                if isinstance(st, dict) and _clean_optional_text(st.get("epic_key")).upper() == epic_key:
-                    k = _clean_optional_text(st.get("jira_key") or mf.stem).upper()
+    main_root = _resolve_main_worktree_root(repo_root)
+    if main_root and get_active_dir(main_root).exists():
+        for mf in sorted(get_active_dir(main_root).glob("*.json")):
+            try:
+                st = json.loads(mf.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(st, dict) and _clean_optional_text(st.get("epic_key")).upper() == epic_key:
+                k = _clean_optional_text(st.get("jira_key") or mf.stem).upper()
+                if k not in stories_by_key:
                     stories_by_key[k] = st
 
     if not stories_by_key and creds_missing:
@@ -5539,6 +5577,11 @@ def _cmd_status_epic(
         return False
 
     completed_keys = {k for k, st in stories_by_key.items() if _is_story_completed(st)}
+    remote_dep_done_cache = {}
+    todo_statuses = {"", "to do", "todo", "待辦", "待办"}
+    cfg_todo = _clean_optional_text((config.get("status_mapping") or {}).get("todo")).lower()
+    if cfg_todo:
+        todo_statuses.add(cfg_todo)
 
     ordered_items = sorted(
         stories_by_key.items(),
@@ -5561,7 +5604,26 @@ def _cmd_status_epic(
         tasks_done = len([t for t in tasks if isinstance(t, dict) and t.get("status") == "completed"])
         tasks_total = len(tasks)
         depends_on_keys = [str(dk).strip().upper() for dk in (st.get("depends_on_keys") or []) if str(dk).strip()]
-        blocked_by_dependencies = [dk for dk in depends_on_keys if dk not in completed_keys]
+        resolved_deps = {str(rk).strip().upper() for rk in (st.get("resolved_depends_on_keys") or []) if str(rk).strip()}
+        blocked_by_dependencies = []
+        for dk in depends_on_keys:
+            if dk in completed_keys or dk in resolved_deps:
+                continue
+            if client.is_live and dk not in stories_by_key:
+                if dk not in remote_dep_done_cache:
+                    dep_done = False
+                    try:
+                        dep_iss = client.get_issue(dk)
+                        dep_st = _clean_optional_text((((dep_iss or {}).get("fields") or {}).get("status") or {}).get("name"))
+                        dep_done = _is_jira_status_done(dep_st, config)
+                    except Exception:
+                        dep_done = False
+                    remote_dep_done_cache[dk] = dep_done
+                    if dep_done:
+                        completed_keys.add(dk)
+                if remote_dep_done_cache[dk]:
+                    continue
+            blocked_by_dependencies.append(dk)
 
         if is_completed:
             current_station = "Done"
@@ -5599,9 +5661,9 @@ def _cmd_status_epic(
 
         if is_completed:
             completed_stories += 1
-        elif blocked_by_dependencies or open_bugs > 0 or rec.get("awaiting_qa_deploy"):
+        elif blocked_by_dependencies or open_bugs > 0 or (rec.get("awaiting_qa_deploy") and recommended_skill is None):
             blocked_stories += 1
-        elif spec_status_str != "approved" and tasks_total == 0 and jira_status_str.strip().lower() in ("", "to do", "todo"):
+        elif spec_status_str != "approved" and tasks_total == 0 and jira_status_str.strip().lower() in todo_statuses:
             ready_to_start_stories += 1
         else:
             in_progress_stories += 1
@@ -5659,7 +5721,7 @@ def _cmd_status_epic(
 
 
 def cmd_status(args) -> int:
-    if getattr(args, "key", None) and getattr(args, "epic", None):
+    if getattr(args, "key", None) is not None and getattr(args, "epic", None) is not None:
         print("ERROR: --key and --epic cannot be used together.", file=sys.stderr)
         return 1
 
@@ -5686,7 +5748,7 @@ def cmd_status(args) -> int:
     base_url = (config.get("jira_base_url") or "").strip()
     creds_missing = bool(base_url and not args.offline and not client.is_live)
 
-    if getattr(args, "epic", None):
+    if getattr(args, "epic", None) is not None:
         return _cmd_status_epic(repo_root, config, client, standards_exists, creds_missing, args.epic)
 
     if args.key:
@@ -5970,33 +6032,77 @@ def cmd_pull(args) -> int:
 # Subcommand 3: sync-story (Station 1: team-spec)
 # ---------------------------------------------------------------------------
 
-def _parse_and_normalize_open_questions(raw_val) -> list:
-    """
-    Parse and normalize --open-questions-json (raw JSON array, file path, or @file path).
-    Accepts dicts ({id, question, owner, proposed_default, impacted_acs, blocking}) or plain strings.
-    Auto-assigns Q-001, Q-002, ... without colliding with explicit IDs; sanitizes None/empty safely.
-    """
-    if raw_val is None:
-        return []
-    s = str(raw_val).strip()
-    if not s:
-        return []
-    try:
-        parsed = load_json_arg(s)
-    except (json.JSONDecodeError, ValueError, OSError) as exc:
-        raise ValueError(f"Malformed --open-questions-json: {exc}") from exc
+_EPIC_METADATA_FIELDS = (
+    "epic_key",
+    "epic_decompose_id",
+    "depends_on",
+    "depends_on_keys",
+    "resolved_depends_on_keys",
+    "wave",
+    "shared_contracts",
+)
+_PRESERVED_LIFECYCLE_FIELDS = (
+    "current_owner_role",
+    "role_owners",
+    "jira_status",
+    "tasks",
+    "review",
+    "qa",
+    "bugs",
+    "qa_deploy_gate",
+    "candidate_commit",
+    "spec_status",
+    "approved_by",
+    "approved_at",
+    "issue_kind",
+    "triage",
+    "triage_closed",
+    "jira_resolution",
+) + _EPIC_METADATA_FIELDS
 
+
+def _parse_bool_flag(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes")
+    return bool(val) if val is not None else False
+
+
+def _normalize_open_questions_list(parsed, source_label: str = "--open-questions-json") -> list:
+    """
+    Validate and normalize a parsed list of open questions (dicts or strings).
+    Rejects duplicate explicit Q-### IDs (case-insensitive) among valid entries,
+    avoids reserving IDs from blank entries, auto-assigns Q-001.. without collision,
+    and parses boolean `blocking` strictly.
+    """
     if parsed is None:
         return []
     if not isinstance(parsed, list):
-        raise ValueError("--open-questions-json must be a JSON array.")
+        raise ValueError(f"{source_label} must be a JSON array.")
 
+    valid_raw_items = []
     used_ids_upper = set()
     for item in parsed:
-        if isinstance(item, dict):
+        if item is None:
+            continue
+        if isinstance(item, str):
+            q_text = _clean_optional_text(item)
+            if not q_text:
+                continue
+            valid_raw_items.append(("str", q_text))
+        elif isinstance(item, dict):
+            q_text = _clean_optional_text(item.get("question") or item.get("text") or item.get("summary"))
+            if not q_text:
+                continue
             ex_id = _clean_optional_text(item.get("id")).upper()
             if ex_id:
+                if ex_id in used_ids_upper:
+                    raise ValueError(f"Duplicate open question id '{ex_id}' in {source_label}.")
                 used_ids_upper.add(ex_id)
+            valid_raw_items.append(("dict", (item, q_text, ex_id)))
+        else:
+            raise ValueError(f"Each item in {source_label} must be a JSON object or string.")
 
     next_seq = 1
 
@@ -6010,26 +6116,18 @@ def _parse_and_normalize_open_questions(raw_val) -> list:
         return qid
 
     normalized = []
-    for item in parsed:
-        if item is None:
-            continue
-        if isinstance(item, str):
-            q_text = _clean_optional_text(item)
-            if not q_text:
-                continue
+    for kind, payload in valid_raw_items:
+        if kind == "str":
             normalized.append({
                 "id": _next_q_id(),
-                "question": q_text,
+                "question": payload,
                 "owner": "",
                 "proposed_default": "",
                 "impacted_acs": [],
                 "blocking": False,
             })
-        elif isinstance(item, dict):
-            q_text = _clean_optional_text(item.get("question") or item.get("text") or item.get("summary"))
-            if not q_text:
-                continue
-            explicit_id = _clean_optional_text(item.get("id")).upper()
+        else:
+            item, q_text, explicit_id = payload
             q_id = explicit_id or _next_q_id()
             owner = _clean_optional_text(item.get("owner"))
             proposed_default = _clean_optional_text(item.get("proposed_default"))
@@ -6040,24 +6138,29 @@ def _parse_and_normalize_open_questions(raw_val) -> list:
                 impacted_acs = [_clean_optional_text(a) for a in raw_acs if _clean_optional_text(a)]
             else:
                 impacted_acs = []
-            raw_blocking = item.get("blocking")
-            if isinstance(raw_blocking, bool):
-                blocking = raw_blocking
-            elif isinstance(raw_blocking, str):
-                blocking = raw_blocking.strip().lower() in ("true", "1", "yes")
-            else:
-                blocking = bool(raw_blocking) if raw_blocking is not None else False
             normalized.append({
                 "id": q_id,
                 "question": q_text,
                 "owner": owner,
                 "proposed_default": proposed_default,
                 "impacted_acs": impacted_acs,
-                "blocking": blocking,
+                "blocking": _parse_bool_flag(item.get("blocking")),
             })
-        else:
-            raise ValueError("Each item in --open-questions-json must be a JSON object or string.")
     return normalized
+
+
+def _parse_and_normalize_open_questions(raw_val) -> list:
+    """Parse and normalize --open-questions-json (raw JSON array, file path, or @file path)."""
+    if raw_val is None:
+        return []
+    s = str(raw_val).strip()
+    if not s:
+        return []
+    try:
+        parsed = load_json_arg(s)
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
+        raise ValueError(f"Malformed --open-questions-json: {exc}") from exc
+    return _normalize_open_questions_list(parsed, source_label="--open-questions-json")
 
 
 def format_story_description(story: dict, config: dict = None) -> str:
@@ -6177,7 +6280,7 @@ def format_story_description(story: dict, config: dict = None) -> str:
         for q in open_questions:
             q_id = _clean_optional_text(q.get("id")) or "Q-001"
             q_text = _clean_optional_text(q.get("question"))
-            is_blocking = bool(q.get("blocking"))
+            is_blocking = _parse_bool_flag(q.get("blocking"))
             if zh:
                 b_tag = "[阻塞核准]" if is_blocking else "[非阻塞]"
                 meta_parts = []
@@ -6215,6 +6318,13 @@ def cmd_sync_story(args) -> int:
             file=sys.stderr,
         )
         return 1
+    if backfill_mode and getattr(args, "create", False):
+        print(
+            "ERROR: --backfill cannot be combined with --create. "
+            "Backfill mode only updates existing Jira Stories.",
+            file=sys.stderr,
+        )
+        return 1
 
     parsed_open_questions = None
     raw_oq_arg = getattr(args, "open_questions_json", None)
@@ -6224,6 +6334,33 @@ def cmd_sync_story(args) -> int:
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
+
+    spec_payload = None
+    if args.spec_json:
+        try:
+            spec_payload = load_json_arg(args.spec_json)
+        except (json.JSONDecodeError, ValueError, OSError) as exc:
+            print(f"ERROR: Malformed --spec-json: {exc}", file=sys.stderr)
+            return 1
+        if isinstance(spec_payload, dict):
+            if backfill_mode and str(spec_payload.get("spec_status") or "").strip().lower() == "approved":
+                print(
+                    "ERROR: --backfill cannot approve a spec (spec_status='approved' in --spec-json is rejected).",
+                    file=sys.stderr,
+                )
+                return 1
+            try:
+                if "open_questions" in spec_payload:
+                    spec_payload["open_questions"] = _normalize_open_questions_list(
+                        spec_payload["open_questions"], source_label="--spec-json.open_questions"
+                    )
+                if isinstance(spec_payload.get("spec"), dict) and "open_questions" in spec_payload["spec"]:
+                    spec_payload["spec"]["open_questions"] = _normalize_open_questions_list(
+                        spec_payload["spec"]["open_questions"], source_label="--spec-json.spec.open_questions"
+                    )
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
 
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
@@ -6241,15 +6378,64 @@ def cmd_sync_story(args) -> int:
             story, _ = reconcile_story_with_jira(client, config, repo_root, jira_key, story=story, save=False)
     else:
         hydrated = None
-        if not args.create and (preserve_owner or (not args.title and not args.spec_json)):
+        if not args.create:
             hydrated = _hydrate_story_from_worktree(repo_root, jira_key)
             if hydrated is not None:
                 had_prior_workflow_state = True
             elif client.is_live:
+                remote_issue = None
+                try:
+                    remote_issue = client.get_issue(jira_key)
+                except RuntimeError as exc:
+                    if backfill_mode:
+                        print(
+                            f"ERROR: Jira Story {jira_key} could not be fetched for --backfill ({exc}).",
+                            file=sys.stderr,
+                        )
+                        return 1
+                except Exception:
+                    remote_issue = None
+
                 remote_snap = client.get_state_snapshot(jira_key)
                 if isinstance(remote_snap, dict) and remote_snap.get("jira_key"):
                     had_prior_workflow_state = True
+
                 hydrated = hydrate_story_from_remote(client, repo_root, jira_key, persist=False)
+                if backfill_mode and hydrated is None:
+                    print(
+                        f"ERROR: Jira Story {jira_key} was not found in Jira; --backfill only updates existing Stories.",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+                if (
+                    isinstance(hydrated, dict)
+                    and not had_prior_workflow_state
+                    and not preserve_owner
+                    and (args.title or args.spec_json)
+                ):
+                    minimal = {"jira_key": jira_key}
+                    for ef in _EPIC_METADATA_FIELDS:
+                        if ef in hydrated:
+                            minimal[ef] = hydrated[ef]
+                    if hydrated.get("tasks"):
+                        minimal["tasks"] = hydrated["tasks"]
+                    if hydrated.get("bugs"):
+                        minimal["bugs"] = hydrated["bugs"]
+                    if hydrated.get("role_owners"):
+                        minimal["role_owners"] = hydrated["role_owners"]
+                    hydrated = minimal
+
+                if (
+                    backfill_mode
+                    and isinstance(hydrated, dict)
+                    and not had_prior_workflow_state
+                    and not hydrated.get("last_synced_description_hash")
+                ):
+                    remote_desc_text = _adf_to_plain_text(((remote_issue or {}).get("fields") or {}).get("description")).strip()
+                    if remote_desc_text:
+                        hydrated["remote_description_modified"] = True
+                        hydrated["remote_description_text"] = remote_desc_text
         story = hydrated if isinstance(hydrated, dict) else {"jira_key": jira_key}
 
     if story.get("remote_description_modified"):
@@ -6265,29 +6451,46 @@ def cmd_sync_story(args) -> int:
             )
             return 1
 
+    prior_status = story.get("spec_status")
+    effective_prior_status = prior_status if had_prior_workflow_state else None
     preserved_snapshot = {}
     if preserve_owner:
-        for pf in ("current_owner_role", "role_owners", "jira_status", "tasks", "review", "qa", "bugs"):
+        for pf in _PRESERVED_LIFECYCLE_FIELDS:
             if pf in story:
                 preserved_snapshot[pf] = json.loads(json.dumps(story[pf]))
 
-    prior_status = story.get("spec_status")
+    hydrated_epic_meta = {
+        ef: json.loads(json.dumps(story[ef]))
+        for ef in _EPIC_METADATA_FIELDS
+        if ef in story
+    }
+
     prior_acs = [dict(ac) for ac in (story.get("acceptance_criteria") or []) if isinstance(ac, dict) and ac.get("id")]
     prior_material_decisions = list(story.get("material_decisions") or [])
     prior_auto_decisions = list(story.get("auto_decisions") or [])
 
-    if args.spec_json:
-        spec_payload = load_json_arg(args.spec_json)
-        if isinstance(spec_payload, dict):
-            if preserve_owner:
-                for protected_k in ("current_owner_role", "role_owners", "jira_status", "tasks", "review", "qa", "bugs"):
-                    spec_payload.pop(protected_k, None)
-            story.update(spec_payload)
-
-    if preserve_owner:
-        for pf in ("current_owner_role", "role_owners", "jira_status", "tasks", "review", "qa", "bugs"):
-            if pf in preserved_snapshot:
-                story[pf] = json.loads(json.dumps(preserved_snapshot[pf]))
+    if isinstance(spec_payload, dict):
+        sp_copy = json.loads(json.dumps(spec_payload))
+        if preserve_owner:
+            for protected_k in _PRESERVED_LIFECYCLE_FIELDS:
+                sp_copy.pop(protected_k, None)
+        sp_spec = sp_copy.pop("spec", None)
+        story.update(sp_copy)
+        if isinstance(sp_spec, dict):
+            story_spec = story.setdefault("spec", {}) if isinstance(story.get("spec"), dict) else {}
+            if not isinstance(story.get("spec"), dict):
+                story["spec"] = story_spec
+            story_spec.update(sp_spec)
+        if preserve_owner:
+            for pf in _PRESERVED_LIFECYCLE_FIELDS:
+                if pf in preserved_snapshot:
+                    story[pf] = json.loads(json.dumps(preserved_snapshot[pf]))
+                else:
+                    story.pop(pf, None)
+        else:
+            for ef, ev in hydrated_epic_meta.items():
+                if ef not in sp_copy or sp_copy.get(ef) in (None, "", []):
+                    story[ef] = json.loads(json.dumps(ev))
 
     if args.title:
         clean_title = _clean_optional_text(args.title)
@@ -6333,7 +6536,7 @@ def cmd_sync_story(args) -> int:
             acs.append({"id": ac_id, "description": desc})
 
         if (
-            (prior_status in ("draft", "approved") or backfill_mode)
+            (effective_prior_status in ("draft", "approved") or backfill_mode)
             and prior_acs
             and all_explicit_ids
             and not getattr(args, "replace_acs", False)
@@ -6380,6 +6583,12 @@ def cmd_sync_story(args) -> int:
         cleaned_top_risks = _clean_optional_text(story.pop("risks"))
         if cleaned_top_risks:
             spec_meta["risks"] = cleaned_top_risks
+    elif "risks" in spec_meta:
+        cleaned_spec_risks = _clean_optional_text(spec_meta.get("risks"))
+        if cleaned_spec_risks:
+            spec_meta["risks"] = cleaned_spec_risks
+        else:
+            spec_meta.pop("risks", None)
 
     if parsed_open_questions is not None:
         spec_meta["open_questions"] = parsed_open_questions
@@ -6387,27 +6596,33 @@ def cmd_sync_story(args) -> int:
     elif "open_questions" in story:
         top_oqs = story.pop("open_questions")
         if isinstance(top_oqs, list):
-            spec_meta["open_questions"] = top_oqs
+            spec_meta["open_questions"] = _normalize_open_questions_list(
+                top_oqs, source_label="open_questions"
+            )
+    elif isinstance(spec_meta.get("open_questions"), list):
+        spec_meta["open_questions"] = _normalize_open_questions_list(
+            spec_meta["open_questions"], source_label="spec.open_questions"
+        )
 
     eff_open_questions = spec_meta.get("open_questions") if isinstance(spec_meta.get("open_questions"), list) else []
     open_blocking_questions = [
         q["id"] for q in eff_open_questions
-        if isinstance(q, dict) and q.get("blocking") and _clean_optional_text(q.get("id"))
+        if isinstance(q, dict) and _parse_bool_flag(q.get("blocking")) and _clean_optional_text(q.get("id"))
     ]
 
     if backfill_mode:
-        if args.status == "draft":
-            status = "draft"
-        elif not had_prior_workflow_state:
-            status = "draft"
+        status = "approved" if effective_prior_status == "approved" else "draft"
+    elif preserve_owner:
+        if effective_prior_status == "approved":
+            status = "approved"
         else:
-            status = story.get("spec_status") or "draft"
+            status = args.status or effective_prior_status or "draft"
     else:
-        status = args.status or story.get("spec_status") or "draft"
+        status = args.status or effective_prior_status or story.get("spec_status") or "draft"
 
     if args.auto_decision:
         new_auto = [d.strip() for d in args.auto_decision if d.strip()]
-        if prior_status in ("draft", "approved"):
+        if effective_prior_status in ("draft", "approved"):
             merged_auto = list(prior_auto_decisions)
             for item in new_auto:
                 if item not in merged_auto:
@@ -6420,7 +6635,7 @@ def cmd_sync_story(args) -> int:
         new_mat = [d.strip() for d in args.material_decision if d.strip()]
         # Single-pass direct approval on a fresh story enforces <= 3 material decisions ("抓大放小");
         # Iterative draft rounds or Spec Gap updates (prior_status in ('draft', 'approved')) allow up to 5 per round and accumulate across rounds.
-        if status == "approved" and not prior_status and len(new_mat) > 3:
+        if status == "approved" and not effective_prior_status and len(new_mat) > 3:
             print(
                 "ERROR: '抓大放小' rule violated — at most 3 material questions/decisions are allowed in single-pass approval (use --status draft rounds for complex features).",
                 file=sys.stderr,
@@ -6432,7 +6647,7 @@ def cmd_sync_story(args) -> int:
                 file=sys.stderr,
             )
             return 1
-        if prior_status in ("draft", "approved"):
+        if effective_prior_status in ("draft", "approved"):
             merged_mat = list(prior_material_decisions)
             for item in new_mat:
                 if item not in merged_mat:
@@ -6440,7 +6655,7 @@ def cmd_sync_story(args) -> int:
             story["material_decisions"] = merged_mat
         else:
             story["material_decisions"] = new_mat
-    elif status == "approved" and not prior_status and len(story.get("material_decisions") or []) > 3:
+    elif status == "approved" and not effective_prior_status and len(story.get("material_decisions") or []) > 3:
         print(
             "ERROR: '抓大放小' rule violated — at most 3 material questions/decisions are allowed in single-pass approval (use --status draft rounds for complex features).",
             file=sys.stderr,
@@ -6456,7 +6671,7 @@ def cmd_sync_story(args) -> int:
         story.setdefault("role_owners", {})["pm"] = serialize_member_for_config(pm_person, "pm")
 
     story["spec_status"] = status
-    if not backfill_mode and status == "approved":
+    if not backfill_mode and status == "approved" and effective_prior_status != "approved":
         story["approved_by"] = args.approved_by or story.get("approved_by") or pm_person["name"]
         story["approved_at"] = story.get("approved_at") or now_iso()
 
@@ -6466,6 +6681,7 @@ def cmd_sync_story(args) -> int:
         story.get("title") or jira_key,
         desc_md,
         create=args.create,
+        allow_create=not backfill_mode,
     )
     if sync_res.get("jira_key"):
         jira_key = validate_jira_key(sync_res["jira_key"])
@@ -6492,7 +6708,7 @@ def cmd_sync_story(args) -> int:
             if pm_person.get("jira_account_id"):
                 safe_assign_issue(client, jira_key, pm_person["jira_account_id"])
 
-        if status == "approved" and (args.status == "approved" or prior_status != "approved"):
+        if status == "approved" and (args.status == "approved" or effective_prior_status != "approved"):
             zh = is_zh_tw(config)
             ac_total = len(story.get("acceptance_criteria", []))
             s1_comment = (
@@ -6512,9 +6728,17 @@ def cmd_sync_story(args) -> int:
                 to_assignee=getattr(args, "to_assignee", None),
             )
     else:
-        for pf in ("current_owner_role", "role_owners", "jira_status", "tasks", "review", "qa", "bugs"):
+        skip_restore = {"spec_status"}
+        if not backfill_mode and status == "approved":
+            skip_restore.update({"approved_by", "approved_at"})
+        for pf in _PRESERVED_LIFECYCLE_FIELDS:
+            if pf in skip_restore:
+                continue
             if pf in preserved_snapshot:
                 story[pf] = json.loads(json.dumps(preserved_snapshot[pf]))
+            else:
+                story.pop(pf, None)
+        story["spec_status"] = status
 
     saved_path = save_active_story(repo_root, jira_key, story, client=client, sync_remote=True)
     if active_path.exists() and active_path != saved_path:
@@ -6533,12 +6757,18 @@ def cmd_sync_story(args) -> int:
     if handoff_info is not None:
         out.update(_handoff_governance_fields(handoff_info))
     if preserve_owner:
+        if not backfill_mode and status == "approved":
+            backfill_stage = "spec_approved"
+        elif open_blocking_questions:
+            backfill_stage = "spec_pending_confirmation"
+        else:
+            backfill_stage = "material_backfilled"
         out.update({
             "backfill_mode": backfill_mode,
             "owner_preserved": True,
             "status_preserved": True,
             "open_blocking_questions": open_blocking_questions,
-            "backfill_stage": "spec_pending_confirmation" if open_blocking_questions else "material_backfilled",
+            "backfill_stage": backfill_stage,
             "description_verified": description_verified,
             "can_auto_chain_next_station": False,
             "requires_user_confirmation_for_next_station": True,
@@ -9459,10 +9689,48 @@ def cmd_close_story(args) -> int:
     client.add_comment(jira_key, release_md)
     trans_res = client.transition_issue(jira_key, done_status)
 
+    resolved_dependents = []
+    scan_dirs = [get_active_dir(repo_root)]
+    main_root = _resolve_main_worktree_root(repo_root)
+    if main_root:
+        main_active_dir = get_active_dir(main_root)
+        if main_active_dir != scan_dirs[0]:
+            scan_dirs.append(main_active_dir)
+
+    seen_sib_keys = set()
+    for s_dir in scan_dirs:
+        if not s_dir.exists():
+            continue
+        for sib_file in sorted(s_dir.glob("*.json")):
+            sib_key = sib_file.stem.upper()
+            if sib_key == jira_key or sib_key in seen_sib_keys:
+                continue
+            try:
+                sib_data = json.loads(sib_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(sib_data, dict):
+                continue
+            sib_deps = [str(d).strip().upper() for d in (sib_data.get("depends_on_keys") or []) if str(d).strip()]
+            if jira_key not in sib_deps:
+                continue
+            seen_sib_keys.add(sib_key)
+            res_list = [str(r).strip().upper() for r in (sib_data.get("resolved_depends_on_keys") or []) if str(r).strip()]
+            if jira_key not in res_list:
+                res_list.append(jira_key)
+                sib_data["resolved_depends_on_keys"] = res_list
+                if s_dir == scan_dirs[0]:
+                    save_active_story(repo_root, sib_key, sib_data, client=client, sync_remote=True)
+                else:
+                    sib_data["updated_at"] = now_iso()
+                    sib_file.write_text(json.dumps(sib_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                    if client.is_live:
+                        client.sync_state_snapshot(sib_key, sib_data)
+            resolved_dependents.append(sib_key)
+
     active_file = get_active_dir(repo_root) / f"{jira_key}.json"
     if active_file.exists():
         active_file.unlink()
-    main_root = _resolve_main_worktree_root(repo_root)
     if main_root:
         main_active_file = get_active_dir(main_root) / f"{jira_key}.json"
         if main_active_file.exists():
@@ -9482,6 +9750,7 @@ def cmd_close_story(args) -> int:
         "triage_disclosure": triage_disclosure,
         "release_summary": release_md,
         "transition": trans_res,
+        "resolved_dependent_stories": resolved_dependents,
         "active_file_removed": True,
     }, ensure_ascii=False, indent=2))
     return 0

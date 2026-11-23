@@ -91,6 +91,8 @@ class MockJiraHandler(BaseHTTPRequestHandler):
     reject_parent_on_create_epics = set()
     reject_parent_jql_epics = set()
     fail_create_story_titles = set()
+    simulate_get_404_keys = set()
+    reject_customfield_on_create_epics = set()
 
     def log_message(self, format, *args):
         pass
@@ -189,7 +191,9 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"errorMessages": ["Property not found"]})
         elif self.path.startswith("/rest/api/3/issue/"):
             key = self.path.split("/rest/api/3/issue/", 1)[1].split("/")[0]
-            if key in self.stored_issues:
+            if key in self.simulate_get_404_keys:
+                self._send_json(404, {"errorMessages": ["Issue Does Not Exist"]})
+            elif key in self.stored_issues:
                 self._send_json(200, self.stored_issues[key])
             else:
                 self._send_json(200, {"key": key, "fields": {"summary": key, "status": {"name": "In Progress"}}})
@@ -348,6 +352,10 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                 if parent_key and parent_key in self.reject_parent_on_create_epics:
                     self._send_json(400, {"errors": {"parent": "Field 'parent' cannot be set on create screen."}})
                     return
+                for fk, fv in fields.items():
+                    if fk.startswith("customfield_") and str(fv or "").strip().upper() in self.reject_customfield_on_create_epics:
+                        self._send_json(400, {"errors": {fk: f"Field '{fk}' cannot be set on create screen."}})
+                        return
 
                 if "404" in summary_text:
                     key = f"{proj_key}-404"
@@ -5606,6 +5614,8 @@ class WorkflowTestSuite(unittest.TestCase):
         MockJiraHandler.reject_parent_on_create_epics.clear()
         MockJiraHandler.reject_parent_jql_epics.clear()
         MockJiraHandler.fail_create_story_titles.clear()
+        MockJiraHandler.simulate_get_404_keys.clear()
+        MockJiraHandler.reject_customfield_on_create_epics.clear()
 
         jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
         jira_port = jira_srv.server_port
@@ -5765,7 +5775,7 @@ class WorkflowTestSuite(unittest.TestCase):
                         "description": {
                             "type": "doc",
                             "version": 1,
-                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "- AC-001: Issue full refund within 5 minutes"}]}],
+                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "HUMAN PROSE: Keep legal note.\n- AC-001: Issue full refund within 5 minutes"}]}],
                         },
                         "issuetype": {"name": "Story", "subtask": False},
                         "status": {"name": "In Review"},
@@ -5783,11 +5793,28 @@ class WorkflowTestSuite(unittest.TestCase):
                         ],
                     },
                 }
+                # P1-2: First-adoption on untracked Story with non-empty Jira description MUST block unless --accept-remote-description or --force-overwrite is passed!
+                MockJiraHandler.requests_log.clear()
+                blind_adopt = run_cli(
+                    root, "sync-story",
+                    "--key", "BF-99",
+                    "--backfill",
+                    "--ac", "AC-002:Prevent duplicate refund on retry",
+                    "--risks", "Idempotency key enforcement inferred from controller only",
+                )
+                self.assertNotEqual(blind_adopt.returncode, 0)
+                self.assertIn("description", blind_adopt.stderr.lower())
+                self.assertFalse((root / ".ai-workflow" / "active" / "BF-99.json").exists())
+                self.assertFalse(any(m in ("PUT", "POST") and "/issue/BF-99" in p for m, p, _, _ in MockJiraHandler.requests_log))
+                self.assertIn("HUMAN PROSE", mod._adf_to_plain_text(MockJiraHandler.stored_issues["BF-99"]["fields"]["description"]))
+
+                # Explicit --accept-remote-description adopts cleanly and preserves Jira status/assignee/subtasks
                 MockJiraHandler.requests_log.clear()
                 adopt_res = run_cli(
                     root, "sync-story",
                     "--key", "BF-99",
                     "--backfill",
+                    "--accept-remote-description",
                     "--ac", "AC-002:Prevent duplicate refund on retry",
                     "--risks", "Idempotency key enforcement inferred from controller only",
                     "--open-questions-json", json.dumps([{"question": "Verify refund webhook retry TTL", "blocking": True}]),
@@ -5805,7 +5832,11 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertEqual(len(adopted_disk["tasks"]), 1)
                 self.assertTrue(adopted_disk.get("last_synced_description_hash"))
 
-                # Description Drift Guard blocks subsequent backfill if Jira description was edited in Web UI
+                # Repeat --backfill on BF-99 succeeds without false drift
+                repeat_bf = run_cli(root, "sync-story", "--key", "BF-99", "--backfill", "--risks", "Updated risk without UI edit")
+                self.assertEqual(repeat_bf.returncode, 0, repeat_bf.stderr)
+
+                # Description Drift Guard blocks subsequent backfill if Jira description was edited in Web UI, recovers with --force-overwrite
                 MockJiraHandler.stored_issues["BF-99"]["fields"]["description"] = {
                     "type": "doc",
                     "version": 1,
@@ -5815,8 +5846,21 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertNotEqual(drift_blocked.returncode, 0)
                 self.assertIn("description", drift_blocked.stderr.lower())
 
-                drift_ok = run_cli(root, "sync-story", "--key", "BF-99", "--backfill", "--accept-remote-description", "--risks", "Updated risk")
+                drift_ok = run_cli(root, "sync-story", "--key", "BF-99", "--backfill", "--force-overwrite", "--risks", "Updated risk")
                 self.assertEqual(drift_ok.returncode, 0, drift_ok.stderr)
+
+                # Untracked existing Jira Story with EMPTY description stays unblocked on first --backfill
+                MockJiraHandler.stored_issues["BF-98"] = {
+                    "key": "BF-98",
+                    "fields": {
+                        "summary": "Blank Description Story",
+                        "description": None,
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "In Progress"},
+                    },
+                }
+                empty_adopt = run_cli(root, "sync-story", "--key", "BF-98", "--backfill", "--ac", "AC-001:Works")
+                self.assertEqual(empty_adopt.returncode, 0, empty_adopt.stderr)
 
                 # 6. --preserve-owner standalone with English labels and no None string leakage
                 self.assertEqual(run_cli(root, "init", "--project-key", "BF", "--language", "en").returncode, 0)
@@ -5858,6 +5902,8 @@ class WorkflowTestSuite(unittest.TestCase):
         MockJiraHandler.reject_parent_on_create_epics.clear()
         MockJiraHandler.reject_parent_jql_epics.clear()
         MockJiraHandler.fail_create_story_titles.clear()
+        MockJiraHandler.simulate_get_404_keys.clear()
+        MockJiraHandler.reject_customfield_on_create_epics.clear()
 
         jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
         jira_port = jira_srv.server_port
@@ -6090,6 +6136,8 @@ class WorkflowTestSuite(unittest.TestCase):
         MockJiraHandler.reject_parent_on_create_epics.clear()
         MockJiraHandler.reject_parent_jql_epics.clear()
         MockJiraHandler.fail_create_story_titles.clear()
+        MockJiraHandler.simulate_get_404_keys.clear()
+        MockJiraHandler.reject_customfield_on_create_epics.clear()
 
         # Part A: Offline mode rollup & empty Epic safety
         with tempfile.TemporaryDirectory() as tmp_off:
@@ -6299,6 +6347,452 @@ class WorkflowTestSuite(unittest.TestCase):
         self.assertIn("epic-decompose", gov_md)
         self.assertIn("status [--epic", gov_md)
         self.assertIn("--backfill", gov_md)
+
+    def test_36_batch4_round1_review_regressions(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+        MockJiraHandler.reject_parent_on_create_epics.clear()
+        MockJiraHandler.reject_parent_jql_epics.clear()
+        MockJiraHandler.fail_create_story_titles.clear()
+        MockJiraHandler.simulate_get_404_keys.clear()
+        MockJiraHandler.simulate_put_404_keys.clear()
+        MockJiraHandler.reject_customfield_on_create_epics.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        try:
+            # --- Part A: Live Jira regressions (P1-1, P1-2, P1-3, P1-4, P1-5 live, P1-6, P2-1, P2-3, P2-6, P2-8) ---
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                roles = {
+                    "pm": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice", "api_token": "tok-a"},
+                    "developer": {"name": "Bob Lin", "email": "bob@team.io", "jira_account_id": "acc-bob", "api_token": "tok-b"},
+                    "reviewer": {"name": "Carol Wu", "email": "carol@team.io", "jira_account_id": "acc-carol", "api_token": "tok-c"},
+                    "qa": {"name": "Carol Wu", "email": "carol@team.io", "jira_account_id": "acc-carol"},
+                    "release_manager": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                }
+                self.assertEqual(
+                    run_cli(
+                        root, "init",
+                        "--project-key", "PRB",
+                        "--jira-url", f"http://127.0.0.1:{jira_port}",
+                        "--roles-json", json.dumps(roles),
+                    ).returncode,
+                    0,
+                )
+
+                # Seed PRB-1 as an approved, review-approved gated Story with candidate_commit & epic metadata
+                MockJiraHandler.stored_issues["PRB-1"] = {
+                    "key": "PRB-1",
+                    "fields": {"summary": "Protected Lifecycle Story", "issuetype": {"name": "Story", "subtask": False}, "status": {"name": "In Progress"}},
+                }
+                active_dir = root / ".ai-workflow" / "active"
+                active_dir.mkdir(parents=True, exist_ok=True)
+                prb1_initial = {
+                    "jira_key": "PRB-1",
+                    "title": "Protected Lifecycle Story",
+                    "scope_in": "Core scope",
+                    "scope_out": "N/A",
+                    "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+                    "risk_level": "medium",
+                    "acceptance_criteria": [{"id": "AC-001", "description": "Works"}],
+                    "design": {"summary": "Initial"},
+                    "spec_status": "approved",
+                    "approved_by": "Alice Chen",
+                    "approved_at": "2026-11-20T00:00:00+00:00",
+                    "current_owner_role": "developer",
+                    "jira_status": "In Progress",
+                    "candidate_commit": "abc1234",
+                    "qa_deploy_gate": {"status": "awaiting_qa_deploy", "commit": "abc1234"},
+                    "epic_key": "PRB-EPIC",
+                    "epic_decompose_id": "S1",
+                    "wave": 2,
+                    "depends_on": ["S0"],
+                    "depends_on_keys": ["PRB-0"],
+                    "shared_contracts": ["AuthContract"],
+                    "tasks": [{"id": "TASK-001", "status": "completed"}],
+                    "review": {"status": "approved", "reviewed_commit": "abc1234"},
+                    "qa": {},
+                    "bugs": [],
+                }
+                (active_dir / "PRB-1.json").write_text(json.dumps(prb1_initial, indent=2), encoding="utf-8")
+
+                # P1-1: --backfill --status draft NEVER rolls back spec_status="approved" -> "draft"
+                r_no_rb = run_cli(root, "sync-story", "--key", "PRB-1", "--backfill", "--status", "draft", "--risks", "Some risk")
+                self.assertEqual(r_no_rb.returncode, 0, r_no_rb.stderr)
+                self.assertEqual(json.loads(r_no_rb.stdout)["spec_status"], "approved")
+                st_after = json.loads(run_cli(root, "status", "--key", "PRB-1").stdout)
+                self.assertNotEqual(st_after.get("recommended_skill"), "team-spec")
+
+                # P1-1: --preserve-owner --status draft also NEVER rolls back spec_status="approved"
+                r_po_no_rb = run_cli(root, "sync-story", "--key", "PRB-1", "--preserve-owner", "--status", "draft", "--risks", "Note")
+                self.assertEqual(r_po_no_rb.returncode, 0, r_po_no_rb.stderr)
+                self.assertEqual(json.loads(r_po_no_rb.stdout)["spec_status"], "approved")
+
+                # P1-1: --backfill --spec-json cannot mutate qa_deploy_gate, candidate_commit, spec_status, or epic metadata
+                r_shield = run_cli(
+                    root, "sync-story", "--key", "PRB-1", "--backfill",
+                    "--spec-json", json.dumps({
+                        "qa_deploy_gate": {"status": "deployed"},
+                        "candidate_commit": "wiped",
+                        "spec_status": "draft",
+                        "epic_key": "EVIL-1",
+                        "wave": 99,
+                        "depends_on_keys": [],
+                    }),
+                )
+                self.assertEqual(r_shield.returncode, 0, r_shield.stderr)
+                prb1_disk = json.loads((active_dir / "PRB-1.json").read_text(encoding="utf-8"))
+                self.assertEqual(prb1_disk["spec_status"], "approved")
+                self.assertEqual(prb1_disk["candidate_commit"], "abc1234")
+                self.assertEqual(prb1_disk["qa_deploy_gate"], {"status": "awaiting_qa_deploy", "commit": "abc1234"})
+                self.assertEqual(prb1_disk["epic_key"], "PRB-EPIC")
+                self.assertEqual(prb1_disk["wave"], 2)
+                self.assertEqual(prb1_disk["depends_on_keys"], ["PRB-0"])
+
+                # P1-1: Tracked draft PRB-2 rejects --backfill --spec-json '{"spec_status":"approved"}' with exit 1 & zero writes
+                (active_dir / "PRB-2.json").write_text(json.dumps({
+                    "jira_key": "PRB-2",
+                    "title": "Draft Story",
+                    "spec_status": "draft",
+                    "acceptance_criteria": [],
+                    "tasks": [],
+                    "bugs": [],
+                }), encoding="utf-8")
+                MockJiraHandler.requests_log.clear()
+                r_ban_spec = run_cli(root, "sync-story", "--key", "PRB-2", "--backfill", "--spec-json", '{"spec_status":"approved"}')
+                self.assertNotEqual(r_ban_spec.returncode, 0)
+                self.assertEqual(MockJiraHandler.requests_log, [])
+                self.assertEqual(json.loads((active_dir / "PRB-2.json").read_text(encoding="utf-8"))["spec_status"], "draft")
+
+                # P1-1: --backfill --spec-json cannot inject qa_deploy_gate into draft PRB-2
+                r_no_inject = run_cli(root, "sync-story", "--key", "PRB-2", "--backfill", "--spec-json", '{"qa_deploy_gate":{"status":"deployed"}}')
+                self.assertEqual(r_no_inject.returncode, 0, r_no_inject.stderr)
+                self.assertNotIn("qa_deploy_gate", json.loads((active_dir / "PRB-2.json").read_text(encoding="utf-8")))
+
+                # P2-6: Standalone --preserve-owner --status approved emits backfill_stage="spec_approved"
+                (active_dir / "PRB-PO.json").write_text(json.dumps({
+                    "jira_key": "PRB-PO",
+                    "title": "Preserve Owner Approve",
+                    "spec_status": "draft",
+                    "current_owner_role": "developer",
+                    "jira_status": "In Progress",
+                    "acceptance_criteria": [{"id": "AC-001", "description": "Valid"}],
+                    "tasks": [],
+                    "bugs": [],
+                }), encoding="utf-8")
+                MockJiraHandler.stored_issues["PRB-PO"] = {
+                    "key": "PRB-PO",
+                    "fields": {"summary": "Preserve Owner Approve", "issuetype": {"name": "Story", "subtask": False}, "status": {"name": "In Progress"}},
+                }
+                r_po_app = run_cli(root, "sync-story", "--key", "PRB-PO", "--preserve-owner", "--status", "approved")
+                self.assertEqual(r_po_app.returncode, 0, r_po_app.stderr)
+                po_out = json.loads(r_po_app.stdout)
+                self.assertFalse(po_out["backfill_mode"])
+                self.assertEqual(po_out["spec_status"], "approved")
+                self.assertEqual(po_out["backfill_stage"], "spec_approved")
+
+                # P1-2: --backfill --create rejected cleanly with zero writes; non-existent Jira key HTTP 404 rejected cleanly with zero POST /issue
+                MockJiraHandler.requests_log.clear()
+                r_bf_create = run_cli(root, "sync-story", "--key", "PRB-4041", "--backfill", "--create", "--title", "Bad")
+                self.assertNotEqual(r_bf_create.returncode, 0)
+                self.assertEqual(MockJiraHandler.requests_log, [])
+
+                MockJiraHandler.simulate_get_404_keys.add("PRB-4040")
+                MockJiraHandler.simulate_put_404_keys.add("PRB-4040")
+                MockJiraHandler.requests_log.clear()
+                r_bf_404 = run_cli(root, "sync-story", "--key", "PRB-4040", "--backfill", "--title", "Typo Key")
+                self.assertNotEqual(r_bf_404.returncode, 0)
+                self.assertFalse(any(m == "POST" and p == "/rest/api/3/issue" for m, p, _, _ in MockJiraHandler.requests_log))
+                self.assertFalse((active_dir / "PRB-4040.json").exists())
+
+                # P1-3: Duplicate explicit Q-### IDs rejected, blank question doesn't reserve ID, --spec-json boolean normalization & dup rejection
+                MockJiraHandler.requests_log.clear()
+                r_dup_q = run_cli(
+                    root, "sync-story", "--key", "PRB-1", "--backfill",
+                    "--open-questions-json", json.dumps([
+                        {"id": "Q-001", "question": "First", "blocking": True},
+                        {"id": "q-001", "question": "Second", "blocking": True},
+                    ]),
+                )
+                self.assertNotEqual(r_dup_q.returncode, 0)
+                self.assertIn("duplicate", r_dup_q.stderr.lower())
+                self.assertEqual(MockJiraHandler.requests_log, [])
+
+                r_blank_q = run_cli(
+                    root, "sync-story", "--key", "PRB-1", "--backfill",
+                    "--open-questions-json", json.dumps([{"id": "Q-001", "question": "   "}, "Actual question"]),
+                )
+                self.assertEqual(r_blank_q.returncode, 0, r_blank_q.stderr)
+                self.assertEqual(
+                    json.loads((active_dir / "PRB-1.json").read_text(encoding="utf-8"))["spec"]["open_questions"][0]["id"],
+                    "Q-001",
+                )
+
+                r_spec_oq = run_cli(
+                    root, "sync-story", "--key", "PRB-1", "--backfill",
+                    "--spec-json", json.dumps({"open_questions": [{"id": "Q-010", "question": "Via spec-json", "blocking": "false"}]}),
+                )
+                self.assertEqual(r_spec_oq.returncode, 0, r_spec_oq.stderr)
+                spec_oq_out = json.loads(r_spec_oq.stdout)
+                self.assertEqual(spec_oq_out["open_blocking_questions"], [])
+                self.assertIs(
+                    json.loads((active_dir / "PRB-1.json").read_text(encoding="utf-8"))["spec"]["open_questions"][0]["blocking"],
+                    False,
+                )
+
+                r_nested_oq = run_cli(
+                    root, "sync-story", "--key", "PRB-1", "--backfill",
+                    "--spec-json", json.dumps({"spec": {"open_questions": [{"id": "Q-011", "question": "Nested", "blocking": "0"}]}}),
+                )
+                self.assertEqual(r_nested_oq.returncode, 0, r_nested_oq.stderr)
+                self.assertEqual(json.loads(r_nested_oq.stdout)["open_blocking_questions"], [])
+
+                r_spec_dup = run_cli(
+                    root, "sync-story", "--key", "PRB-1", "--backfill",
+                    "--spec-json", json.dumps({"open_questions": [{"id": "Q-010", "question": "A"}, {"id": "q-010", "question": "B"}]}),
+                )
+                self.assertNotEqual(r_spec_dup.returncode, 0)
+
+                # P1-4: status --epic "" and status --key PRB-1 --epic "" both fail with exit 1
+                self.assertNotEqual(run_cli(root, "status", "--epic", "").returncode, 0)
+                self.assertNotEqual(run_cli(root, "status", "--key", "PRB-1", "--epic", "").returncode, 0)
+
+                # P2-5: Non-finite & negative story_points rejected cleanly
+                for bad_sp in ("nan", "inf", "-inf", -2):
+                    r_bad_sp = run_cli(
+                        root, "epic-decompose", "--epic", "PRB-EPIC",
+                        "--stories-json", json.dumps([{"id": "SP1", "title": "Bad SP", "story_points": bad_sp}]),
+                    )
+                    self.assertNotEqual(r_bad_sp.returncode, 0, f"Expected failure for story_points={bad_sp!r}")
+
+                # P2-8: Live epic-decompose --apply on HTTP 404 non-existent Epic fails fast with zero Stories created
+                MockJiraHandler.simulate_get_404_keys.add("PRB-4044")
+                MockJiraHandler.requests_log.clear()
+                r_ep_404 = run_cli(
+                    root, "epic-decompose", "--epic", "PRB-4044",
+                    "--stories-json", json.dumps([{"id": "S1", "title": "Should Not Create"}]),
+                    "--apply",
+                )
+                self.assertNotEqual(r_ep_404.returncode, 0)
+                self.assertFalse(any(m == "POST" and p == "/rest/api/3/issue" for m, p, _, _ in MockJiraHandler.requests_log))
+
+                # P2-3: Configured epic_link_field double-400 warning mentions both fields.parent and epic_link_field
+                cfg_p = root / ".ai-workflow" / "team-config.json"
+                cfg_d = json.loads(cfg_p.read_text(encoding="utf-8"))
+                cfg_d["epic_link_field"] = "customfield_10014"
+                cfg_p.write_text(json.dumps(cfg_d, indent=2) + "\n", encoding="utf-8")
+                MockJiraHandler.stored_issues["PRB-D400"] = {
+                    "key": "PRB-D400",
+                    "fields": {"summary": "Double 400 Epic", "issuetype": {"name": "Epic"}, "status": {"name": "To Do"}},
+                }
+                MockJiraHandler.reject_parent_on_create_epics.add("PRB-D400")
+                MockJiraHandler.reject_customfield_on_create_epics.add("PRB-D400")
+                r_d400 = run_cli(
+                    root, "epic-decompose", "--epic", "PRB-D400",
+                    "--stories-json", json.dumps([{"id": "D1", "title": "Double 400 Story"}]),
+                    "--apply",
+                )
+                self.assertEqual(r_d400.returncode, 0, r_d400.stderr)
+                d400_out = json.loads(r_d400.stdout)
+                self.assertEqual(d400_out["created_stories"][0]["epic_link_mode"], "unlinked")
+                self.assertTrue(any("fields.parent" in w and "customfield_10014" in w for w in d400_out["warnings"]))
+
+                # P1-5 live unlinked Done dependency resolution in status --epic
+                MockJiraHandler.stored_issues["UL-10"] = {
+                    "key": "UL-10",
+                    "fields": {"summary": "Unlinked Dep Epic", "issuetype": {"name": "Epic"}, "status": {"name": "In Progress"}},
+                }
+                MockJiraHandler.stored_issues["UL-1"] = {
+                    "key": "UL-1",
+                    "fields": {"summary": "Closed Unlinked Upstream", "issuetype": {"name": "Story", "subtask": False}, "status": {"name": "Done"}},
+                }
+                MockJiraHandler.stored_issues["UL-2"] = {
+                    "key": "UL-2",
+                    "fields": {
+                        "summary": "Downstream Story",
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "To Do"},
+                        "parent": {"key": "UL-10"},
+                    },
+                }
+                (active_dir / "UL-2.json").write_text(json.dumps({
+                    "jira_key": "UL-2",
+                    "epic_key": "UL-10",
+                    "wave": 2,
+                    "title": "Downstream Story",
+                    "jira_status": "To Do",
+                    "spec_status": "draft",
+                    "depends_on_keys": ["UL-1"],
+                    "tasks": [],
+                    "bugs": [],
+                }), encoding="utf-8")
+                r_ul = run_cli(root, "status", "--epic", "UL-10")
+                self.assertEqual(r_ul.returncode, 0, r_ul.stderr)
+                ul_out = json.loads(r_ul.stdout)
+                self.assertEqual(ul_out["stories"][0]["blocked_by_dependencies"], [])
+                self.assertEqual(ul_out["blocked_stories"], 0)
+
+                # P1-6 & P2-1: Cross-machine normal sync-story preserves epic metadata, and cross-machine epic-decompose --apply is idempotent
+                MockJiraHandler.stored_issues["XM-10"] = {
+                    "key": "XM-10",
+                    "fields": {"summary": "Cross-Machine Epic", "issuetype": {"name": "Epic"}, "status": {"name": "In Progress"}},
+                }
+                xm_stories = [
+                    {"id": "S1", "title": "XM Base", "acceptance_criteria": ["AC-001:Base ready"], "shared_contracts": ["Shared DTO"]},
+                    {"id": "S2", "title": "XM Child", "acceptance_criteria": ["AC-001:Child ready"], "depends_on": ["S1"], "shared_contracts": ["Shared DTO"]},
+                ]
+                xm_app = run_cli(root, "epic-decompose", "--epic", "XM-10", "--stories-json", json.dumps(xm_stories), "--apply")
+                self.assertEqual(xm_app.returncode, 0, xm_app.stderr)
+                xm_created = json.loads(xm_app.stdout)["created_stories"]
+                xm_k1, xm_k2 = xm_created[0]["jira_key"], xm_created[1]["jira_key"]
+
+                with tempfile.TemporaryDirectory() as tmp_b:
+                    root_b = Path(tmp_b)
+                    self.assertEqual(
+                        run_cli(
+                            root_b, "init",
+                            "--project-key", "PRB",
+                            "--jira-url", f"http://127.0.0.1:{jira_port}",
+                            "--roles-json", json.dumps(roles),
+                        ).returncode,
+                        0,
+                    )
+                    # P1-6: Machine B runs normal sync-story --key xm_k2 --title ... --ac ... --status approved without losing epic metadata
+                    xm_sync_b = run_cli(
+                        root_b, "sync-story",
+                        "--key", xm_k2,
+                        "--title", "Cross-Machine Refined",
+                        "--ac", "AC-001:Refined AC",
+                        "--status", "approved",
+                    )
+                    self.assertEqual(xm_sync_b.returncode, 0, xm_sync_b.stderr)
+                    xm_k2_disk = json.loads((root_b / ".ai-workflow" / "active" / f"{xm_k2}.json").read_text(encoding="utf-8"))
+                    self.assertEqual(xm_k2_disk["epic_key"], "XM-10")
+                    self.assertEqual(xm_k2_disk["epic_decompose_id"], "S2")
+                    self.assertEqual(xm_k2_disk["wave"], 2)
+                    self.assertEqual(xm_k2_disk["depends_on_keys"], [xm_k1])
+                    self.assertEqual(xm_k2_disk["shared_contracts"], ["Shared DTO"])
+
+                    # P2-1: Machine B (which lacks xm_k1 locally) re-runs epic-decompose --apply with S1, S2, and new S3 depending on S1
+                    xm_stories_ext = xm_stories + [
+                        {"id": "S3", "title": "XM Wave 2 Extension", "depends_on": ["S1"]},
+                    ]
+                    xm_re = run_cli(root_b, "epic-decompose", "--epic", "XM-10", "--stories-json", json.dumps(xm_stories_ext), "--apply")
+                    self.assertEqual(xm_re.returncode, 0, xm_re.stderr)
+                    xm_re_out = json.loads(xm_re.stdout)
+                    self.assertEqual([s["id"] for s in xm_re_out["skipped_stories"]], ["S1", "S2"])
+                    self.assertEqual(xm_re_out["total_created"], 1)
+                    self.assertEqual(xm_re_out["created_stories"][0]["id"], "S3")
+                    self.assertEqual(xm_re_out["created_stories"][0]["depends_on_keys"], [xm_k1])
+
+            # --- Part B: Offline & Secondary Git Worktree regressions (P1-5 localized todo + close-story deadlock, P2-4, P2-7) ---
+            with tempfile.TemporaryDirectory() as tmp_off:
+                root_off = Path(tmp_off)
+                self.assertEqual(
+                    run_cli(
+                        root_off, "init",
+                        "--project-key", "BS",
+                        "--status-mapping-json", json.dumps({"todo": "待辦"}),
+                    ).returncode,
+                    0,
+                )
+                bs_stories = [
+                    {"id": "S1", "title": "Offline Wave 1", "acceptance_criteria": ["AC-001:First"]},
+                    {"id": "S2", "title": "Offline Wave 2", "acceptance_criteria": ["AC-001:Second"], "depends_on": ["S1"]},
+                ]
+                self.assertEqual(run_cli(root_off, "epic-decompose", "--epic", "BS-10", "--stories-json", json.dumps(bs_stories), "--apply").returncode, 0)
+                # Localized status_mapping.todo = "待辦" -> ready_to_start_stories
+                s1_p = root_off / ".ai-workflow" / "active" / "BS-10-S1.json"
+                s1_d = json.loads(s1_p.read_text(encoding="utf-8"))
+                s1_d["jira_status"] = "待辦"
+                s1_p.write_text(json.dumps(s1_d, indent=2), encoding="utf-8")
+                st_loc = json.loads(run_cli(root_off, "status", "--epic", "BS-10").stdout)
+                self.assertEqual(st_loc["ready_to_start_stories"], 1)
+                self.assertEqual(st_loc["in_progress_stories"], 0)
+                self.assertEqual(st_loc["blocked_stories"], 1)
+
+                # Close BS-10-S1 through full lifecycle -> BS-10-S2 becomes unblocked via resolved_depends_on_keys!
+                self.assertEqual(run_cli(root_off, "sync-story", "--key", "BS-10-S1", "--status", "approved").returncode, 0)
+                self.assertEqual(run_cli(root_off, "complete-task", "--key", "BS-10-S1", "--task-id", "TASK-001", "--commit", "c1", "--files", "a.py", "--test-result", "ok").returncode, 0)
+                self.assertEqual(run_cli(root_off, "handoff", "--key", "BS-10-S1", "--review-status", "approved", "--commit", "c1").returncode, 0)
+                self.assertEqual(run_cli(root_off, "record-qa", "--key", "BS-10-S1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Ok").returncode, 0)
+                self.assertEqual(run_cli(root_off, "record-qa", "--key", "BS-10-S1", "--mode", "verify", "--commit", "c1", "--all-pass").returncode, 0)
+                cl_res = run_cli(root_off, "close-story", "--key", "BS-10-S1", "--commit", "c1")
+                self.assertEqual(cl_res.returncode, 0, cl_res.stderr)
+                self.assertIn("BS-10-S2", json.loads(cl_res.stdout)["resolved_dependent_stories"])
+
+                s2_disk = json.loads((root_off / ".ai-workflow" / "active" / "BS-10-S2.json").read_text(encoding="utf-8"))
+                self.assertEqual(s2_disk["resolved_depends_on_keys"], ["BS-10-S1"])
+                st_unblocked = json.loads(run_cli(root_off, "status", "--epic", "BS-10").stdout)
+                self.assertEqual(st_unblocked["blocked_stories"], 0)
+                self.assertEqual(st_unblocked["ready_to_start_stories"], 1)
+                self.assertEqual(st_unblocked["stories"][0]["blocked_by_dependencies"], [])
+                self.assertEqual(st_unblocked["next_recommended_story"]["key"], "BS-10-S2")
+
+            # P2-4: gated_by_deploy awaiting_qa_deploy bucket alignment (in_progress while team-qa plan is actionable; blocked once TCs planned)
+            with tempfile.TemporaryDirectory() as tmp_p24:
+                root_p24 = Path(tmp_p24)
+                self.assertEqual(run_cli(root_p24, "init", "--project-key", "GD", "--qa-handoff-mode", "gated_by_deploy", "--status-dev-done", "Dev Completed").returncode, 0)
+                self.assertEqual(run_cli(root_p24, "sync-story", "--key", "GD-1", "--title", "Gated Story", "--ac", "AC-001:Ok", "--status", "approved").returncode, 0)
+                gd_p = root_p24 / ".ai-workflow" / "active" / "GD-1.json"
+                gd_d = json.loads(gd_p.read_text(encoding="utf-8"))
+                gd_d["epic_key"] = "GD-10"
+                gd_p.write_text(json.dumps(gd_d, indent=2), encoding="utf-8")
+                self.assertEqual(run_cli(root_p24, "complete-task", "--key", "GD-1", "--task-id", "TASK-001", "--commit", "g1", "--files", "g.py", "--test-result", "ok").returncode, 0)
+                self.assertEqual(run_cli(root_p24, "handoff", "--key", "GD-1", "--review-status", "approved", "--commit", "g1").returncode, 0)
+
+                st_plan_actionable = json.loads(run_cli(root_p24, "status", "--epic", "GD-10").stdout)
+                self.assertEqual(st_plan_actionable["in_progress_stories"], 1)
+                self.assertEqual(st_plan_actionable["blocked_stories"], 0)
+                self.assertEqual(st_plan_actionable["next_recommended_story"]["recommended_skill"], "team-qa")
+                self.assertEqual(st_plan_actionable["next_recommended_story"]["recommended_mode"], "plan")
+
+                self.assertEqual(run_cli(root_p24, "record-qa", "--key", "GD-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Check").returncode, 0)
+                st_deploy_blocked = json.loads(run_cli(root_p24, "status", "--epic", "GD-10").stdout)
+                self.assertEqual(st_deploy_blocked["blocked_stories"], 1)
+                self.assertEqual(st_deploy_blocked["in_progress_stories"], 0)
+                self.assertIsNone(st_deploy_blocked["next_recommended_story"])
+
+            # P2-7: Secondary Git worktree merges missing Epic stories from main worktree
+            with tempfile.TemporaryDirectory() as tmp_wt_base:
+                base_p = Path(tmp_wt_base)
+                main_repo = base_p / "main_repo"
+                wt_repo = base_p / "sec_wt"
+                main_repo.mkdir()
+                subprocess.run(["git", "init"], cwd=str(main_repo), check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.email", "t@team.io"], cwd=str(main_repo), check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(main_repo), check=True, capture_output=True)
+                (main_repo / "README.md").write_text("# WT\n", encoding="utf-8")
+                self.assertEqual(run_cli(main_repo, "init", "--project-key", "WT").returncode, 0)
+                subprocess.run(["git", "add", "."], cwd=str(main_repo), check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", "init"], cwd=str(main_repo), check=True, capture_output=True)
+                subprocess.run(["git", "worktree", "add", "-b", "feat/sec", str(wt_repo)], cwd=str(main_repo), check=True, capture_output=True)
+                try:
+                    main_active = main_repo / ".ai-workflow" / "active"
+                    main_active.mkdir(parents=True, exist_ok=True)
+                    (main_active / "WT-10-S1.json").write_text(json.dumps({
+                        "jira_key": "WT-10-S1", "epic_key": "WT-10", "wave": 1, "title": "S1", "jira_status": "To Do", "spec_status": "draft", "tasks": [], "bugs": [],
+                    }), encoding="utf-8")
+                    (main_active / "WT-10-S2.json").write_text(json.dumps({
+                        "jira_key": "WT-10-S2", "epic_key": "WT-10", "wave": 2, "title": "S2", "jira_status": "To Do", "spec_status": "draft", "tasks": [], "bugs": [],
+                    }), encoding="utf-8")
+                    wt_active = wt_repo / ".ai-workflow" / "active"
+                    wt_active.mkdir(parents=True, exist_ok=True)
+                    (wt_active / "WT-10-S1.json").write_text((main_active / "WT-10-S1.json").read_text(encoding="utf-8"), encoding="utf-8")
+
+                    st_wt = json.loads(run_cli(wt_repo, "status", "--epic", "WT-10").stdout)
+                    self.assertEqual(st_wt["total_stories"], 2)
+                    self.assertEqual({s["key"] for s in st_wt["stories"]}, {"WT-10-S1", "WT-10-S2"})
+                finally:
+                    subprocess.run(["git", "worktree", "remove", "--force", str(wt_repo)], cwd=str(main_repo), capture_output=True)
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
 
 
 if __name__ == "__main__":
