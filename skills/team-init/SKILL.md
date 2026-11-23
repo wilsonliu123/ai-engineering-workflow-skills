@@ -67,7 +67,7 @@ When `.ai-workflow/team-config.json` **already exists** with a configured `jira_
    ```bash
    python3 <skill-dir>/scripts/jira_sync.py --repo-root . init --inspect
    ```
-2. Auto-detect existing stack conventions, local unit/integration test commands (`pytest`, `vitest`, `go test`), **external test tools / E2E / CI pipelines** (Playwright, Cypress, Postman/Newman, JMeter, GitHub Actions / GitLab CI), and linter rules from the repository (`package.json`, `pyproject.toml`, `go.mod`, `Makefile`, `AGENTS.md`). Do not interrogate the user over routine tech-stack details that can be read from the repo.
+2. Auto-detect existing stack conventions, local unit/integration test commands (`pytest`, `vitest`, `go test`), **external test tools / E2E / CI pipelines** (Playwright, Cypress, Postman/Newman, JMeter, `.gitlab-ci.yml`, `.github/workflows/*.yml|*.yaml`), and linter rules from the repository (`package.json`, `pyproject.toml`, `go.mod`, `Makefile`, `AGENTS.md`). `init --inspect` (and `init`) automatically scans `.gitlab-ci.yml` and `.github/workflows/*.yml` (pure stdlib) to surface `detected_delivery_pipeline` (`integration_branch`, `production_branch`, `environments`, `jira_deployment_sync`), `detected_ci_checks` (local lint/test commands such as `swiftlint`, `fastlane test`, `pytest`, `npm test`), and `suggested_qa_handoff_mode` (`"gated_by_deploy"` whenever a dedicated `testing`/QA deploy trigger is detected). Do not interrogate the user over routine tech-stack details that can be read from the repo.
 
 ### Step 2: Mandatory Interactive Inquiry Gate (STOP & Confirm with User)
 
@@ -94,7 +94,7 @@ If any of the following items have not been explicitly provided or confirmed by 
    - **安全儲存承諾**：所有 API Token 皆**只會寫入受 `.gitignore` 保護的 `.ai-workflow/credentials.json`（權限 `0600`）**，**絕不會寫入 Git 追蹤的 `.ai-workflow/team-config.json`**。
 4. **Jira 狀態、單據類型映射、多環境 QA 交接模式與選填 QA 測試管理後端（選填確認）**
    - 列出預設狀態映射（`To Do`、`In Progress`、`In Review`、`In QA`、`Ready for Release`、`Done`）與單據類型（`Story`、`Sub-task`、`Bug`），詢問是否直接沿用預設值或需自訂。
-   - 若團隊採用多環境 CI/CD 流程（Review 通過先進入「開發完成 / Dev Completed」，待打 QA Tag 或部署至 QA 環境後才推進 `In QA` 並通知 QA），可選配 `--qa-handoff-mode gated_by_deploy` 與 `--status-dev-done "<開發完成狀態>"`（預設為 `--qa-handoff-mode immediate`，維持 100% 向後相容）。
+   - 若團隊採用多環境 CI/CD 流程（Review 通過先進入「開發完成 / Dev Completed」，待打 QA Tag 或部署至 QA 環境後才推進 `In QA` 並通知 QA），可選配 `--qa-handoff-mode gated_by_deploy` 與 `--status-dev-done "<開發完成狀態>"`（若 CI 掃描偵測到獨立 QA 部署觸發規則，`init --inspect` 會自動建議 `suggested_qa_handoff_mode: "gated_by_deploy"`；預設為 `immediate`，維持 100% 向後相容）。可一併確認 `delivery_pipeline` 選配旗標：`--integration-branch`、`--production-branch`、`--qa-tag-prefix`、`--uat-tag-prefix`、`--jira-deployment-sync`（僅於使用者確認後寫入 `team-config.json`）。
    - 選填確認團隊的 QA 測試案例管理方式（`--qa-backend`）：直接放在 **Jira 評論（`jira-comment`）** 或同步至 **Qase TestOps（`qase`，搭配 `--qase-project-code` 與 `--qase-token`）**。若初始化時尚未決定可先留空，首次執行 `$team-qa` 時會自動詢問一次並記憶於 `team-config.json`。
 
 **WAIT for the user's response before proceeding to Step 3.**
@@ -114,7 +114,12 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   [--commit-policy "confirm_before_commit|auto_on_test_pass"] \
   [--commit-message-pattern '<OPTIONAL_REGEX>'] \
   [--qa-handoff-mode "immediate|gated_by_deploy"] \
-  [--status-dev-done "<DEV_DONE_JIRA_STATUS>"]
+  [--status-dev-done "<DEV_DONE_JIRA_STATUS>"] \
+  [--integration-branch "<release|develop>"] \
+  [--production-branch "<main|master>"] \
+  [--qa-tag-prefix "<qa->"] \
+  [--uat-tag-prefix "<uat->"] \
+  [--jira-deployment-sync]
 
 # Option B: Full multi-person mapping upfront
 python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
@@ -127,7 +132,12 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   [--commit-policy "confirm_before_commit|auto_on_test_pass"] \
   [--commit-message-pattern '<OPTIONAL_REGEX>'] \
   [--qa-handoff-mode "immediate|gated_by_deploy"] \
-  [--status-dev-done "<DEV_DONE_JIRA_STATUS>"]
+  [--status-dev-done "<DEV_DONE_JIRA_STATUS>"] \
+  [--integration-branch "<release|develop>"] \
+  [--production-branch "<main|master>"] \
+  [--qa-tag-prefix "<qa->"] \
+  [--uat-tag-prefix "<uat->"] \
+  [--jira-deployment-sync]
 ```
 
 *(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`. Optional `--commit-policy` defaults to `"confirm_before_commit"` — pause after local tests pass to wait for user confirmation before committing — or can opt in to `"auto_on_test_pass"`; optional `--commit-message-pattern` configures a non-blocking regex check in `complete-task`. Optional `--qa-handoff-mode` defaults to `"immediate"` — or set `"gated_by_deploy"` with `--status-dev-done "<Dev Completed>"` to decouple Code Review approval from QA environment deployment.)*
@@ -141,7 +151,7 @@ What `jira_sync.py init` enforces automatically:
 - Extracts engineering/coding/testing/security/Git Commit & PR sections from `AGENTS.md` into `docs/shared/engineering-standards.md` (or creates a starter from `references/engineering-standards-template.md` including `## 4. Git Commit & PR Standards` if `AGENTS.md` has none) and **replaces the duplicated sections in `AGENTS.md` with a reference link** to `docs/shared/engineering-standards.md`.
 
 ### Step 4: Verify and summarize
-1. Verify that `docs/shared/engineering-standards.md` reflects the repository's actual stack, test commands, security boundaries, and **§4 Git Commit & PR Standards** (the single source of truth for project commit format). Refine the extracted markdown if needed.
+1. Verify that `docs/shared/engineering-standards.md` reflects the repository's actual stack, test commands, **CI-mirrored local lint/test commands (`detected_ci_checks`)**, **branch/tag promotion rules** (e.g., `integration_branch`, `production_branch`, `qa-*` / `uat-*` human-confirmed tags — never AI auto-tagging or auto-merging), security boundaries, and **§4 Git Commit & PR Standards** (the single source of truth for project commit format). Refine the extracted markdown if needed.
 2. Present a concise initialization summary in Traditional Chinese (繁體中文):
    - **專案連線與憑證狀態**：確認 `project_key`、`jira_base_url`、`jira_mode`（`live` 或 `offline`）、連線驗證結果（`jira_verification`）以及憑證已受 `.gitignore` 保護（`.ai-workflow/credentials.json`）。
    - **角色定義與交接整併表 (`role_consolidation`)**：列出各角色負責人、帳號與哪些相鄰站點為同一人（`auto-consolidated` 僅抑制重複 `@mention` 通知，跨站推進仍需使用者明確授權）、哪些跨人交接會觸發 Jira `@mention` + 指派 + 狀態流轉並執行 Clean Stop。

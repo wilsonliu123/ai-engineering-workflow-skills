@@ -9,6 +9,12 @@
   "commit_policy": "confirm_before_commit",
   "commit_message_pattern": "",
   "qa_handoff_mode": "immediate",
+  "delivery_pipeline": {
+    "integration_branch": "",
+    "production_branch": "",
+    "environments": {},
+    "jira_deployment_sync": false
+  },
   "qa_test_backend": "",
   "qase": {
     "project_code": "",

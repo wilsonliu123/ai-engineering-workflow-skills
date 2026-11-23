@@ -166,6 +166,12 @@ DEFAULT_TEAM_CONFIG = {
     "commit_policy": "confirm_before_commit",
     "commit_message_pattern": "",
     "qa_handoff_mode": "immediate",
+    "delivery_pipeline": {
+        "integration_branch": "",
+        "production_branch": "",
+        "environments": {},
+        "jira_deployment_sync": False,
+    },
     "roles": {
         "pm": {"name": "PM Owner", "email": "", "jira_account_id": ""},
         "tech_lead": {"name": "Tech Lead", "email": "", "jira_account_id": ""},
@@ -480,6 +486,799 @@ def _clean_optional_text(val) -> str:
     return str(val).strip()
 
 
+def _clean_single_line_text(val) -> str:
+    """Sanitize optional single-line metadata (deploy_ref, tag, environment) cleanly without control chars or 'None'."""
+    if not isinstance(val, str):
+        return ""
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", val).strip()
+    return cleaned
+
+
+def _parse_strict_bool(val, default: bool = False) -> bool:
+    """Strictly parse boolean values so strings like 'false', '0', 'no', '' never evaluate truthy."""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return val != 0
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("true", "1", "yes", "y", "on"):
+            return True
+        if norm in ("false", "0", "no", "n", "off", ""):
+            return False
+        return default
+    return default
+
+
+_GIT_REF_ALLOWLIST_RE = re.compile(r"^[A-Za-z0-9._/+@-]+$")
+
+
+def _sanitize_git_ref(val) -> str:
+    """Sanitize a git branch/ref name with strict allowlist and git-check-ref-format rules; reject unsafe refs to ''."""
+    if not isinstance(val, str):
+        return ""
+    s = val.strip()
+    if not s or s == "@":
+        return ""
+    if not _GIT_REF_ALLOWLIST_RE.match(s):
+        return ""
+    if (
+        s.startswith("-")
+        or s.startswith("/")
+        or s.endswith("/")
+        or s.endswith(".")
+        or ".." in s
+        or "//" in s
+        or "@{" in s
+    ):
+        return ""
+    for seg in s.split("/"):
+        if not seg or seg.startswith(".") or seg.endswith(".lock"):
+            return ""
+    return s
+
+
+def _sanitize_tag_prefix(val) -> str:
+    """Sanitize a git tag prefix (e.g. 'qa-', 'qa/', 'qa_', 'v'); reject unsafe chars/segments to ''."""
+    if not isinstance(val, str):
+        return ""
+    s = val.strip()
+    if not s or s == "@":
+        return ""
+    if not _GIT_REF_ALLOWLIST_RE.match(s):
+        return ""
+    if (
+        s.startswith("-")
+        or s.startswith("/")
+        or ".." in s
+        or "//" in s
+        or "@{" in s
+    ):
+        return ""
+    check_body = s[:-1] if s.endswith("/") else s
+    if not check_body:
+        return ""
+    for seg in check_body.split("/"):
+        if not seg or seg.startswith(".") or seg.endswith(".lock"):
+            return ""
+    return s
+
+
+def _sanitize_delivery_pipeline(raw) -> dict:
+    """Normalize optional delivery_pipeline config block with strict types and safe empty defaults."""
+    default = {
+        "integration_branch": "",
+        "production_branch": "",
+        "environments": {},
+        "jira_deployment_sync": False,
+    }
+    if not isinstance(raw, dict):
+        return default
+    integration_branch = _sanitize_git_ref(raw.get("integration_branch"))
+    production_branch = _sanitize_git_ref(raw.get("production_branch"))
+    jira_deployment_sync = _parse_strict_bool(raw.get("jira_deployment_sync"), default=False)
+    environments = {}
+    raw_envs = raw.get("environments")
+    if isinstance(raw_envs, dict):
+        for env_k, env_v in raw_envs.items():
+            if not isinstance(env_k, str):
+                continue
+            clean_env_k = env_k.strip().lower()
+            if not clean_env_k or not re.match(r"^[a-z0-9][a-z0-9._-]{0,63}$", clean_env_k):
+                continue
+            if not isinstance(env_v, dict):
+                continue
+            raw_trig = env_v.get("trigger")
+            trig = raw_trig.strip().lower() if isinstance(raw_trig, str) else ""
+            if trig not in ("branch", "tag"):
+                trig = ""
+            ref = _sanitize_git_ref(env_v.get("ref"))
+            prefix = _sanitize_tag_prefix(env_v.get("prefix"))
+            raw_tier = env_v.get("deployment_tier")
+            tier = raw_tier.strip().lower() if isinstance(raw_tier, str) else ""
+            if any(ord(c) < 0x20 or ord(c) == 0x7F for c in tier):
+                tier = ""
+            environments[clean_env_k] = {
+                "trigger": trig,
+                "ref": ref,
+                "prefix": prefix,
+                "deployment_tier": tier,
+            }
+    return {
+        "integration_branch": integration_branch,
+        "production_branch": production_branch,
+        "environments": environments,
+        "jira_deployment_sync": jira_deployment_sync,
+    }
+
+
+def _extract_regex_tag_prefix(raw_pattern: str) -> str:
+    """Extract a clean literal tag prefix from a regex like '/^qa-.*/' or glob like 'qa-*'."""
+    if not isinstance(raw_pattern, str):
+        return ""
+    s = raw_pattern.strip().strip("'").strip('"')
+    if s.startswith("/"):
+        s = s[1:]
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    if s.startswith("^"):
+        s = s[1:]
+    # Cut at first regex/glob metacharacter (handling '.*' / '.+' / '.?' before stripping)
+    m_meta = re.search(r"[*+?(\[{\\|$\]]", s)
+    if m_meta:
+        cut_idx = m_meta.start()
+        if cut_idx > 0 and s[cut_idx - 1] == "." and s[cut_idx] in ("*", "+", "?"):
+            cut_idx -= 1
+        s = s[:cut_idx]
+    return _sanitize_tag_prefix(s)
+
+
+_CI_CHECK_COMMAND_RE = re.compile(
+    r"^(?:bundle\s+exec\s+)?("
+    r"swiftlint\b|"
+    r"fastlane\s+(?:test|scan|lint|check)\b|"
+    r"xcodebuild\s+.*\btest\b|"
+    r"(?:python3?|uv\s+run|poetry\s+run)\s+(?:-m\s+)?(?:pytest|unittest|mypy|ruff|flake8|black\b.*--check)|"
+    r"pytest\b|ruff\b|flake8\b|mypy\b|"
+    r"(?:npm|pnpm|yarn|bun)\s+(?:test|lint|typecheck|check)\b|"
+    r"(?:npm|pnpm|yarn|bun)\s+run\s+(?:test[\w:-]*|lint[\w:-]*|typecheck[\w:-]*|check[\w:-]*|build[\w:-]*)|"
+    r"(?:npx\s+)?(?:vitest|jest|eslint|tsc|playwright\s+test|cypress\s+run)\b|"
+    r"go\s+(?:test|vet)\b|golangci-lint\b|"
+    r"cargo\s+(?:test|clippy|check)\b|"
+    r"(?:\./gradlew|gradle|mvn)\s+(?:test|check|lint)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _extract_ci_check_command(raw_line: str) -> str:
+    """Extract a concise local lint/test/build command hint from a CI script/run line, or '' if not a check."""
+    if not isinstance(raw_line, str):
+        return ""
+    s = raw_line.strip()
+    if not s or s.startswith("#"):
+        return ""
+    if s.startswith("- "):
+        s = s[2:].strip()
+    if s.startswith("run:"):
+        s = s[4:].strip()
+    if s in ("|", ">", "|-", ">-"):
+        return ""
+    if (len(s) >= 2) and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+        s = s[1:-1].strip()
+    # Strip trailing inline shell comment
+    s = re.sub(r"\s+#.*$", "", s).strip()
+    if not s or len(s) > 160:
+        return ""
+    if _CI_CHECK_COMMAND_RE.match(s):
+        return s
+    return ""
+
+
+def _strip_yaml_comment(line: str) -> str:
+    """Strip full-line or trailing YAML '#' comments outside single/double quotes."""
+    if not isinstance(line, str) or "#" not in line:
+        return line if isinstance(line, str) else ""
+    in_single = False
+    in_double = False
+    n = len(line)
+    i = 0
+    while i < n:
+        ch = line[i]
+        if in_single:
+            if ch == "'":
+                if i + 1 < n and line[i + 1] == "'":
+                    i += 2
+                    continue
+                in_single = False
+        elif in_double:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                in_double = False
+        else:
+            if ch == "'":
+                in_single = True
+            elif ch == '"':
+                in_double = True
+            elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+                return line[:i].rstrip()
+        i += 1
+    return line
+
+
+def _has_env_token(text: str, *tokens: str) -> bool:
+    """Match environment/deploy tokens strictly on identifier boundaries (no substring false positives)."""
+    if not text or not tokens:
+        return False
+    pat = r"(?:^|[-_.:/\s])(?:" + "|".join(re.escape(t) for t in tokens) + r")(?:$|[-_.:/\s])"
+    return bool(re.search(pat, text.lower()))
+
+
+def _extract_yaml_environment_names(lines: list) -> list:
+    """Indentation-aware extraction of YAML `environment:` values (inline or nested `name:`)."""
+    found = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        ln = _strip_yaml_comment(lines[i])
+        stripped = ln.strip()
+        if not stripped:
+            i += 1
+            continue
+        m_env = re.match(r"^environment\s*:\s*(.*)$", stripped)
+        if m_env:
+            env_indent = len(ln) - len(ln.lstrip(" "))
+            rest = m_env.group(1).strip().strip("'").strip('"')
+            if rest and not rest.startswith("{"):
+                found.append(rest.lower())
+            else:
+                j = i + 1
+                while j < n:
+                    sub = _strip_yaml_comment(lines[j])
+                    sub_s = sub.strip()
+                    if not sub_s:
+                        j += 1
+                        continue
+                    sub_indent = len(sub) - len(sub.lstrip(" "))
+                    if sub_indent <= env_indent:
+                        break
+                    m_nm = re.match(r"^name\s*:\s*['\"]?([A-Za-z0-9._/-]+)['\"]?", sub_s)
+                    if m_nm:
+                        found.append(m_nm.group(1).strip().lower())
+                        break
+                    j += 1
+                i = j
+                continue
+        i += 1
+    return found
+
+
+def _read_ci_text_safely(path: Path, max_bytes: int = 2 * 1024 * 1024):
+    """Safely read a UTF-8 text CI file; return None on binary, invalid UTF-8, unreadable, or oversized files."""
+    try:
+        if not path.is_file():
+            return None
+        if path.stat().st_size > max_bytes:
+            return None
+        raw = path.read_bytes()
+        if b"\x00" in raw:
+            return None
+        return raw.decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
+    """
+    Pure-stdlib CI/CD auto-detector for .gitlab-ci.yml and .github/workflows/*.yml|*.yaml.
+    Never crashes on binary, invalid UTF-8, unreadable, or malformed files.
+    """
+    detected_sources = []
+    integration_branch = ""
+    production_branch = ""
+    environments = {}
+    jira_deployment_sync = False
+    detected_ci_checks = []
+    seen_checks = set()
+
+    def _add_check(cmd_str: str) -> None:
+        clean_cmd = _extract_ci_check_command(cmd_str)
+        if clean_cmd and clean_cmd not in seen_checks:
+            seen_checks.add(clean_cmd)
+            detected_ci_checks.append(clean_cmd)
+
+    def _record_env(env_key: str, trigger: str, ref: str, prefix: str, tier: str) -> None:
+        clean_k = (env_key or "").strip().lower()
+        if not clean_k:
+            return
+        prev = environments.get(clean_k) or {"trigger": "", "ref": "", "prefix": "", "deployment_tier": ""}
+        environments[clean_k] = {
+            "trigger": trigger or prev["trigger"],
+            "ref": ref or prev["ref"],
+            "prefix": prefix or prev["prefix"],
+            "deployment_tier": tier or prev["deployment_tier"],
+        }
+
+    # 1. Inspect .gitlab-ci.yml
+    gitlab_path = repo_root / ".gitlab-ci.yml"
+    gitlab_text = _read_ci_text_safely(gitlab_path)
+    if gitlab_text is not None:
+        detected_sources.append(".gitlab-ci.yml")
+        lines = gitlab_text.splitlines()
+        clean_gitlab_lines = [_strip_yaml_comment(ln) for ln in lines]
+        if re.search(r"(?m)^\s*deployment_tier\s*:", "\n".join(clean_gitlab_lines)):
+            jira_deployment_sync = True
+
+        # Split into top-level blocks (supports colon-separated and quoted job names like 'testflight:qa:', '"deploy qa":')
+        non_job_keys = {
+            "stages", "variables", "default", "workflow", "include",
+            "cache", "services", "image", "before_script", "after_script",
+        }
+        blocks = []
+        cur_name = None
+        cur_lines = []
+        for ln in clean_gitlab_lines:
+            if not ln.strip():
+                if cur_name is not None:
+                    cur_lines.append("")
+                continue
+            if not ln[0].isspace():
+                m_top = (
+                    re.match(r'^"([^"]+)"\s*:(?:\s|$)', ln)
+                    or re.match(r"^'([^']+)'\s*:(?:\s|$)", ln)
+                    or re.match(r"^([A-Za-z0-9_./:-]+)\s*:(?:\s|$)", ln)
+                )
+                if cur_name is not None:
+                    blocks.append((cur_name, cur_lines))
+                if m_top:
+                    cur_name = m_top.group(1).strip()
+                    cur_lines = [ln]
+                else:
+                    cur_name = None
+                    cur_lines = []
+            elif cur_name is not None:
+                cur_lines.append(ln)
+        if cur_name is not None:
+            blocks.append((cur_name, cur_lines))
+
+        for job_name, j_lines in blocks:
+            if job_name in non_job_keys:
+                continue
+            j_text = "\n".join(j_lines)
+
+            # Extract script lines for lint/test hints
+            in_script = False
+            script_indent = 0
+            for ln in j_lines[1:]:
+                stripped = ln.strip()
+                if not stripped:
+                    continue
+                indent = len(ln) - len(ln.lstrip(" "))
+                if re.match(r"^(?:script|before_script)\s*:", stripped):
+                    in_script = True
+                    script_indent = indent
+                    after_col = stripped.split(":", 1)[1].strip()
+                    if after_col:
+                        _add_check(after_col)
+                    continue
+                if in_script:
+                    if indent <= script_indent and not stripped.startswith("-"):
+                        in_script = False
+                    else:
+                        _add_check(stripped)
+
+            if job_name.startswith("."):
+                continue
+
+            # Extract deployment_tier
+            m_tier = re.search(
+                r"(?mi)^\s*deployment_tier\s*:\s*['\"]?(development|testing|staging|production)['\"]?",
+                j_text,
+            )
+            tier = m_tier.group(1).lower() if m_tier else ""
+
+            # Extract environment name (indentation-aware)
+            job_env_names = _extract_yaml_environment_names(j_lines[1:])
+            env_name = job_env_names[0] if job_env_names else ""
+
+            # Extract branch / tag rules (comments already stripped line-by-line)
+            branch_ref = ""
+            tag_prefix = ""
+            m_br = re.search(
+                r"\$CI_COMMIT_(?:BRANCH|REF_NAME)\s*==\s*['\"]([A-Za-z0-9._/-]+)['\"]",
+                j_text,
+            )
+            if m_br:
+                branch_ref = _sanitize_git_ref(m_br.group(1))
+
+            m_tag = re.search(r"\$CI_COMMIT_TAG\s*=~\s*['\"]?(/\^?[^\s'\"]+)", j_text)
+            if m_tag:
+                tag_prefix = _extract_regex_tag_prefix(m_tag.group(1))
+
+            if not branch_ref and not tag_prefix:
+                # Fallback to legacy `only:` list
+                m_only = re.search(r"(?ms)^\s*only\s*:\s*\n((?:\s+-\s+.*\n?)+)", j_text)
+                if m_only:
+                    for item_ln in m_only.group(1).splitlines():
+                        item_val = item_ln.strip().lstrip("-").strip().strip("'").strip('"')
+                        if item_val.startswith("/"):
+                            cand_pfx = _extract_regex_tag_prefix(item_val)
+                            if cand_pfx and not tag_prefix:
+                                tag_prefix = cand_pfx
+                        elif item_val.lower() in ("release", "develop", "development", "main", "master", "qa", "uat", "staging", "prod", "production"):
+                            if not branch_ref:
+                                branch_ref = _sanitize_git_ref(item_val)
+
+            # Require explicit deployment signal + token-boundary matching (prevents false positives on evaluate_model/noqa_check)
+            jl = job_name.lower()
+            m_stage = re.search(r"(?mi)^\s*stage\s*:\s*['\"]?([A-Za-z0-9._/-]+)['\"]?", j_text)
+            stage_val = m_stage.group(1).lower() if m_stage else ""
+            has_deploy_signal = bool(
+                tier
+                or env_name
+                or tag_prefix
+                or _has_env_token(jl, "deploy", "deployment", "release", "testflight", "publish", "promote", "ship", "distribute")
+                or _has_env_token(stage_val, "deploy", "deployment", "release", "publish", "distribute")
+            )
+            env_key = ""
+            if has_deploy_signal:
+                if tier == "testing" or _has_env_token(env_name, "qa", "testing") or _has_env_token(jl, "qa") or tag_prefix.lower().startswith("qa"):
+                    env_key = "qa"
+                    tier = tier or "testing"
+                elif _has_env_token(env_name, "uat") or _has_env_token(jl, "uat") or tag_prefix.lower().startswith("uat"):
+                    env_key = "uat"
+                    tier = tier or "staging"
+                elif tier == "staging" or _has_env_token(env_name, "staging") or _has_env_token(jl, "staging"):
+                    env_key = "staging"
+                    tier = tier or "staging"
+                elif tier == "development" or _has_env_token(env_name, "dev", "development") or _has_env_token(jl, "dev", "development"):
+                    env_key = "dev"
+                    tier = tier or "development"
+                elif tier == "production" or _has_env_token(env_name, "prod", "production") or _has_env_token(jl, "prod", "production"):
+                    env_key = "prod"
+                    tier = tier or "production"
+
+            if env_key:
+                if tag_prefix:
+                    _record_env(env_key, "tag", "", tag_prefix, tier)
+                elif branch_ref:
+                    _record_env(env_key, "branch", branch_ref, "", tier)
+                elif tier:
+                    _record_env(env_key, "", "", "", tier)
+
+            if (tier == "development" or env_key == "dev") and branch_ref and not integration_branch:
+                integration_branch = branch_ref
+            if (tier == "production" or env_key == "prod") and branch_ref and not production_branch:
+                production_branch = branch_ref
+
+    # 2. Inspect .github/workflows/*.yml and *.yaml
+    gh_wf_dir = repo_root / ".github" / "workflows"
+    if gh_wf_dir.is_dir():
+        try:
+            wf_files = sorted(
+                [p for p in gh_wf_dir.iterdir() if p.is_file() and p.suffix.lower() in (".yml", ".yaml")],
+                key=lambda p: p.name,
+            )
+        except OSError:
+            wf_files = []
+        for wf_path in wf_files:
+            wf_text = _read_ci_text_safely(wf_path)
+            if wf_text is None:
+                continue
+            detected_sources.append(f".github/workflows/{wf_path.name}")
+            wf_lines = wf_text.splitlines()
+            clean_wf_lines = [_strip_yaml_comment(ln) for ln in wf_lines]
+            if re.search(r"(?m)^\s*deployment_tier\s*:", "\n".join(clean_wf_lines)):
+                jira_deployment_sync = True
+
+            # Extract run: commands for lint/test checks
+            idx_l = 0
+            while idx_l < len(wf_lines):
+                ln = wf_lines[idx_l]
+                stripped = ln.strip()
+                m_run = re.match(r"^(?:-\s+)?run\s*:\s*(.*)$", stripped)
+                if m_run:
+                    rest = m_run.group(1).strip()
+                    if rest in ("|", ">", "|-", ">-"):
+                        run_indent = len(ln) - len(ln.lstrip(" "))
+                        idx_l += 1
+                        while idx_l < len(wf_lines):
+                            sub_ln = wf_lines[idx_l]
+                            if not sub_ln.strip():
+                                idx_l += 1
+                                continue
+                            sub_indent = len(sub_ln) - len(sub_ln.lstrip(" "))
+                            if sub_indent <= run_indent:
+                                break
+                            _add_check(sub_ln)
+                            idx_l += 1
+                        continue
+                    else:
+                        _add_check(rest)
+                idx_l += 1
+
+            # Extract push branches and tags from workflow header (comment-stripped)
+            push_branches = []
+            push_tags = []
+            in_push = False
+            push_indent = -1
+            in_list_kind = ""  # 'branches' or 'tags'
+            list_indent = -1
+            for ln in clean_wf_lines:
+                stripped = ln.strip()
+                if not stripped:
+                    continue
+                indent = len(ln) - len(ln.lstrip(" "))
+                if indent == 0 and re.match(r"^jobs\s*:", stripped):
+                    break
+                if re.match(r"^push\s*:", stripped):
+                    in_push = True
+                    push_indent = indent
+                    in_list_kind = ""
+                    continue
+                if in_push:
+                    if indent <= push_indent:
+                        in_push = False
+                        in_list_kind = ""
+                        continue
+                    m_br_inline = re.match(r"^branches\s*:\s*\[([^\]]*)\]", stripped)
+                    if m_br_inline:
+                        for tok in m_br_inline.group(1).split(","):
+                            b = _sanitize_git_ref(tok.strip().strip("'").strip('"'))
+                            if b:
+                                push_branches.append(b)
+                        in_list_kind = ""
+                        continue
+                    m_tg_inline = re.match(r"^tags\s*:\s*\[([^\]]*)\]", stripped)
+                    if m_tg_inline:
+                        for tok in m_tg_inline.group(1).split(","):
+                            t = tok.strip().strip("'").strip('"')
+                            if t:
+                                push_tags.append(t)
+                        in_list_kind = ""
+                        continue
+                    if re.match(r"^branches\s*:\s*$", stripped):
+                        in_list_kind = "branches"
+                        list_indent = indent
+                        continue
+                    if re.match(r"^tags\s*:\s*$", stripped):
+                        in_list_kind = "tags"
+                        list_indent = indent
+                        continue
+                    if in_list_kind:
+                        if indent <= list_indent and not stripped.startswith("-"):
+                            in_list_kind = ""
+                        elif stripped.startswith("-"):
+                            val = stripped[1:].strip().strip("'").strip('"')
+                            if in_list_kind == "branches":
+                                b = _sanitize_git_ref(val)
+                                if b:
+                                    push_branches.append(b)
+                            elif in_list_kind == "tags" and val:
+                                push_tags.append(val)
+
+            # Extract job environment names (indentation-aware)
+            wf_envs = _extract_yaml_environment_names(clean_wf_lines)
+
+            # Map tags to qa/uat environments
+            for t_pat in push_tags:
+                pfx = _extract_regex_tag_prefix(t_pat)
+                if not pfx:
+                    continue
+                pl = pfx.lower()
+                if pl.startswith("qa"):
+                    _record_env("qa", "tag", "", pfx, "testing")
+                elif pl.startswith("uat"):
+                    _record_env("uat", "tag", "", pfx, "staging")
+
+            # Map branch + environment patterns
+            for br in push_branches:
+                brl = br.lower()
+                if brl in ("qa", "testing") or (len(push_branches) == 1 and any(e in ("qa", "testing") for e in wf_envs)):
+                    _record_env("qa", "branch", br, "", "testing")
+                elif brl == "uat" or (len(push_branches) == 1 and "uat" in wf_envs):
+                    _record_env("uat", "branch", br, "", "staging")
+                elif brl == "staging" or (len(push_branches) == 1 and "staging" in wf_envs and "uat" not in wf_envs):
+                    _record_env("staging", "branch", br, "", "staging")
+                elif brl in ("develop", "development", "release") and (
+                    any(e in ("dev", "development") for e in wf_envs) or not wf_envs
+                ):
+                    if not integration_branch and (any(e in ("dev", "development") for e in wf_envs) or brl in ("develop", "release")):
+                        integration_branch = br
+                    if any(e in ("dev", "development") for e in wf_envs):
+                        _record_env("dev", "branch", br, "", "development")
+                elif brl in ("main", "master") and any(e in ("prod", "production") for e in wf_envs):
+                    if not production_branch:
+                        production_branch = br
+                    _record_env("prod", "branch", br, "", "production")
+
+    pipeline = _sanitize_delivery_pipeline({
+        "integration_branch": integration_branch,
+        "production_branch": production_branch,
+        "environments": environments,
+        "jira_deployment_sync": jira_deployment_sync,
+    })
+
+    has_dedicated_qa_trigger = False
+    for ek, ev in (pipeline.get("environments") or {}).items():
+        if ek == "qa" or ev.get("deployment_tier") == "testing":
+            if (ev.get("trigger") == "tag" and ev.get("prefix")) or (ev.get("trigger") == "branch" and ev.get("ref")):
+                has_dedicated_qa_trigger = True
+                break
+
+    return {
+        "detected_sources": detected_sources,
+        "delivery_pipeline": pipeline,
+        "detected_ci_checks": detected_ci_checks,
+        "suggested_qa_handoff_mode": "gated_by_deploy" if has_dedicated_qa_trigger else "immediate",
+    }
+
+
+def _git_ref_exists(repo_root: Path, ref_name: str) -> bool:
+    """Return True if ref_name exists in the local git repository."""
+    if not ref_name or ref_name.startswith("-"):
+        return False
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", ref_name],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def _is_git_repo(repo_root: Path) -> bool:
+    """Return True if repo_root is inside a Git working tree."""
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def _resolve_base_branch(repo_root: Path, config: dict = None) -> str:
+    """
+    Resolve preferred base branch for branching/diffing.
+    Uses delivery_pipeline.integration_branch when configured (falling back gracefully if the ref does not
+    exist locally yet in a Git repo), otherwise preserves main/master fallback behavior.
+    """
+    dp = _sanitize_delivery_pipeline((config or {}).get("delivery_pipeline"))
+    configured = dp.get("integration_branch") or ""
+    if not _is_git_repo(repo_root):
+        return configured or "main"
+
+    if configured:
+        if _git_ref_exists(repo_root, f"refs/heads/{configured}"):
+            return configured
+        if _git_ref_exists(repo_root, f"refs/remotes/origin/{configured}"):
+            return f"origin/{configured}"
+
+    for cand, full_ref in (
+        ("main", "refs/heads/main"),
+        ("origin/main", "refs/remotes/origin/main"),
+        ("master", "refs/heads/master"),
+        ("origin/master", "refs/remotes/origin/master"),
+    ):
+        if _git_ref_exists(repo_root, full_ref):
+            return cand
+
+    return configured or "main"
+
+
+def _build_qa_deploy_hint(config: dict, jira_key: str) -> str:
+    """Build natural-language QA deploy guidance when delivery_pipeline configures a QA environment (never auto-tags)."""
+    dp = _sanitize_delivery_pipeline((config or {}).get("delivery_pipeline"))
+    envs = dp.get("environments") or {}
+
+    def _has_valid_target(ev) -> bool:
+        if not isinstance(ev, dict):
+            return False
+        return (ev.get("trigger") == "tag" and bool(ev.get("prefix"))) or (
+            ev.get("trigger") == "branch" and bool(ev.get("ref"))
+        )
+
+    qa_env = envs.get("qa") if _has_valid_target(envs.get("qa")) else None
+    if not qa_env:
+        for ev in envs.values():
+            if isinstance(ev, dict) and ev.get("deployment_tier") == "testing" and _has_valid_target(ev):
+                qa_env = ev
+                break
+    if not qa_env:
+        return ""
+
+    int_branch = dp.get("integration_branch") or ""
+    jira_sync_enabled = bool(dp.get("jira_deployment_sync"))
+    trig = qa_env.get("trigger")
+
+    if trig == "tag":
+        prefix = qa_env.get("prefix") or ""
+        if not prefix:
+            return ""
+        merge_clause = f"merge into `{int_branch}` and " if int_branch else ""
+        sync_clause = (
+            "wait for Jira `deployment_tier: testing` auto-reconciliation (`status`/`pull`) or "
+            if (jira_sync_enabled or qa_env.get("deployment_tier") == "testing")
+            else ""
+        )
+        return (
+            f"After human confirmation, {merge_clause}create a `{prefix}*` Git tag to trigger QA deployment "
+            f"(AI will never auto-merge or auto-tag), then {sync_clause}"
+            f"run `jira_sync.py promote-qa --key {jira_key} --deploy-ref \"<{prefix}...>\"`."
+        )
+    if trig == "branch":
+        ref = qa_env.get("ref") or ""
+        if not ref:
+            return ""
+        return (
+            f"After human confirmation, promote/merge into the `{ref}` branch to trigger QA deployment "
+            f"(AI will never auto-merge), then sync Jira `in_qa` or run "
+            f"`jira_sync.py promote-qa --key {jira_key} --deploy-ref \"{ref}\"`."
+        )
+    return ""
+
+
+def _build_release_checklist_reminders(config: dict) -> list:
+    """
+    Build lightweight, strictly non-blocking pre-close release reminders for multi-stage pipelines
+    (UAT environment or production_branch distinct from integration_branch).
+    Returns [] when neither is configured.
+    """
+    dp = _sanitize_delivery_pipeline((config or {}).get("delivery_pipeline"))
+    envs = dp.get("environments") or {}
+    int_branch = dp.get("integration_branch") or ""
+    prod_branch = dp.get("production_branch") or ""
+    reminders = []
+
+    uat_env = envs.get("uat")
+    if not isinstance(uat_env, dict):
+        uat_env = None
+        for ev in envs.values():
+            if isinstance(ev, dict) and ev.get("deployment_tier") == "staging":
+                uat_env = ev
+                break
+    if isinstance(uat_env, dict) and any(uat_env.get(k) for k in ("trigger", "ref", "prefix", "deployment_tier")):
+        if uat_env.get("trigger") == "tag" and uat_env.get("prefix"):
+            reminders.append(
+                f"Reminder (non-blocking): Confirm UAT verification (tag `{uat_env['prefix']}*` / staging) "
+                f"has human sign-off before closing the Story (AI will not auto-tag)."
+            )
+        elif uat_env.get("trigger") == "branch" and uat_env.get("ref"):
+            reminders.append(
+                f"Reminder (non-blocking): Confirm UAT verification on branch `{uat_env['ref']}` "
+                f"has human sign-off before closing the Story."
+            )
+        else:
+            reminders.append(
+                "Reminder (non-blocking): Confirm UAT / staging verification has human sign-off before closing the Story."
+            )
+
+    if prod_branch:
+        if int_branch:
+            if prod_branch != int_branch:
+                reminders.append(
+                    f"Reminder (non-blocking): Confirm `{int_branch}` has been merged into production branch "
+                    f"`{prod_branch}` with human approval before/alongside closing the Story (AI will not auto-merge)."
+                )
+        elif prod_branch not in ("main", "master"):
+            reminders.append(
+                f"Reminder (non-blocking): Confirm changes are merged into production branch `{prod_branch}` "
+                f"with human approval before/alongside closing the Story (AI will not auto-merge)."
+            )
+    return reminders
+
+
 def _extract_jira_resolution(fields: dict) -> str:
     """Safely extract remote Jira fields.resolution.name handling None or non-dict values."""
     if not isinstance(fields, dict):
@@ -599,6 +1398,7 @@ def load_team_config(repo_root: Path) -> dict:
         merged.update(data)
         merged["commit_policy"] = get_effective_commit_policy(merged)
         merged["qa_handoff_mode"] = get_effective_qa_handoff_mode(merged)
+        merged["delivery_pipeline"] = _sanitize_delivery_pipeline(data.get("delivery_pipeline"))
         raw_pat = merged.get("commit_message_pattern")
         merged["commit_message_pattern"] = "" if raw_pat is None else raw_pat
         raw_elf = merged.get("epic_link_field")
@@ -748,8 +1548,8 @@ def _detect_git_head_commit(repo_root: Path) -> str:
     return ""
 
 
-def _detect_git_changed_files(repo_root: Path, commit_sha: str = "") -> list:
-    """Auto-detect changed files from the given commit SHA or working tree diff."""
+def _detect_git_changed_files(repo_root: Path, commit_sha: str = "", config: dict = None) -> list:
+    """Auto-detect changed files from the given commit SHA, working tree diff, or base-branch range."""
     if commit_sha and commit_sha not in ("HEAD", "unknown"):
         try:
             res = subprocess.run(
@@ -765,11 +1565,15 @@ def _detect_git_changed_files(repo_root: Path, commit_sha: str = "") -> list:
                     return files
         except Exception:
             pass
-    for cmd in (
+    base_branch = _resolve_base_branch(repo_root, config)
+    cmds = [
         ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
         ["git", "diff", "--name-only", "HEAD"],
         ["git", "diff", "--name-only", "--cached"],
-    ):
+    ]
+    if base_branch and _git_ref_exists(repo_root, base_branch):
+        cmds.append(["git", "diff", "--name-only", f"{base_branch}...HEAD"])
+    for cmd in cmds:
         try:
             res = subprocess.run(cmd, cwd=str(repo_root), capture_output=True, text=True, timeout=5)
             if res.returncode == 0 and res.stdout.strip():
@@ -3756,6 +4560,7 @@ def _inspect_init_state(repo_root: Path) -> dict:
         },
     ]
 
+    ci_detect = _detect_ci_delivery_pipeline(repo_root)
     return {
         "ok": True,
         "action": "init-inspect",
@@ -3766,6 +4571,9 @@ def _inspect_init_state(repo_root: Path) -> dict:
         "ready_for_live_jira": bool(eff_url and has_any_creds),
         "missing_confirmations": missing,
         "requires_user_inquiry": len(missing) > 0,
+        "detected_delivery_pipeline": ci_detect["delivery_pipeline"],
+        "detected_ci_checks": ci_detect["detected_ci_checks"],
+        "suggested_qa_handoff_mode": ci_detect["suggested_qa_handoff_mode"],
         "agent_instruction": (
             "STOP and ask the user to confirm the items in `questions_to_ask` (especially project URL, Project Key, "
             "each role's person/email, and their Jira API token(s)) BEFORE executing `jira_sync.py init`."
@@ -4823,6 +5631,37 @@ def cmd_init(args) -> int:
         cfg["qa_handoff_mode"] = get_effective_qa_handoff_mode({"qa_handoff_mode": args.qa_handoff_mode})
     if getattr(args, "status_dev_done", None) is not None:
         cfg.setdefault("status_mapping", {})["dev_done"] = args.status_dev_done.strip()
+
+    dp_cfg = _sanitize_delivery_pipeline(cfg.get("delivery_pipeline"))
+    if getattr(args, "integration_branch", None) is not None:
+        dp_cfg["integration_branch"] = _sanitize_git_ref(args.integration_branch)
+    if getattr(args, "production_branch", None) is not None:
+        dp_cfg["production_branch"] = _sanitize_git_ref(args.production_branch)
+    if getattr(args, "qa_tag_prefix", None) is not None:
+        clean_qa_pfx = _sanitize_tag_prefix(args.qa_tag_prefix)
+        if clean_qa_pfx:
+            dp_cfg["environments"]["qa"] = {
+                "trigger": "tag",
+                "ref": "",
+                "prefix": clean_qa_pfx,
+                "deployment_tier": "testing",
+            }
+        else:
+            dp_cfg["environments"].pop("qa", None)
+    if getattr(args, "uat_tag_prefix", None) is not None:
+        clean_uat_pfx = _sanitize_tag_prefix(args.uat_tag_prefix)
+        if clean_uat_pfx:
+            dp_cfg["environments"]["uat"] = {
+                "trigger": "tag",
+                "ref": "",
+                "prefix": clean_uat_pfx,
+                "deployment_tier": "staging",
+            }
+        else:
+            dp_cfg["environments"].pop("uat", None)
+    if getattr(args, "jira_deployment_sync", None) is not None:
+        dp_cfg["jira_deployment_sync"] = _parse_strict_bool(args.jira_deployment_sync, default=False)
+    cfg["delivery_pipeline"] = _sanitize_delivery_pipeline(dp_cfg)
     if args.roles_json:
         custom_roles = load_json_arg(args.roles_json)
         if isinstance(custom_roles, dict):
@@ -5074,6 +5913,7 @@ def cmd_init(args) -> int:
         env_tok = os.environ.get(f"JIRA_API_TOKEN_{r_key.upper()}", "").strip()
         role_has_api_token[r_key] = bool((rc.get("jira_api_token") or "").strip() or env_tok)
 
+    ci_detect = _detect_ci_delivery_pipeline(repo_root)
     result = {
         "ok": True,
         "action": "init",
@@ -5084,6 +5924,10 @@ def cmd_init(args) -> int:
         "jira_mode": "live" if client.is_live else "offline",
         "commit_policy": get_effective_commit_policy(cfg),
         "qa_handoff_mode": get_effective_qa_handoff_mode(cfg),
+        "delivery_pipeline": cfg["delivery_pipeline"],
+        "detected_delivery_pipeline": ci_detect["delivery_pipeline"],
+        "detected_ci_checks": ci_detect["detected_ci_checks"],
+        "suggested_qa_handoff_mode": ci_detect["suggested_qa_handoff_mode"],
         "credentials_configured": has_creds,
         "credentials_path": (
             str(cred_saved_path.relative_to(repo_root))
@@ -5355,6 +6199,12 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             plan_rec["awaiting_qa_deploy"] = True
             plan_rec["qa_handoff_mode"] = qa_handoff_mode
             plan_rec["qa_deploy_status"] = (story.get("qa_deploy_gate") or {}).get("status") or "awaiting_qa_deploy"
+            qa_deploy_hint = _build_qa_deploy_hint(config, jira_key)
+            if qa_deploy_hint:
+                plan_rec["qa_deploy_hint"] = qa_deploy_hint
+                plan_rec["can_auto_chain_next_station"] = False
+                plan_rec["requires_user_confirmation_for_next_station"] = True
+                plan_rec["done_when"] = f"{plan_rec['done_when']} {qa_deploy_hint}"
             plan_rec["parallel_hint"] = (
                 f"QA may draft the test plan (`team-qa plan`) in parallel now; "
                 f"`team-qa verify` is gated until QA deploy completes (`promote-qa --key {jira_key}` or Jira status '{in_qa_status_name}')."
@@ -5364,7 +6214,12 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
     if awaiting_qa_deploy:
         dev_owner = resolve_story_role_person(config, story, "developer")
         cur_jira_st = story.get("jira_status") or (config.get("status_mapping") or {}).get("dev_done") or "dev_done"
-        return {
+        qa_deploy_hint = _build_qa_deploy_hint(config, jira_key)
+        base_done_when = (
+            f"Deploy to QA environment so CI/CD transitions Jira to '{in_qa_status_name}' (sync via `jira_sync.py status`/`pull`), "
+            f"or run `jira_sync.py promote-qa --key {jira_key} [--deploy-ref <QA-TAG-OR-BUILD>]` to notify QA and unblock `team-qa (verify)`."
+        )
+        awaiting_rec = {
             "jira_key": jira_key,
             "current_station": "Station 3a -> 3b: Awaiting QA Deploy",
             "recommended_skill": None,
@@ -5378,11 +6233,13 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
                 f"Code review for {jira_key} is approved on commit {candidate_commit or 'HEAD'} "
                 f"(Jira status: '{cur_jira_st}'), awaiting QA environment deployment before `team-qa (verify)` can start."
             ),
-            "done_when": (
-                f"Deploy to QA environment so CI/CD transitions Jira to '{in_qa_status_name}' (sync via `jira_sync.py status`/`pull`), "
-                f"or run `jira_sync.py promote-qa --key {jira_key} [--tag <QA-TAG>]` to notify QA and unblock `team-qa (verify)`."
-            ),
+            "done_when": f"{qa_deploy_hint} ({base_done_when})" if qa_deploy_hint else base_done_when,
         }
+        if qa_deploy_hint:
+            awaiting_rec["qa_deploy_hint"] = qa_deploy_hint
+            awaiting_rec["can_auto_chain_next_station"] = False
+            awaiting_rec["requires_user_confirmation_for_next_station"] = True
+        return awaiting_rec
 
     unsatisfied_tcs = [c for c in test_cases if not _is_tc_satisfied(c, story)]
     if qa_status != "passed" or unsatisfied_tcs or (candidate_commit and tested_commit and tested_commit != candidate_commit):
@@ -5441,7 +6298,8 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
 
     # 7. All gates passed -> Station 4: Release & Close
     owner = resolve_story_role_person(config, story, "release_manager")
-    return {
+    release_reminders = _build_release_checklist_reminders(config)
+    rel_rec = {
         "jira_key": jira_key,
         "current_station": "Station 4: Release & Close",
         "recommended_skill": "team-release",
@@ -5450,7 +6308,9 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
         "responsible_person": owner["name"],
         "reason": f"Spec, Sub-tasks, Code Review, and QA Verification are all complete and aligned on commit {candidate_commit} with 0 open Bugs.",
         "done_when": f"Release summary is posted, Jira Story {jira_key} is transitioned to Done, and `.ai-workflow/active/{jira_key}.json` is removed via `jira_sync.py close-story`.",
+        "release_checklist_reminders": release_reminders,
     }
+    return rel_rec
 
 
 def _cmd_status_epic(
@@ -5716,6 +6576,10 @@ def _cmd_status_epic(
         out["warnings"] = warnings
     if creds_missing:
         out["credentials_missing"] = True
+    dp_epic = _sanitize_delivery_pipeline(config.get("delivery_pipeline"))
+    if dp_epic.get("integration_branch"):
+        out["integration_branch"] = dp_epic["integration_branch"]
+        out["base_branch"] = _resolve_base_branch(repo_root, config)
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
@@ -5743,6 +6607,16 @@ def cmd_status(args) -> int:
         return 0
 
     config = load_team_config(repo_root)
+    dp_cfg = _sanitize_delivery_pipeline(config.get("delivery_pipeline"))
+    configured_int_branch = dp_cfg.get("integration_branch") or ""
+    resolved_base_branch = _resolve_base_branch(repo_root, config) if configured_int_branch else ""
+
+    def _attach_branch_context(payload: dict) -> dict:
+        if configured_int_branch:
+            payload["integration_branch"] = configured_int_branch
+            payload["base_branch"] = resolved_base_branch
+        return payload
+
     active_dir = get_active_dir(repo_root)
     client = JiraClient(config, offline=args.offline, repo_root=repo_root)
     base_url = (config.get("jira_base_url") or "").strip()
@@ -5809,6 +6683,7 @@ def cmd_status(args) -> int:
                 "reason": f"No active state file `.ai-workflow/active/{jira_key}.json` exists yet (either a new Story or already closed).",
                 "done_when": f"Story {jira_key} specification is drafted, approved, and synced via `team-spec`.",
             }
+            _attach_branch_context(out)
             print(json.dumps(out, ensure_ascii=False, indent=2))
             return 0
 
@@ -5828,6 +6703,7 @@ def cmd_status(args) -> int:
             rec["hydrated_from"] = hydrated_source
         if remote_issue is not None:
             rec["remote_issue"] = remote_issue
+        _attach_branch_context(rec)
         print(json.dumps(rec, ensure_ascii=False, indent=2))
         return 0
 
@@ -5921,6 +6797,7 @@ def cmd_status(args) -> int:
             "reason": "No active work items in `.ai-workflow/active/`. Ready to start a new feature specification.",
             "done_when": "A new Jira Story specification is created and approved via `team-spec`.",
         }
+        _attach_branch_context(out)
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
 
@@ -5938,6 +6815,7 @@ def cmd_status(args) -> int:
             out["credentials_missing"] = True
         if discovered_from_jira:
             out["discovered_from_jira"] = discovered_from_jira
+        _attach_branch_context(out)
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
 
@@ -5957,6 +6835,7 @@ def cmd_status(args) -> int:
         rec["hydrated_from"] = hydrated_from_source
     if discovered_from_jira:
         rec["discovered_from_jira"] = discovered_from_jira
+    _attach_branch_context(rec)
     print(json.dumps(rec, ensure_ascii=False, indent=2))
     return 0
 
@@ -7179,7 +8058,7 @@ def cmd_complete_task(args) -> int:
     commit_sha = (args.commit or "").strip() or _detect_git_head_commit(repo_root) or story.get("candidate_commit") or ""
     changed_files = [f.strip() for f in (args.files or "").split(",") if f.strip()]
     if not changed_files:
-        changed_files = _detect_git_changed_files(repo_root, commit_sha)
+        changed_files = _detect_git_changed_files(repo_root, commit_sha, config=config)
     test_result = (args.test_result or "").strip()
     root_cause = _clean_optional_text(getattr(args, "root_cause", None))
     solution = _clean_optional_text(getattr(args, "solution", None))
@@ -7630,6 +8509,7 @@ def cmd_handoff(args) -> int:
             "commit": commit_sha,
             "awaiting_in_qa_cycle": bool(_is_jira_status_in_qa(effective_status_label, config)),
             "tag": "",
+            "deploy_ref": "",
             "environment": "",
             "promoted_at": "",
             "source": "",
@@ -7704,6 +8584,13 @@ def cmd_handoff(args) -> int:
             out["warning"] = deploy_gate_warning
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
+
+    if review_status == "approved" and isinstance(story.get("qa_deploy_gate"), dict):
+        prev_gate = story["qa_deploy_gate"]
+        if prev_gate.get("commit") and commit_sha and prev_gate.get("commit") != commit_sha:
+            prev_gate["tag"] = ""
+            prev_gate["deploy_ref"] = ""
+            prev_gate["environment"] = ""
 
     if zh:
         comment_lines = [
@@ -7808,8 +8695,10 @@ def cmd_promote_qa(args) -> int:
 
     from_person = resolve_acting_person(config, from_role, client=client, story=story)
     qa_person = resolve_story_role_person(config, story, "qa", selector=getattr(args, "to_assignee", None))
-    tag = _clean_optional_text(getattr(args, "tag", None))
-    environment = _clean_optional_text(getattr(args, "environment", None))
+    tag = _clean_single_line_text(getattr(args, "tag", None))
+    raw_deploy_ref = _clean_single_line_text(getattr(args, "deploy_ref", None))
+    deploy_ref = raw_deploy_ref or tag
+    environment = _clean_single_line_text(getattr(args, "environment", None))
     note = _clean_optional_text(getattr(args, "note", None))
     commit_sha = story.get("candidate_commit") or review.get("reviewed_commit") or "HEAD"
     qa_handoff_mode = get_effective_qa_handoff_mode(config)
@@ -7820,6 +8709,28 @@ def cmd_promote_qa(args) -> int:
     )
 
     if qa_handoff_mode == "immediate" or already_deployed_for_commit:
+        updated_gate = dict(existing_gate)
+        if "deploy_ref" not in updated_gate:
+            updated_gate["deploy_ref"] = _clean_single_line_text(updated_gate.get("tag"))
+        if "tag" not in updated_gate:
+            updated_gate["tag"] = ""
+        if "environment" not in updated_gate:
+            updated_gate["environment"] = ""
+        metadata_updated = False
+        if deploy_ref and deploy_ref != updated_gate.get("deploy_ref", ""):
+            updated_gate["deploy_ref"] = deploy_ref
+            metadata_updated = True
+        if tag and tag != updated_gate.get("tag", ""):
+            updated_gate["tag"] = tag
+            metadata_updated = True
+        if environment and environment != updated_gate.get("environment", ""):
+            updated_gate["environment"] = environment
+            metadata_updated = True
+        if metadata_updated:
+            if not updated_gate.get("commit"):
+                updated_gate["commit"] = commit_sha
+            story["qa_deploy_gate"] = updated_gate
+            save_active_story(repo_root, jira_key, story, client=client)
         same_person_flag = is_same_person(from_person, qa_person)
         gov_stub = {"same_person": same_person_flag, "to_person": qa_person["name"]}
         active_rel = str((get_active_dir(repo_root) / f"{jira_key}.json").relative_to(repo_root))
@@ -7830,7 +8741,9 @@ def cmd_promote_qa(args) -> int:
             "already_deployed": True,
             "qa_handoff_mode": qa_handoff_mode,
             "qa_deploy_status": "deployed" if already_deployed_for_commit else "immediate",
-            "qa_deploy_gate": existing_gate,
+            "deploy_ref": updated_gate.get("deploy_ref", ""),
+            "environment": updated_gate.get("environment", ""),
+            "qa_deploy_gate": updated_gate,
             "qa_notified": False,
             **_handoff_governance_fields(gov_stub),
             "handoff": None,
@@ -7845,7 +8758,9 @@ def cmd_promote_qa(args) -> int:
             f"[QA 環境部署就緒 — 正式提測：{jira_key}]",
             f"- **驗證目標 Commit**：`{commit_sha}`",
         ]
-        if tag:
+        if deploy_ref:
+            comment_lines.append(f"- **QA 部署參照 (Deploy Ref)**：`{deploy_ref}`")
+        if tag and tag != deploy_ref:
             comment_lines.append(f"- **QA 部署 Tag**：`{tag}`")
         if environment:
             comment_lines.append(f"- **部署環境**：`{environment}`")
@@ -7856,7 +8771,9 @@ def cmd_promote_qa(args) -> int:
             f"[QA Environment Ready — Promoted to QA: {jira_key}]",
             f"- **Candidate Commit**: `{commit_sha}`",
         ]
-        if tag:
+        if deploy_ref:
+            comment_lines.append(f"- **QA Deploy Ref**: `{deploy_ref}`")
+        if tag and tag != deploy_ref:
             comment_lines.append(f"- **QA Deploy Tag**: `{tag}`")
         if environment:
             comment_lines.append(f"- **Environment**: `{environment}`")
@@ -7880,6 +8797,7 @@ def cmd_promote_qa(args) -> int:
         "commit": commit_sha,
         "awaiting_in_qa_cycle": False,
         "tag": tag,
+        "deploy_ref": deploy_ref,
         "environment": environment,
         "note": note,
         "promoted_at": now_iso(),
@@ -7894,6 +8812,8 @@ def cmd_promote_qa(args) -> int:
         "already_deployed": False,
         "qa_handoff_mode": qa_handoff_mode,
         "qa_deploy_status": "deployed",
+        "deploy_ref": deploy_ref,
+        "environment": environment,
         "qa_deploy_gate": story["qa_deploy_gate"],
         "qa_notified": bool(handoff_record.get("notified")),
         **_handoff_governance_fields(handoff_record),
@@ -8429,8 +9349,29 @@ def cmd_record_qa(args) -> int:
             tc_validated_attachments=tc_validated_attachments,
         )
 
+    explicit_deploy_ref = _clean_single_line_text(getattr(args, "deploy_ref", None))
+    gate_obj = story.get("qa_deploy_gate") if isinstance(story.get("qa_deploy_gate"), dict) else {}
+    gate_commit = _clean_single_line_text(gate_obj.get("commit"))
+    gate_matches_commit = bool(
+        gate_commit
+        and gate_commit != "unknown"
+        and tested_commit
+        and tested_commit != "unknown"
+        and gate_commit == tested_commit
+    )
+    gate_deploy_ref = (
+        _clean_single_line_text(gate_obj.get("deploy_ref") or gate_obj.get("tag"))
+        if gate_matches_commit
+        else ""
+    )
+    verified_deploy_ref = explicit_deploy_ref or gate_deploy_ref
+
     qa["status"] = qa_status
     qa["tested_commit"] = tested_commit
+    if verified_deploy_ref:
+        qa["verified_deploy_ref"] = verified_deploy_ref
+    else:
+        qa.pop("verified_deploy_ref", None)
     qa["counts"] = counts
     qa["by_type"] = by_type
     qa["verified_at"] = now_iso()
@@ -8448,19 +9389,27 @@ def cmd_record_qa(args) -> int:
                 f"[站點 3b：QA 測試驗證報告 — {qa_status.upper()}（已同步至 Qase）]",
                 f"- **測試負責人 (QA Owner)**：{qa_badge}",
                 f"- **驗證 Commit**：`{tested_commit}`",
+            ]
+            if verified_deploy_ref:
+                report_lines.append(f"- **驗證部署參照 (Deploy Ref)**：`{verified_deploy_ref}`")
+            report_lines.extend([
                 f"- **結果統計**：pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}{waived_suffix} "
                 f"（automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}）",
                 f"- **Qase 測試執行紀錄**：`{qase_sync_info['project_code']}` Run #{qase_sync_info['run_id']} — {qase_sync_info['run_url']}",
-            ]
+            ])
         else:
             report_lines = [
                 f"[Station 3b: QA Verification Report — {qa_status.upper()} (Synced to Qase)]",
                 f"- **QA Owner**: {qa_badge}",
                 f"- **Tested Commit**: `{tested_commit}`",
+            ]
+            if verified_deploy_ref:
+                report_lines.append(f"- **Verified Deploy Ref**: `{verified_deploy_ref}`")
+            report_lines.extend([
                 f"- **Summary Counts**: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}{waived_suffix} "
                 f"(automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)})",
                 f"- **Qase Test Run**: `{qase_sync_info['project_code']}` Run #{qase_sync_info['run_id']} — {qase_sync_info['run_url']}",
-            ]
+            ])
         report_md = "\n".join(report_lines)
     else:
         if zh:
@@ -8468,23 +9417,31 @@ def cmd_record_qa(args) -> int:
                 f"[站點 3b：QA 測試驗證報告 — {qa_status.upper()}]",
                 f"- **測試負責人 (QA Owner)**：{qa_badge}",
                 f"- **驗證 Commit**：`{tested_commit}`",
+            ]
+            if verified_deploy_ref:
+                table_lines.append(f"- **驗證部署參照 (Deploy Ref)**：`{verified_deploy_ref}`")
+            table_lines.extend([
                 f"- **結果統計**：pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}{waived_suffix}",
                 f"- **執行類型分佈**：automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}",
                 "",
                 "| TC ID | AC ID | 執行類型 | 測試結果 |",
                 "|---|---|---|---|",
-            ]
+            ])
         else:
             table_lines = [
                 f"[Station 3b: QA Verification Report — {qa_status.upper()}]",
                 f"- **QA Owner**: {qa_badge}",
                 f"- Tested Commit: `{tested_commit}`",
+            ]
+            if verified_deploy_ref:
+                table_lines.append(f"- **Verified Deploy Ref**: `{verified_deploy_ref}`")
+            table_lines.extend([
                 f"- Summary Counts: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}{waived_suffix}",
                 f"- Execution Breakdown: automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}",
                 "",
                 "| TC ID | AC ID | Type | Result |",
                 "|---|---|---|---|",
-            ]
+            ])
         for c in test_cases:
             table_lines.append(f"| {c['id']} | {c['ac_id']} | {c['execution_type']} | **{c['result']}** |")
         report_md = "\n".join(table_lines)
@@ -8552,6 +9509,7 @@ def cmd_record_qa(args) -> int:
         "qa_status": qa_status,
         "fast_track": fast_tracked_qa,
         "tested_commit": tested_commit,
+        "verified_deploy_ref": verified_deploy_ref,
         "counts": counts,
         "by_type": by_type,
         "pending_external_tcs": pending_external_tcs,
@@ -9751,6 +10709,7 @@ def cmd_close_story(args) -> int:
             except Exception:
                 pass
 
+    release_checklist_reminders = _build_release_checklist_reminders(config)
     print(json.dumps({
         "ok": True,
         "action": "close-story",
@@ -9760,6 +10719,7 @@ def cmd_close_story(args) -> int:
         "jira_status": done_status,
         "qa_breakdown": qa_breakdown,
         "triage_disclosure": triage_disclosure,
+        "release_checklist_reminders": release_checklist_reminders,
         "release_summary": release_md,
         "transition": trans_res,
         "resolved_dependent_stories": resolved_dependents,
@@ -9796,6 +10756,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--commit-message-pattern", default=None, help="Optional regex for non-blocking commit message format validation in complete-task")
     p_init.add_argument("--qa-handoff-mode", choices=list(VALID_QA_HANDOFF_MODES), default=None, help="QA handoff mode ('immediate' default or 'gated_by_deploy' for multi-environment CI/CD decoupling)")
     p_init.add_argument("--status-dev-done", default=None, help="Optional Jira status name for status_mapping.dev_done (used when qa_handoff_mode='gated_by_deploy')")
+    p_init.add_argument("--integration-branch", default=None, help="Optional delivery_pipeline.integration_branch (e.g. 'release', 'develop')")
+    p_init.add_argument("--production-branch", default=None, help="Optional delivery_pipeline.production_branch (e.g. 'main', 'master')")
+    p_init.add_argument("--qa-tag-prefix", default=None, help="Optional delivery_pipeline.environments.qa tag prefix (e.g. 'qa-')")
+    p_init.add_argument("--uat-tag-prefix", default=None, help="Optional delivery_pipeline.environments.uat tag prefix (e.g. 'uat-')")
+    p_init.add_argument("--jira-deployment-sync", nargs="?", const="true", default=None, help="Optional delivery_pipeline.jira_deployment_sync boolean flag (true/false)")
     p_init.add_argument("--name", help="Display name for the role(s) claimed via --role (auto-resolved from Jira /myself if omitted)")
     p_init.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for Jira URL, project key, account email, API token, and role mappings")
     p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")
@@ -9943,6 +10908,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_promote_qa.add_argument("--key", required=True, help="Jira Story key")
     p_promote_qa.add_argument("--from-role", default="developer", help="Acting role promoting the build to QA (default: developer)")
     p_promote_qa.add_argument("--tag", default="", help="Optional QA deployment tag/release identifier (informational only; never invokes git tag)")
+    p_promote_qa.add_argument("--deploy-ref", default="", help="Optional QA deployment reference (tag, TestFlight build, or release ref; informational only)")
     p_promote_qa.add_argument("--environment", default="", help="Optional target QA environment name (e.g. qa, staging)")
     p_promote_qa.add_argument("--note", default="", help="Optional QA promotion note")
     p_promote_qa.add_argument("--to-assignee", default=None, help="Optional specific QA member (email/name/accountId) in roles.qa pool")
@@ -9969,6 +10935,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_qa.add_argument("--tc-attach", action="append", default=[], help="Attach screenshot/media/log file to a test case in verify mode: 'TC-002=/path/to/fail.png' (repeatable)")
     p_qa.add_argument("--all-pass", action="store_true", help="Mark all un-overridden 'automated' test cases as pass in verify mode (external/manual TCs require explicit result)")
     p_qa.add_argument("--commit", help="Tested git commit SHA")
+    p_qa.add_argument("--deploy-ref", default="", help="Optional deployed build/tag reference verified by QA (falls back to qa_deploy_gate.deploy_ref when aligned)")
     p_qa.set_defaults(func=cmd_record_qa)
 
     # 8. create-bug (verify failures, Story exploratory bugs, and standalone production bugs)

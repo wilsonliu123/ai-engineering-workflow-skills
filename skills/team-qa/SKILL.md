@@ -100,11 +100,13 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
      --key "<JIRA-KEY>" \
      --mode verify \
      [--commit "<tested-commit-sha>"] \
+     [--deploy-ref "<qa-tag-or-build-ref>"] \
      [--junit-xml "<path/to/junit.xml>"] \
      [--result "TC-001=pass" --result "TC-002=fail:按鈕溢位"] \
      [--tc-attach "TC-002=<path/to/screenshot.png>"] \
      [--all-pass]
    ```
+   *(Optional `--deploy-ref` records which deployed QA tag or build — e.g. `qa-2026-11-23` or TestFlight build `1.4.0 (42)` — was verified; if omitted, `record-qa --mode verify` automatically inherits `qa_deploy_gate.deploy_ref` when aligned with `tested_commit`, persists `qa.verified_deploy_ref`, and renders it cleanly in the Jira QA verification comment.)*
 
 3. **Branch on Verification Outcome:**
    - **If Any Test Fails (`fail` or `blocked`):**
