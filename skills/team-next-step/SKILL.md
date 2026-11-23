@@ -52,10 +52,11 @@ Follow this strict priority order (matching `jira_sync.py status`):
 | **5** | Pending `TASK-001..N` (`status != "completed"`) | `team-dev` (`implement` mode) | `developer` |
 | **6** | Code review requested changes (`review.status == "changes-requested"`) | `team-dev` (`implement` mode) | `developer` |
 | **7** | All `tasks` completed, `review.status != "approved"`, or `reviewed_commit != candidate_commit` | `team-review` | `reviewer` |
-| **8** | Review approved, but `qa.test_cases` (`TC-001..N`) not planned yet | `team-qa` (`plan` mode) | `qa` |
-| **9** | Review approved & `TC-*` planned, but `qa.status != "passed"` or `tested_commit != candidate_commit` | `team-qa` (`verify` mode — surfaces `pending_automated_tcs`, `pending_external_tcs`, and `pending_manual_tcs`) | `qa` |
-| **10** | Spec approved + Tasks completed + Review approved + QA passed + 0 open Bugs + commits aligned | `team-release` | `release_manager` |
-| **11** | Jira Story is already `Done` and `.ai-workflow/active/<JIRA-KEY>.json` is removed | No remaining action for this Story | — |
+| **8** | Review approved, but `qa.test_cases` (`TC-001..N`) not planned yet *(still allowed in parallel even when `awaiting_qa_deploy: true`)* | `team-qa` (`plan` mode) | `qa` |
+| **8b** | `qa_handoff_mode == "gated_by_deploy"`, Review approved, `TC-*` planned, and `awaiting_qa_deploy: true` (Jira still in `dev_done` / not yet `in_qa`) | **Wait for QA Deploy** (`CI/CD -> in_qa` + `pull`/`status`, or `jira_sync.py promote-qa --key <KEY>`) — gates `team-qa (verify)` | `developer` |
+| **9** | Review approved, QA deploy unblocked (if gated), & `TC-*` planned, but `qa.status != "passed"` or `tested_commit != candidate_commit` | `team-qa` (`verify` mode — surfaces `pending_automated_tcs`, `pending_external_tcs`, and `pending_manual_tcs`; use `team-qa` `triage` mode for human-authorized `Not a Bug`/`Won't Fix`/`Duplicate`/`Cannot Reproduce` bugs) | `qa` |
+| **10** | Spec approved + Tasks completed + Review approved + QA passed (all TCs `pass` or audited `waived`/`not-applicable`) + 0 open Bugs + commits aligned | `team-release` | `release_manager` |
+| **11** | Jira Story is already `Done` (`.ai-workflow/active/<JIRA-KEY>.json` removed) OR standalone Bug closed via Bug Triage (`triage_closed: true`) | No remaining action for this Story / Bug | — |
 
 ### 3. Parallel & fallback rules
 

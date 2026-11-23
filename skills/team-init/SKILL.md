@@ -92,8 +92,9 @@ If any of the following items have not been explicitly provided or confirmed by 
      - **「請問您自己負責哪幾個角色（例如 `pm, tech_lead, developer`）？以及您的姓名、Jira Email 與 API Token 為何？」**
      - 其他尚未確定的角色可直接留空（標記為 `unclaimed_roles`），當第二、第三位協作者 `git clone` 專案並執行 `$team-next-step` 時，系統會自動請他們認領自己的角色並綁定各自的本機 Token！（若初始化時已知全體成員，仍可透過 `--roles-json` 一次填齊。）
    - **安全儲存承諾**：所有 API Token 皆**只會寫入受 `.gitignore` 保護的 `.ai-workflow/credentials.json`（權限 `0600`）**，**絕不會寫入 Git 追蹤的 `.ai-workflow/team-config.json`**。
-4. **Jira 狀態、單據類型映射與選填 QA 測試管理後端（選填確認）**
+4. **Jira 狀態、單據類型映射、多環境 QA 交接模式與選填 QA 測試管理後端（選填確認）**
    - 列出預設狀態映射（`To Do`、`In Progress`、`In Review`、`In QA`、`Ready for Release`、`Done`）與單據類型（`Story`、`Sub-task`、`Bug`），詢問是否直接沿用預設值或需自訂。
+   - 若團隊採用多環境 CI/CD 流程（Review 通過先進入「開發完成 / Dev Completed」，待打 QA Tag 或部署至 QA 環境後才推進 `In QA` 並通知 QA），可選配 `--qa-handoff-mode gated_by_deploy` 與 `--status-dev-done "<開發完成狀態>"`（預設為 `--qa-handoff-mode immediate`，維持 100% 向後相容）。
    - 選填確認團隊的 QA 測試案例管理方式（`--qa-backend`）：直接放在 **Jira 評論（`jira-comment`）** 或同步至 **Qase TestOps（`qase`，搭配 `--qase-project-code` 與 `--qase-token`）**。若初始化時尚未決定可先留空，首次執行 `$team-qa` 時會自動詢問一次並記憶於 `team-config.json`。
 
 **WAIT for the user's response before proceeding to Step 3.**
@@ -111,7 +112,9 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   --jira-email "<JIRA_EMAIL>" \
   --jira-token "<JIRA_API_TOKEN>" \
   [--commit-policy "confirm_before_commit|auto_on_test_pass"] \
-  [--commit-message-pattern '<OPTIONAL_REGEX>']
+  [--commit-message-pattern '<OPTIONAL_REGEX>'] \
+  [--qa-handoff-mode "immediate|gated_by_deploy"] \
+  [--status-dev-done "<DEV_DONE_JIRA_STATUS>"]
 
 # Option B: Full multi-person mapping upfront
 python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
@@ -122,10 +125,12 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   --roles-json '<JSON_MAPPING>' \
   [--role-tokens-json '<ROLE_TOKENS_JSON>'] \
   [--commit-policy "confirm_before_commit|auto_on_test_pass"] \
-  [--commit-message-pattern '<OPTIONAL_REGEX>']
+  [--commit-message-pattern '<OPTIONAL_REGEX>'] \
+  [--qa-handoff-mode "immediate|gated_by_deploy"] \
+  [--status-dev-done "<DEV_DONE_JIRA_STATUS>"]
 ```
 
-*(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`. Optional `--commit-policy` defaults to `"confirm_before_commit"` — pause after local tests pass to wait for user confirmation before committing — or can opt in to `"auto_on_test_pass"`; optional `--commit-message-pattern` configures a non-blocking regex check in `complete-task`.)*
+*(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`. Optional `--commit-policy` defaults to `"confirm_before_commit"` — pause after local tests pass to wait for user confirmation before committing — or can opt in to `"auto_on_test_pass"`; optional `--commit-message-pattern` configures a non-blocking regex check in `complete-task`. Optional `--qa-handoff-mode` defaults to `"immediate"` — or set `"gated_by_deploy"` with `--status-dev-done "<Dev Completed>"` to decouple Code Review approval from QA environment deployment.)*
 
 What `jira_sync.py init` enforces automatically:
 - Creates or updates `.ai-workflow/team-config.json` (template: `references/team-config-template.json`) with confirmed `project_key`, `jira_base_url`, `roles` (strictly `name`, `email`, `jira_account_id` — never tokens), `status_mapping`, and `issue_type_mapping`.

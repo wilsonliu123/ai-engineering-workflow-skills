@@ -12,10 +12,12 @@ Subcommands:
   status          Inspect active workflow state and recommend the exact next station/role
   sync-story      Create/update Story spec (Scope, AC-*, conditional UI/API design, 抓大放小 decisions)
   create-subtasks Create development tasks (TASK-001..N) and Jira Sub-tasks
-  complete-task   Mark a task or Bug completed with commit SHA, changed files, and test evidence
-  handoff         Record review/station handoff with multi-role awareness (auto-consolidate vs @mention)
+  complete-task   Mark a task or Bug completed with commit SHA, changed files, test evidence, and optional root-cause/solution
+  handoff         Record review/station handoff with multi-role awareness (auto-consolidate vs @mention vs gated_by_deploy)
+  promote-qa      Explicitly promote a review-approved Story to QA (in_qa) after QA environment deploy in gated_by_deploy mode
   record-qa       Record QA test plan (plan mode) or verification results (verify mode, incl. JUnit/JSON)
   create-bug      Create a linked Jira Bug ticket on test failure and route back to Developer
+  triage-bug      Triage a Story or standalone Bug (Not a Bug / Won't Fix / Duplicate / Cannot Reproduce / Fixed) with human decision audit
   close-story     Verify all release gates, post release summary, transition Story to Done, delete active JSON
 """
 
@@ -129,6 +131,26 @@ def _build_multipart_form_data(validated_files: list, field_name: str = "file") 
     return boundary, b"".join(chunks)
 
 VALID_COMMIT_POLICIES = ("confirm_before_commit", "auto_on_test_pass")
+VALID_QA_HANDOFF_MODES = ("immediate", "gated_by_deploy")
+BUG_TRIAGE_RESOLUTION_ALIASES = {
+    "not-a-bug": ("not-a-bug", "Not a Bug"),
+    "not a bug": ("not-a-bug", "Not a Bug"),
+    "not_a_bug": ("not-a-bug", "Not a Bug"),
+    "notabug": ("not-a-bug", "Not a Bug"),
+    "wont-fix": ("wont-fix", "Won't Fix"),
+    "won't fix": ("wont-fix", "Won't Fix"),
+    "wont fix": ("wont-fix", "Won't Fix"),
+    "wont_fix": ("wont-fix", "Won't Fix"),
+    "won't-fix": ("wont-fix", "Won't Fix"),
+    "wontfix": ("wont-fix", "Won't Fix"),
+    "duplicate": ("duplicate", "Duplicate"),
+    "cannot-reproduce": ("cannot-reproduce", "Cannot Reproduce"),
+    "cannot reproduce": ("cannot-reproduce", "Cannot Reproduce"),
+    "cannot_reproduce": ("cannot-reproduce", "Cannot Reproduce"),
+    "cannotreproduce": ("cannot-reproduce", "Cannot Reproduce"),
+    "fixed": ("fixed", "Fixed"),
+}
+NON_CODE_FIX_RESOLUTIONS = {"not-a-bug", "wont-fix", "duplicate", "cannot-reproduce"}
 
 DEFAULT_TEAM_CONFIG = {
     "version": "1.0",
@@ -140,6 +162,7 @@ DEFAULT_TEAM_CONFIG = {
     "notification_channel": "jira",
     "commit_policy": "confirm_before_commit",
     "commit_message_pattern": "",
+    "qa_handoff_mode": "immediate",
     "roles": {
         "pm": {"name": "PM Owner", "email": "", "jira_account_id": ""},
         "tech_lead": {"name": "Tech Lead", "email": "", "jira_account_id": ""},
@@ -152,6 +175,7 @@ DEFAULT_TEAM_CONFIG = {
         "todo": "To Do",
         "in_progress": "In Progress",
         "in_review": "In Review",
+        "dev_done": "",
         "in_qa": "In QA",
         "ready_for_release": "Ready for Release",
         "done": "Done",
@@ -409,6 +433,146 @@ def get_effective_commit_policy(config: dict) -> str:
     return "confirm_before_commit"
 
 
+def get_effective_qa_handoff_mode(config: dict) -> str:
+    """Return effective qa_handoff_mode, safely falling back to 'immediate' on invalid/non-string values."""
+    raw = (config or {}).get("qa_handoff_mode")
+    if isinstance(raw, str):
+        norm = raw.strip().lower()
+        if norm in VALID_QA_HANDOFF_MODES:
+            return norm
+    return "immediate"
+
+
+def normalize_triage_resolution(raw: str) -> tuple:
+    """Normalize triage resolution aliases case-insensitively into (slug, display_name)."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(
+            "Unknown triage resolution ''. Expected one of: not-a-bug, wont-fix, duplicate, cannot-reproduce, fixed."
+        )
+    norm = re.sub(r"\s+", " ", raw.strip().replace("\u2019", "'").replace("`", "'")).lower()
+    if norm in BUG_TRIAGE_RESOLUTION_ALIASES:
+        return BUG_TRIAGE_RESOLUTION_ALIASES[norm]
+    raise ValueError(
+        f"Unknown triage resolution '{raw}'. Expected one of: not-a-bug, wont-fix, duplicate, cannot-reproduce, fixed."
+    )
+
+
+def _clean_optional_text(val) -> str:
+    """Normalize optional text argument safely to '' when None/whitespace (never storing literal 'None')."""
+    if val is None:
+        return ""
+    return str(val).strip()
+
+
+def _extract_jira_resolution(fields: dict) -> str:
+    """Safely extract remote Jira fields.resolution.name handling None or non-dict values."""
+    if not isinstance(fields, dict):
+        return ""
+    res_obj = fields.get("resolution")
+    if isinstance(res_obj, dict):
+        return str(res_obj.get("name") or "").strip()
+    if isinstance(res_obj, str):
+        return res_obj.strip()
+    return ""
+
+
+def _is_jira_status_in_qa(status_name: str, config: dict = None) -> bool:
+    s = (status_name or "").strip().lower()
+    if not s:
+        return False
+    in_qa_mapped = str(((config or {}).get("status_mapping") or {}).get("in_qa") or "In QA").strip().lower()
+    return bool(in_qa_mapped and s == in_qa_mapped)
+
+
+def _is_awaiting_qa_deploy(story: dict, config: dict) -> bool:
+    """Return True when Story is in gated_by_deploy mode, review is approved, and QA deploy has not yet unblocked."""
+    if get_effective_qa_handoff_mode(config) != "gated_by_deploy":
+        return False
+    review = story.get("review") or {}
+    if review.get("status") != "approved":
+        return False
+    candidate_commit = story.get("candidate_commit") or review.get("reviewed_commit") or ""
+    gate = story.get("qa_deploy_gate") or {}
+    gate_is_awaiting_current = (
+        isinstance(gate, dict)
+        and gate.get("status") == "awaiting_qa_deploy"
+        and (not gate.get("commit") or not candidate_commit or gate.get("commit") == candidate_commit)
+    )
+    qa = story.get("qa") or {}
+    if (
+        qa.get("status") == "passed"
+        and (not qa.get("tested_commit") or not candidate_commit or qa.get("tested_commit") == candidate_commit)
+        and not gate_is_awaiting_current
+    ):
+        return False
+    if (
+        isinstance(gate, dict)
+        and gate.get("status") == "deployed"
+        and (not gate.get("commit") or not candidate_commit or gate.get("commit") == candidate_commit)
+    ):
+        return False
+    if (
+        _is_jira_status_in_qa(story.get("jira_status", ""), config)
+        and not (
+            isinstance(gate, dict)
+            and gate.get("status") == "awaiting_qa_deploy"
+            and gate.get("awaiting_in_qa_cycle")
+        )
+    ):
+        return False
+    return True
+
+
+def _is_tc_waiver_valid(tc: dict, story: dict) -> bool:
+    """Verify that a 'waived' or 'not-applicable' TC carries complete audit metadata referencing a closed/triaged bug."""
+    if not isinstance(tc, dict):
+        return False
+    res = str(tc.get("result") or "").strip().lower()
+    if res not in ("waived", "not-applicable"):
+        return False
+    triage_res = str(tc.get("triage_resolution") or "").strip().lower()
+    waived_by = str(tc.get("waived_by") or "").strip()
+    waived_reason = str(tc.get("waived_reason") or "").strip()
+    waived_bug_id = str(tc.get("waived_bug_id") or "").strip().upper()
+    if triage_res not in NON_CODE_FIX_RESOLUTIONS:
+        return False
+    if not waived_by or not waived_reason or not waived_bug_id:
+        return False
+    if story.get("issue_kind") == "standalone_bug":
+        if waived_bug_id == str(story.get("jira_key") or "").strip().upper() and story.get("triage_closed"):
+            st_triage = story.get("triage")
+            if isinstance(st_triage, dict):
+                st_triage_res = str(st_triage.get("resolution") or "").strip().lower()
+                if st_triage_res in NON_CODE_FIX_RESOLUTIONS and triage_res == st_triage_res:
+                    return True
+    for b in (story.get("bugs") or []):
+        if not isinstance(b, dict):
+            continue
+        b_keys = {
+            str(b.get("bug_key") or "").strip().upper(),
+            str(b.get("id") or "").strip().upper(),
+        }
+        if waived_bug_id in b_keys:
+            if b.get("status") not in ("completed", "closed"):
+                return False
+            b_triage = b.get("triage")
+            if isinstance(b_triage, dict):
+                b_triage_res = str(b_triage.get("resolution") or "").strip().lower()
+                if b_triage_res in NON_CODE_FIX_RESOLUTIONS and triage_res == b_triage_res:
+                    return True
+            return False
+    return False
+
+
+def _is_tc_satisfied(tc: dict, story: dict) -> bool:
+    """Return True if a TC is 'pass' or a validly audited 'waived'/'not-applicable' disposition."""
+    if not isinstance(tc, dict):
+        return False
+    if tc.get("result") == "pass":
+        return True
+    return _is_tc_waiver_valid(tc, story)
+
+
 def load_team_config(repo_root: Path) -> dict:
     cfg_path = get_config_path(repo_root)
     if not cfg_path.exists():
@@ -418,10 +582,23 @@ def load_team_config(repo_root: Path) -> dict:
         merged = json.loads(json.dumps(DEFAULT_TEAM_CONFIG))
         merged.update(data)
         merged["commit_policy"] = get_effective_commit_policy(merged)
+        merged["qa_handoff_mode"] = get_effective_qa_handoff_mode(merged)
         raw_pat = merged.get("commit_message_pattern")
         merged["commit_message_pattern"] = "" if raw_pat is None else raw_pat
         merged["roles"] = {**DEFAULT_TEAM_CONFIG["roles"], **data.get("roles", {})}
-        merged["status_mapping"] = {**DEFAULT_TEAM_CONFIG["status_mapping"], **data.get("status_mapping", {})}
+        raw_sm = data.get("status_mapping") if isinstance(data.get("status_mapping"), dict) else {}
+        sanitized_sm = {}
+        for sm_key, sm_default in DEFAULT_TEAM_CONFIG["status_mapping"].items():
+            raw_v = raw_sm.get(sm_key)
+            if isinstance(raw_v, str):
+                cleaned_v = raw_v.strip()
+                sanitized_sm[sm_key] = cleaned_v if (sm_key == "dev_done" or cleaned_v) else sm_default
+            else:
+                sanitized_sm[sm_key] = sm_default
+        for extra_k, extra_v in raw_sm.items():
+            if extra_k not in sanitized_sm and isinstance(extra_v, str):
+                sanitized_sm[extra_k] = extra_v.strip()
+        merged["status_mapping"] = sanitized_sm
         merged["issue_type_mapping"] = {
             **DEFAULT_TEAM_CONFIG["issue_type_mapping"],
             **data.get("issue_type_mapping", {}),
@@ -1501,9 +1678,13 @@ class JiraClient:
         self._request("POST", f"/rest/api/3/issue/{urllib.parse.quote(issue_key)}/comment", {"body": adf})
         return {"mode": "live", "issue_key": issue_key, "comment_posted": True}
 
-    def transition_issue(self, issue_key: str, target_status_name: str) -> dict:
+    def transition_issue(self, issue_key: str, target_status_name: str, resolution_name: str = "") -> dict:
+        res_name = _clean_optional_text(resolution_name)
         if not self.is_live or not target_status_name:
-            return {"mode": "offline" if not self.is_live else "live", "transitioned_to": target_status_name}
+            out = {"mode": "offline" if not self.is_live else "live", "transitioned_to": target_status_name}
+            if res_name:
+                out["resolution"] = res_name
+            return out
         trans_resp = self._request("GET", f"/rest/api/3/issue/{urllib.parse.quote(issue_key)}/transitions")
         transitions = trans_resp.get("transitions") or []
         matched_id = None
@@ -1514,9 +1695,37 @@ class JiraClient:
                 matched_id = t.get("id")
                 break
         if matched_id:
+            trans_path = f"/rest/api/3/issue/{urllib.parse.quote(issue_key)}/transitions"
+            if res_name:
+                payload_with_res = {
+                    "transition": {"id": str(matched_id)},
+                    "fields": {"resolution": {"name": res_name}},
+                }
+                try:
+                    self._request("POST", trans_path, payload_with_res)
+                    return {
+                        "mode": "live",
+                        "transitioned_to": target_status_name,
+                        "transition_id": str(matched_id),
+                        "resolution": res_name,
+                        "resolution_applied": True,
+                        "resolution_fallback": False,
+                    }
+                except RuntimeError as exc:
+                    # Gracefully retry transition without fields.resolution if Jira rejects resolution on that screen
+                    self._request("POST", trans_path, {"transition": {"id": str(matched_id)}})
+                    return {
+                        "mode": "live",
+                        "transitioned_to": target_status_name,
+                        "transition_id": str(matched_id),
+                        "resolution": res_name,
+                        "resolution_applied": False,
+                        "resolution_fallback": True,
+                        "warning": f"Jira rejected resolution '{res_name}' on transition screen ({exc}); retried without resolution field.",
+                    }
             self._request(
                 "POST",
-                f"/rest/api/3/issue/{urllib.parse.quote(issue_key)}/transitions",
+                trans_path,
                 {"transition": {"id": str(matched_id)}},
             )
             return {"mode": "live", "transitioned_to": target_status_name, "transition_id": str(matched_id)}
@@ -2015,6 +2224,8 @@ class QaseClient:
             "fail": "failed",
             "blocked": "blocked",
             "not-executed": "skipped",
+            "waived": "skipped",
+            "not-applicable": "skipped",
         }
         results_payload = []
         for c in test_cases:
@@ -2236,6 +2447,36 @@ def reconcile_story_with_jira(
         story["jira_status"] = remote_status
         changed = True
 
+    remote_resolution = _extract_jira_resolution(fields)
+    if "resolution" in fields and story.get("jira_resolution", "") != remote_resolution:
+        story["jira_resolution"] = remote_resolution
+        changed = True
+    elif remote_resolution and story.get("jira_resolution") != remote_resolution:
+        story["jira_resolution"] = remote_resolution
+        changed = True
+
+    # Scenario A (#4): Auto-unblock QA deploy gate when CI/CD transitions Jira Story to status_mapping.in_qa
+    if get_effective_qa_handoff_mode(config) == "gated_by_deploy":
+        deploy_gate = story.get("qa_deploy_gate")
+        if isinstance(deploy_gate, dict) and deploy_gate.get("status") == "awaiting_qa_deploy":
+            if deploy_gate.get("awaiting_in_qa_cycle"):
+                if remote_status and not _is_jira_status_in_qa(remote_status, config):
+                    deploy_gate["awaiting_in_qa_cycle"] = False
+                    changed = True
+            elif _is_jira_status_in_qa(remote_status, config):
+                deploy_gate["status"] = "deployed"
+                deploy_gate["commit"] = (
+                    deploy_gate.get("commit")
+                    or story.get("candidate_commit")
+                    or (story.get("review") or {}).get("reviewed_commit")
+                    or ""
+                )
+                deploy_gate["awaiting_in_qa_cycle"] = False
+                deploy_gate["promoted_at"] = now_iso()
+                deploy_gate["source"] = "jira_status_sync"
+                delta["qa_deploy_unblocked"] = True
+                changed = True
+
     ass_obj = fields.get("assignee")
     if isinstance(ass_obj, dict) and ass_obj.get("accountId"):
         acct_id = str(ass_obj.get("accountId") or "").strip()
@@ -2384,8 +2625,27 @@ def reconcile_story_with_jira(
             continue
         b_st_raw = str(((l_fields.get("status") or {}).get("name")) or "").strip()
         b_is_done = _is_jira_status_done(b_st_raw, config)
+        b_has_res_field = "resolution" in l_fields
+        b_res_raw = _extract_jira_resolution(l_fields)
+        if b_is_done and not b_res_raw and not b_has_res_field:
+            try:
+                full_bug = client.get_issue(b_key)
+                if isinstance(full_bug, dict) and isinstance(full_bug.get("fields"), dict):
+                    b_res_raw = _extract_jira_resolution(full_bug["fields"])
+                    b_has_res_field = "resolution" in full_bug["fields"]
+            except Exception:
+                pass
         if b_key in by_bug_key:
             b_obj = by_bug_key[b_key]
+            if b_st_raw and b_obj.get("jira_status") != b_st_raw:
+                b_obj["jira_status"] = b_st_raw
+                changed = True
+            if b_has_res_field and b_obj.get("jira_resolution", "") != b_res_raw:
+                b_obj["jira_resolution"] = b_res_raw
+                changed = True
+            elif b_res_raw and b_obj.get("jira_resolution") != b_res_raw:
+                b_obj["jira_resolution"] = b_res_raw
+                changed = True
             if b_is_done and b_obj.get("status") not in ("completed", "closed"):
                 b_obj["status"] = "completed"
                 b_obj["last_synced_jira_status"] = b_st_raw or "Done"
@@ -2417,6 +2677,8 @@ def reconcile_story_with_jira(
                 "reported_commit": story.get("candidate_commit") or "HEAD",
                 "status": "completed" if b_is_done else "open",
                 "source": "jira-ui",
+                "jira_status": b_st_raw or ("Done" if b_is_done else "To Do"),
+                "jira_resolution": b_res_raw,
                 "last_synced_jira_status": b_st_raw or ("Done" if b_is_done else "To Do"),
                 "created_at": now_iso(),
             }
@@ -2602,6 +2864,7 @@ def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str
                 if l_type in ("bug", "缺陷") or "BUG" in (linked.get("key") or ""):
                     b_key = linked.get("key") or f"{clean_key}-BUG-{idx}"
                     b_st_raw = ((l_fields.get("status") or {}).get("name") or "").strip()
+                    b_res_raw = _extract_jira_resolution(l_fields)
                     b_done = _is_jira_status_done(b_st_raw, client.config)
                     bugs.append({
                         "bug_key": b_key,
@@ -2614,6 +2877,8 @@ def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str
                         "actual": "Fail",
                         "reported_commit": "HEAD",
                         "status": "completed" if b_done else "open",
+                        "jira_status": b_st_raw or ("Done" if b_done else "To Do"),
+                        "jira_resolution": b_res_raw,
                         "last_synced_jira_status": b_st_raw or ("Done" if b_done else "To Do"),
                         "created_at": now_iso(),
                     })
@@ -3836,6 +4101,10 @@ def cmd_init(args) -> int:
         cfg["commit_policy"] = args.commit_policy.strip()
     if getattr(args, "commit_message_pattern", None) is not None:
         cfg["commit_message_pattern"] = args.commit_message_pattern.strip()
+    if getattr(args, "qa_handoff_mode", None):
+        cfg["qa_handoff_mode"] = get_effective_qa_handoff_mode({"qa_handoff_mode": args.qa_handoff_mode})
+    if getattr(args, "status_dev_done", None) is not None:
+        cfg.setdefault("status_mapping", {})["dev_done"] = args.status_dev_done.strip()
     if args.roles_json:
         custom_roles = load_json_arg(args.roles_json)
         if isinstance(custom_roles, dict):
@@ -4096,6 +4365,7 @@ def cmd_init(args) -> int:
         "jira_base_url": cfg.get("jira_base_url", ""),
         "jira_mode": "live" if client.is_live else "offline",
         "commit_policy": get_effective_commit_policy(cfg),
+        "qa_handoff_mode": get_effective_qa_handoff_mode(cfg),
         "credentials_configured": has_creds,
         "credentials_path": (
             str(cred_saved_path.relative_to(repo_root))
@@ -4152,6 +4422,30 @@ def find_uncovered_story_acs(story: dict, test_cases: list) -> list:
 
 def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) -> dict:
     jira_key = story.get("jira_key", "UNKNOWN")
+
+    # 0. Standalone Bug explicitly closed via Bug Triage (non-code-fix resolution)
+    if story.get("issue_kind") == "standalone_bug" and story.get("triage_closed"):
+        triage = story.get("triage") or {}
+        res_disp = triage.get("resolution_display") or triage.get("resolution") or "Triaged"
+        decided_by = triage.get("decided_by") or ""
+        return {
+            "jira_key": jira_key,
+            "issue_kind": "standalone_bug",
+            "current_station": f"Closed (Bug Triage: {res_disp})",
+            "recommended_skill": None,
+            "recommended_mode": None,
+            "triage_closed": True,
+            "triage": triage,
+            "responsible_role": None,
+            "responsible_person": decided_by,
+            "reason": (
+                f"Standalone Bug {jira_key} was closed via Bug Triage as '{res_disp}'"
+                + (f" (decided by {decided_by})" if decided_by else "")
+                + ". No code fix (`team-dev implement`) is required."
+            ),
+            "done_when": "No remaining action — standalone Bug closed via Bug Triage.",
+        }
+
     spec_status = story.get("spec_status", "draft")
     tasks = story.get("tasks") or []
     bugs = story.get("bugs") or []
@@ -4304,30 +4598,76 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             "done_when": f"Code review passes and handoff is synced via `jira_sync.py handoff --key {jira_key} --review-status approved`.",
         }
 
-    # 6. Code Review approved -> check QA Plan & Verify
+    # 6. Code Review approved -> check QA Deploy Gate (#4) and QA Plan / Verify
     test_cases = qa.get("test_cases") or []
     qa_status = qa.get("status")
     tested_commit = qa.get("tested_commit")
     uncovered_acs = find_uncovered_story_acs(story, test_cases)
+    qa_handoff_mode = get_effective_qa_handoff_mode(config)
+    awaiting_qa_deploy = _is_awaiting_qa_deploy(story, config)
+    in_qa_status_name = (config.get("status_mapping") or {}).get("in_qa") or "In QA"
 
     if not test_cases or uncovered_acs:
         owner = resolve_story_role_person(config, story, "qa")
         gap_note = f" (missing coverage for {', '.join(uncovered_acs)})" if (test_cases and uncovered_acs) else ""
         qa_backend_val = (config.get("qa_test_backend") or "").strip()
-        return {
+        plan_rec = {
             "jira_key": jira_key,
-            "current_station": "Station 3b: QA Plan",
+            "current_station": "Station 3b: QA Plan" + (" (Awaiting QA Deploy)" if awaiting_qa_deploy else ""),
             "recommended_skill": "team-qa",
             "recommended_mode": "plan",
             "qa_test_backend": qa_backend_val,
             "requires_qa_backend_choice": not bool(qa_backend_val),
             "responsible_role": "qa",
             "responsible_person": owner["name"],
-            "reason": f"Code review is approved, but QA test cases (TC-001..N) need planning for {jira_key}{gap_note}.",
-            "done_when": f"Test cases covering all Story ACs are planned via `jira_sync.py record-qa --key {jira_key} --mode plan` (or verified directly via QA Fast-Track `--mode verify --all-pass`).",
+            "reason": (
+                f"Code review is approved, and QA verification is waiting for QA environment deployment (`{in_qa_status_name}` / `promote-qa`), "
+                f"while QA may prepare test cases (TC-001..N) in parallel for {jira_key}{gap_note}."
+                if awaiting_qa_deploy
+                else f"Code review is approved, but QA test cases (TC-001..N) need planning for {jira_key}{gap_note}."
+            ),
+            "done_when": (
+                f"Test cases covering all Story ACs are planned via `jira_sync.py record-qa --key {jira_key} --mode plan`; "
+                f"QA verification (`team-qa verify`) remains gated until Jira reaches `{in_qa_status_name}` or `jira_sync.py promote-qa --key {jira_key}` runs."
+                if awaiting_qa_deploy
+                else f"Test cases covering all Story ACs are planned via `jira_sync.py record-qa --key {jira_key} --mode plan` (or verified directly via QA Fast-Track `--mode verify --all-pass`)."
+            ),
+        }
+        if awaiting_qa_deploy:
+            plan_rec["awaiting_qa_deploy"] = True
+            plan_rec["qa_handoff_mode"] = qa_handoff_mode
+            plan_rec["qa_deploy_status"] = (story.get("qa_deploy_gate") or {}).get("status") or "awaiting_qa_deploy"
+            plan_rec["parallel_hint"] = (
+                f"QA may draft the test plan (`team-qa plan`) in parallel now; "
+                f"`team-qa verify` is gated until QA deploy completes (`promote-qa --key {jira_key}` or Jira status '{in_qa_status_name}')."
+            )
+        return plan_rec
+
+    if awaiting_qa_deploy:
+        dev_owner = resolve_story_role_person(config, story, "developer")
+        cur_jira_st = story.get("jira_status") or (config.get("status_mapping") or {}).get("dev_done") or "dev_done"
+        return {
+            "jira_key": jira_key,
+            "current_station": "Station 3a -> 3b: Awaiting QA Deploy",
+            "recommended_skill": None,
+            "recommended_mode": None,
+            "awaiting_qa_deploy": True,
+            "qa_handoff_mode": qa_handoff_mode,
+            "qa_deploy_status": (story.get("qa_deploy_gate") or {}).get("status") or "awaiting_qa_deploy",
+            "responsible_role": "developer",
+            "responsible_person": dev_owner["name"],
+            "reason": (
+                f"Code review for {jira_key} is approved on commit {candidate_commit or 'HEAD'} "
+                f"(Jira status: '{cur_jira_st}'), awaiting QA environment deployment before `team-qa (verify)` can start."
+            ),
+            "done_when": (
+                f"Deploy to QA environment so CI/CD transitions Jira to '{in_qa_status_name}' (sync via `jira_sync.py status`/`pull`), "
+                f"or run `jira_sync.py promote-qa --key {jira_key} [--tag <QA-TAG>]` to notify QA and unblock `team-qa (verify)`."
+            ),
         }
 
-    if qa_status != "passed" or (candidate_commit and tested_commit and tested_commit != candidate_commit):
+    unsatisfied_tcs = [c for c in test_cases if not _is_tc_satisfied(c, story)]
+    if qa_status != "passed" or unsatisfied_tcs or (candidate_commit and tested_commit and tested_commit != candidate_commit):
         owner = resolve_story_role_person(config, story, "qa")
         qa_backend_val = (config.get("qa_test_backend") or "").strip()
         stale_note = (
@@ -4337,15 +4677,15 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
         )
         pending_automated = [
             c["id"] for c in test_cases
-            if c.get("result") != "pass" and c.get("execution_type", "automated") == "automated"
+            if not _is_tc_satisfied(c, story) and c.get("execution_type", "automated") == "automated"
         ]
         pending_external = [
             c["id"] for c in test_cases
-            if c.get("result") != "pass" and c.get("execution_type") == "external"
+            if not _is_tc_satisfied(c, story) and c.get("execution_type") == "external"
         ]
         pending_manual = [
             c["id"] for c in test_cases
-            if c.get("result") != "pass" and c.get("execution_type") == "manual"
+            if not _is_tc_satisfied(c, story) and c.get("execution_type") == "manual"
         ]
         pending_details = []
         if pending_automated:
@@ -4499,7 +4839,20 @@ def cmd_status(args) -> int:
         print(json.dumps(rec, ensure_ascii=False, indent=2))
         return 0
 
-    active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+    def _filter_open_active_files(files: list) -> list:
+        out_files = []
+        for af in files:
+            try:
+                st_peek = json.loads(af.read_text(encoding="utf-8"))
+                if isinstance(st_peek, dict) and st_peek.get("triage_closed"):
+                    continue
+            except Exception:
+                pass
+            out_files.append(af)
+        return out_files
+
+    all_active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+    active_files = _filter_open_active_files(all_active_files)
     hydrated_from_source = None
     discovered_from_jira = []
     if not active_files:
@@ -4507,7 +4860,8 @@ def cmd_status(args) -> int:
         if main_root and get_active_dir(main_root).exists():
             for mf in sorted(get_active_dir(main_root).glob("*.json")):
                 _hydrate_story_from_worktree(repo_root, mf.stem)
-            active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            all_active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            active_files = _filter_open_active_files(all_active_files)
             if active_files:
                 hydrated_from_source = "worktree"
 
@@ -4535,8 +4889,8 @@ def cmd_status(args) -> int:
         return 0
 
     if client.is_live:
-        existing_local_keys = {f.stem.upper() for f in active_files}
-        for af in active_files:
+        existing_local_keys = {f.stem.upper() for f in all_active_files}
+        for af in all_active_files:
             try:
                 st_tmp = json.loads(af.read_text(encoding="utf-8"))
                 for b_item in st_tmp.get("bugs") or []:
@@ -4558,7 +4912,8 @@ def cmd_status(args) -> int:
                         if isinstance(b_item, dict) and b_item.get("bug_key"):
                             existing_local_keys.add(str(b_item["bug_key"]).strip().upper())
         if discovered_from_jira:
-            active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            all_active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            active_files = _filter_open_active_files(all_active_files)
             hydrated_from_source = "jira"
 
     if not active_files:
@@ -5410,6 +5765,8 @@ def cmd_complete_task(args) -> int:
     if not changed_files:
         changed_files = _detect_git_changed_files(repo_root, commit_sha)
     test_result = (args.test_result or "").strip()
+    root_cause = _clean_optional_text(getattr(args, "root_cause", None))
+    solution = _clean_optional_text(getattr(args, "solution", None))
 
     if not commit_sha or not test_result:
         print(
@@ -5528,6 +5885,14 @@ def cmd_complete_task(args) -> int:
         matched_item["changed_files"] = changed_files
         matched_item["test_result"] = test_result
         matched_item["completed_at"] = now_iso()
+        if root_cause:
+            matched_item["root_cause"] = root_cause
+        elif "root_cause" in matched_item and matched_item["root_cause"] is None:
+            matched_item["root_cause"] = ""
+        if solution:
+            matched_item["solution"] = solution
+        elif "solution" in matched_item and matched_item["solution"] is None:
+            matched_item["solution"] = ""
         completed_ids.append(target_id)
 
         jira_issue_key = (
@@ -5536,21 +5901,31 @@ def cmd_complete_task(args) -> int:
             else (matched_item.get("bug_key") if item_kind == "bug" else None)
         )
         if zh:
-            comment_md = (
-                f"[任務完成：{target_id}]\n"
-                f"- **完成人員**：{format_person_badge('developer', acting_dev)}\n"
-                f"- **提交版本 (Commit)**：`{commit_sha}`\n"
-                f"- **變更檔案**：{', '.join(changed_files) if changed_files else '無'}\n"
-                f"- **測試驗證結果**：{test_result}"
-            )
+            comment_lines = [
+                f"[任務完成：{target_id}]",
+                f"- **完成人員**：{format_person_badge('developer', acting_dev)}",
+                f"- **提交版本 (Commit)**：`{commit_sha}`",
+                f"- **變更檔案**：{', '.join(changed_files) if changed_files else '無'}",
+                f"- **測試驗證結果**：{test_result}",
+            ]
+            if root_cause:
+                comment_lines.append(f"- **問題原因 (Root Cause)**：{root_cause}")
+            if solution:
+                comment_lines.append(f"- **解決辦法 (Solution)**：{solution}")
+            comment_md = "\n".join(comment_lines)
         else:
-            comment_md = (
-                f"[Task Completed: {target_id}]\n"
-                f"- **Completed By**: {format_person_badge('developer', acting_dev)}\n"
-                f"- Commit: `{commit_sha}`\n"
-                f"- Changed Files: {', '.join(changed_files) if changed_files else 'N/A'}\n"
-                f"- Verification Evidence: {test_result}"
-            )
+            comment_lines = [
+                f"[Task Completed: {target_id}]",
+                f"- **Completed By**: {format_person_badge('developer', acting_dev)}",
+                f"- Commit: `{commit_sha}`",
+                f"- Changed Files: {', '.join(changed_files) if changed_files else 'N/A'}",
+                f"- Verification Evidence: {test_result}",
+            ]
+            if root_cause:
+                comment_lines.append(f"- **Root Cause**: {root_cause}")
+            if solution:
+                comment_lines.append(f"- **Solution**: {solution}")
+            comment_md = "\n".join(comment_lines)
         if jira_issue_key:
             client.add_comment(jira_issue_key, comment_md)
             client.transition_issue(jira_issue_key, done_status)
@@ -5575,6 +5950,47 @@ def cmd_complete_task(args) -> int:
                     pass
 
     story["candidate_commit"] = commit_sha
+
+    if story.get("issue_kind") == "standalone_bug":
+        bug_rep = story.setdefault("bug_report", {})
+        if root_cause:
+            bug_rep["root_cause"] = root_cause
+        elif "root_cause" not in bug_rep or bug_rep["root_cause"] is None:
+            bug_rep["root_cause"] = ""
+        if solution:
+            bug_rep["solution"] = solution
+        elif "solution" not in bug_rep or bug_rep["solution"] is None:
+            bug_rep["solution"] = ""
+        if root_cause or solution:
+            story["bug_fix_summary"] = {
+                "commit": commit_sha,
+                "root_cause": bug_rep.get("root_cause", ""),
+                "solution": bug_rep.get("solution", ""),
+                "updated_at": now_iso(),
+            }
+
+    is_bug_fix = (story.get("issue_kind") == "standalone_bug") or any(
+        ik == "bug"
+        or str(tid).strip().upper().startswith("BUG-")
+        or "-BUG-" in str(tid).strip().upper()
+        for tid, _, ik in resolved_targets
+    )
+    bug_fix_warnings = []
+    if is_bug_fix:
+        if story.get("issue_kind") == "standalone_bug":
+            eff_rc = root_cause or _clean_optional_text((story.get("bug_report") or {}).get("root_cause"))
+            eff_sol = solution or _clean_optional_text((story.get("bug_report") or {}).get("solution"))
+        else:
+            eff_rc = root_cause
+            eff_sol = solution
+        if not eff_rc:
+            bug_fix_warnings.append(
+                "Completing a Bug fix without --root-cause. Pass --root-cause '<analysis>' so Review, QA, and Release can trace why the defect occurred."
+            )
+        if not eff_sol:
+            bug_fix_warnings.append(
+                "Completing a Bug fix without --solution. Pass --solution '<fix strategy>' so Review, QA, and Release can trace how the defect was fixed."
+            )
 
     review = story.get("review")
     if isinstance(review, dict) and review.get("status") == "changes-requested":
@@ -5630,6 +6046,9 @@ def cmd_complete_task(args) -> int:
         "commit": commit_sha,
         "commit_policy": eff_commit_policy,
         "commit_message_warnings": commit_message_warnings,
+        "bug_fix_warnings": bug_fix_warnings,
+        "root_cause": root_cause,
+        "solution": solution,
         "changed_files": changed_files,
         "remaining_tasks": remaining_tasks,
         "remaining_bugs": remaining_bugs,
@@ -5751,7 +6170,125 @@ def cmd_handoff(args) -> int:
         effective_to_role = to_role
         status_key = args.target_status or ("in_qa" if effective_to_role == "qa" else "ready_for_release")
 
+    if commit_sha and commit_sha != "unknown":
+        story["candidate_commit"] = commit_sha
+
     zh = is_zh_tw(config)
+    qa_handoff_mode = get_effective_qa_handoff_mode(config)
+    use_deploy_gate = (
+        review_status == "approved"
+        and effective_to_role == "qa"
+        and qa_handoff_mode == "gated_by_deploy"
+        and not args.target_status
+    )
+
+    if use_deploy_gate:
+        dev_done_status = str((config.get("status_mapping") or {}).get("dev_done") or "").strip()
+        in_qa_status = str((config.get("status_mapping") or {}).get("in_qa") or "In QA").strip()
+        qa_person = resolve_story_role_person(config, story, "qa", selector=getattr(args, "to_assignee", None))
+        if getattr(args, "to_assignee", None) and _is_member_claimed("qa", qa_person):
+            story.setdefault("role_owners", {})["qa"] = serialize_member_for_config(qa_person, "qa")
+
+        deploy_gate_warning = ""
+        if dev_done_status:
+            trans_res = client.transition_issue(jira_key, dev_done_status)
+            if trans_res.get("transitioned_to"):
+                story["jira_status"] = dev_done_status
+                effective_status_label = dev_done_status
+            else:
+                effective_status_label = story.get("jira_status") or ""
+                deploy_gate_warning = (
+                    f"Failed to transition Jira Story {jira_key} to status_mapping.dev_done ('{dev_done_status}'): "
+                    f"{trans_res.get('warning') or 'transition not available'}; preserving actual Jira status "
+                    f"('{effective_status_label or 'unchanged'}') and keeping QA deploy gate active."
+                )
+        else:
+            effective_status_label = story.get("jira_status") or ""
+            deploy_gate_warning = (
+                "status_mapping.dev_done is blank while qa_handoff_mode='gated_by_deploy'; "
+                f"keeping current Jira status ('{effective_status_label or 'unchanged'}') and NOT transitioning to '{in_qa_status}' prematurely."
+            )
+
+        story["qa_deploy_gate"] = {
+            "status": "awaiting_qa_deploy",
+            "commit": commit_sha,
+            "awaiting_in_qa_cycle": bool(_is_jira_status_in_qa(effective_status_label, config)),
+            "tag": "",
+            "environment": "",
+            "promoted_at": "",
+            "source": "",
+        }
+
+        if zh:
+            comment_lines = [
+                f"[站點 3a：開發完成 / 等待 QA 環境部署 — {review_status.upper()}]",
+                f"- **審查人員**：{format_person_badge(from_role, rev_person)}",
+                f"- **審查 Commit**：`{commit_sha}`",
+                f"- **審查摘要**：{summary or '已完成所有開發子任務、驗收條件與共用工程標準核對。'}",
+                f"- **QA 交接門禁 (`gated_by_deploy`)**：程式碼審查已通過並標記開發完成；目前等待部署至 QA 環境（CI/CD 推進至 `{in_qa_status}` 或執行 `promote-qa`），尚未指派或 `@mention` QA。",
+            ]
+            if self_reviewed:
+                comment_lines.append("- **治理註記**：開發與審查由同一人兼任，已啟用 AI 獨立審查模式（`self_reviewed_with_ai: true`）。")
+            if findings:
+                comment_lines.append(f"- **審查發現數量**：{len(findings)}")
+        else:
+            comment_lines = [
+                f"[Station 3a: Dev Completed / Awaiting QA Deploy — {review_status.upper()}]",
+                f"- **Reviewed By**: {format_person_badge(from_role, rev_person)}",
+                f"- Reviewed Commit: `{commit_sha}`",
+                f"- Summary: {summary or 'All completed tasks, ACs, and engineering standards verified.'}",
+                f"- QA Deploy Gate (`gated_by_deploy`): Review approved; awaiting QA environment deployment (CI/CD transition to `{in_qa_status}` or `promote-qa`). QA has NOT been reassigned or `@mention`ed yet.",
+            ]
+            if self_reviewed:
+                comment_lines.append("- Governance Note: Developer and Reviewer map to the same person (`self_reviewed_with_ai: true`).")
+            if findings:
+                comment_lines.append(f"- Findings Count: {len(findings)}")
+
+        # Post comment WITHOUT mentioning QA and WITHOUT reassigning Jira issue to QA
+        client.add_comment(jira_key, "\n".join(comment_lines))
+
+        same_person_flag = is_same_person(rev_person, qa_person)
+        handoff_record = {
+            "timestamp": now_iso(),
+            "from_role": from_role,
+            "to_role": "qa",
+            "from_person": rev_person["name"],
+            "to_person": qa_person["name"],
+            "next_station_owner": qa_person["name"],
+            "same_person": same_person_flag,
+            "can_auto_chain_next_station": False,
+            "requires_user_confirmation_for_next_station": True,
+            "cross_person_clean_stop": not same_person_flag,
+            "next_station_prompt_allowed": same_person_flag,
+            "handoff_mode": "gated-by-deploy",
+            "qa_handoff_mode": "gated_by_deploy",
+            "qa_deploy_status": "awaiting_qa_deploy",
+            "target_jira_status": effective_status_label,
+            "assigned_account_id": "",
+            "notified": False,
+            "qa_notified": False,
+        }
+        story.setdefault("handoffs", []).append(handoff_record)
+        saved_path = save_active_story(repo_root, jira_key, story, client=client)
+        out = {
+            "ok": True,
+            "action": "handoff",
+            "jira_key": jira_key,
+            "review_status": review_status,
+            "reviewed_commit": commit_sha,
+            "findings_count": len(findings),
+            "qa_handoff_mode": "gated_by_deploy",
+            "qa_deploy_status": "awaiting_qa_deploy",
+            "qa_notified": False,
+            **_handoff_governance_fields(handoff_record),
+            "handoff": handoff_record,
+            "active_file": str(saved_path.relative_to(repo_root)),
+        }
+        if deploy_gate_warning:
+            out["warning"] = deploy_gate_warning
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
     if zh:
         comment_lines = [
             f"[站點 3a：開發交接與程式碼審查 — {review_status.upper()}]",
@@ -5795,6 +6332,154 @@ def cmd_handoff(args) -> int:
         "review_status": review_status,
         "reviewed_commit": commit_sha,
         "findings_count": len(findings),
+        **_handoff_governance_fields(handoff_record),
+        "handoff": handoff_record,
+        "active_file": str(saved_path.relative_to(repo_root)),
+    }
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand 6b: promote-qa (Scenario B: explicit QA deploy gate promotion)
+# ---------------------------------------------------------------------------
+
+def cmd_promote_qa(args) -> int:
+    repo_root = Path(args.repo_root).resolve()
+    config = load_team_config(repo_root)
+    from_role = _clean_optional_text(getattr(args, "from_role", None)) or "developer"
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role=from_role)
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
+    jira_key = validate_jira_key(args.key)
+    story = load_active_story(repo_root, jira_key, client=client)
+
+    review = story.get("review") or {}
+    if review.get("status") != "approved":
+        print(
+            f"ERROR: Cannot promote {jira_key} to QA because review.status is '{review.get('status') or 'unreviewed'}' (must be 'approved').",
+            file=sys.stderr,
+        )
+        return 1
+    if (
+        story.get("candidate_commit")
+        and review.get("reviewed_commit")
+        and story.get("candidate_commit") != review.get("reviewed_commit")
+    ):
+        print(
+            f"ERROR: Cannot promote {jira_key} to QA because candidate commit '{story.get('candidate_commit')}' "
+            f"does not match reviewed commit '{review.get('reviewed_commit')}'. Re-run Code Review first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    tasks = story.get("tasks") or []
+    incomplete_tasks = [t["id"] for t in tasks if t.get("status") != "completed"]
+    if not tasks or incomplete_tasks:
+        print(
+            f"ERROR: Cannot promote {jira_key} to QA while development tasks are incomplete ({', '.join(incomplete_tasks) or 'no tasks planned'}).",
+            file=sys.stderr,
+        )
+        return 1
+
+    open_bugs = [b.get("bug_key") for b in (story.get("bugs") or []) if b.get("status") not in ("completed", "closed")]
+    if open_bugs:
+        print(
+            f"ERROR: Cannot promote {jira_key} to QA while open Bugs exist: {', '.join(open_bugs)}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from_person = resolve_acting_person(config, from_role, client=client, story=story)
+    qa_person = resolve_story_role_person(config, story, "qa", selector=getattr(args, "to_assignee", None))
+    tag = _clean_optional_text(getattr(args, "tag", None))
+    environment = _clean_optional_text(getattr(args, "environment", None))
+    note = _clean_optional_text(getattr(args, "note", None))
+    commit_sha = story.get("candidate_commit") or review.get("reviewed_commit") or "HEAD"
+    qa_handoff_mode = get_effective_qa_handoff_mode(config)
+    existing_gate = story.get("qa_deploy_gate") if isinstance(story.get("qa_deploy_gate"), dict) else {}
+    already_deployed_for_commit = (
+        existing_gate.get("status") == "deployed"
+        and (not existing_gate.get("commit") or existing_gate.get("commit") == commit_sha)
+    )
+
+    if qa_handoff_mode == "immediate" or already_deployed_for_commit:
+        same_person_flag = is_same_person(from_person, qa_person)
+        gov_stub = {"same_person": same_person_flag, "to_person": qa_person["name"]}
+        active_rel = str((get_active_dir(repo_root) / f"{jira_key}.json").relative_to(repo_root))
+        out = {
+            "ok": True,
+            "action": "promote-qa",
+            "jira_key": jira_key,
+            "already_deployed": True,
+            "qa_handoff_mode": qa_handoff_mode,
+            "qa_deploy_status": "deployed" if already_deployed_for_commit else "immediate",
+            "qa_deploy_gate": existing_gate,
+            "qa_notified": False,
+            **_handoff_governance_fields(gov_stub),
+            "handoff": None,
+            "active_file": active_rel,
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    zh = is_zh_tw(config)
+    if zh:
+        comment_lines = [
+            f"[QA 環境部署就緒 — 正式提測：{jira_key}]",
+            f"- **驗證目標 Commit**：`{commit_sha}`",
+        ]
+        if tag:
+            comment_lines.append(f"- **QA 部署 Tag**：`{tag}`")
+        if environment:
+            comment_lines.append(f"- **部署環境**：`{environment}`")
+        if note:
+            comment_lines.append(f"- **提測說明**：{note}")
+    else:
+        comment_lines = [
+            f"[QA Environment Ready — Promoted to QA: {jira_key}]",
+            f"- **Candidate Commit**: `{commit_sha}`",
+        ]
+        if tag:
+            comment_lines.append(f"- **QA Deploy Tag**: `{tag}`")
+        if environment:
+            comment_lines.append(f"- **Environment**: `{environment}`")
+        if note:
+            comment_lines.append(f"- **Note**: {note}")
+
+    handoff_record = execute_role_handoff(
+        client=client,
+        config=config,
+        story=story,
+        from_role=from_role,
+        to_role="qa",
+        status_key="in_qa",
+        comment_md="\n".join(comment_lines),
+        from_person_override=from_person,
+        to_assignee=getattr(args, "to_assignee", None),
+    )
+
+    story["qa_deploy_gate"] = {
+        "status": "deployed",
+        "commit": commit_sha,
+        "awaiting_in_qa_cycle": False,
+        "tag": tag,
+        "environment": environment,
+        "note": note,
+        "promoted_at": now_iso(),
+        "source": "cli_promote_qa",
+    }
+
+    saved_path = save_active_story(repo_root, jira_key, story, client=client)
+    out = {
+        "ok": True,
+        "action": "promote-qa",
+        "jira_key": jira_key,
+        "already_deployed": False,
+        "qa_handoff_mode": qa_handoff_mode,
+        "qa_deploy_status": "deployed",
+        "qa_deploy_gate": story["qa_deploy_gate"],
+        "qa_notified": bool(handoff_record.get("notified")),
         **_handoff_governance_fields(handoff_record),
         "handoff": handoff_record,
         "active_file": str(saved_path.relative_to(repo_root)),
@@ -6063,7 +6748,7 @@ def cmd_record_qa(args) -> int:
         story["qa"] = qa
 
         qa_acct_id = qa_person.get("jira_account_id") or ""
-        if qa_acct_id and (
+        if qa_acct_id and not _is_awaiting_qa_deploy(story, config) and (
             story.get("current_owner_role") in (None, "", "qa")
             or (story.get("review") or {}).get("status") == "approved"
         ):
@@ -6122,6 +6807,17 @@ def cmd_record_qa(args) -> int:
             out["qase_sync"] = qase_sync_info
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
+
+    # verify mode: enforce QA deploy gate when qa_handoff_mode == 'gated_by_deploy'
+    if _is_awaiting_qa_deploy(story, config):
+        in_qa_name = (config.get("status_mapping") or {}).get("in_qa") or "In QA"
+        print(
+            f"ERROR: QA verification (`record-qa --mode verify`) for {jira_key} is gated while awaiting QA environment deployment "
+            f"(qa_handoff_mode='gated_by_deploy'). Wait for CI/CD to transition Jira to '{in_qa_name}' (sync via `jira_sync.py status`/`pull`), "
+            f"or run `jira_sync.py promote-qa --key {jira_key}` first. (Parallel `record-qa --mode plan` remains allowed.)",
+            file=sys.stderr,
+        )
+        return 1
 
     # verify mode (supports QA Fast-Track auto-deriving TC-001..N from AC-001..N when test_cases is empty)
     test_cases = qa.get("test_cases") or []
@@ -6233,11 +6929,16 @@ def cmd_record_qa(args) -> int:
             if note_val:
                 incoming_notes[tc_id] = note_val
 
-    # Anti-False-Pass Guardrail: --all-pass ONLY marks execution_type == 'automated' test cases as 'pass'.
+    # Anti-False-Pass Guardrail: --all-pass ONLY marks execution_type == 'automated' test cases as 'pass'
+    # (and never overwrites already waived / not-applicable TCs).
     # Test cases with execution_type in ('external', 'manual') require explicit results via --junit-xml, --results-json, or --result.
     if getattr(args, "all_pass", False):
         for c in test_cases:
-            if c["id"] not in incoming_results and c.get("execution_type", "automated") == "automated":
+            if (
+                c["id"] not in incoming_results
+                and c.get("execution_type", "automated") == "automated"
+                and c.get("result") not in ("waived", "not-applicable")
+            ):
                 incoming_results[c["id"]] = "pass"
 
     allowed_results = {"pass", "fail", "blocked", "not-executed"}
@@ -6248,6 +6949,9 @@ def cmd_record_qa(args) -> int:
                 print(f"ERROR: Invalid test result '{val}' for {c['id']}. Allowed: {sorted(allowed_results)}", file=sys.stderr)
                 return 1
             c["result"] = val
+            if val in ("pass", "fail"):
+                for stale_k in ("waived_bug_id", "triage_resolution", "waived_by", "waived_reason", "waived_at"):
+                    c.pop(stale_k, None)
         if c["id"] in incoming_notes:
             c["notes"] = incoming_notes[c["id"]]
         if c["id"] in tc_validated_attachments:
@@ -6265,7 +6969,7 @@ def cmd_record_qa(args) -> int:
                     seen_shas.add(vf["sha256"])
             c["attachments"] = existing_meta
 
-    counts = {"pass": 0, "fail": 0, "blocked": 0, "not-executed": 0}
+    counts = {"pass": 0, "fail": 0, "blocked": 0, "not-executed": 0, "waived": 0, "not-applicable": 0}
     by_type = {"automated": 0, "external": 0, "manual": 0}
     for c in test_cases:
         st = c.get("result", "not-executed")
@@ -6274,17 +6978,21 @@ def cmd_record_qa(args) -> int:
         by_type[et] = by_type.get(et, 0) + 1
 
     pending_external_tcs = [
-        c["id"] for c in test_cases if c.get("result") != "pass" and c.get("execution_type") == "external"
+        c["id"] for c in test_cases if not _is_tc_satisfied(c, story) and c.get("execution_type") == "external"
     ]
     pending_manual_tcs = [
-        c["id"] for c in test_cases if c.get("result") != "pass" and c.get("execution_type") == "manual"
+        c["id"] for c in test_cases if not _is_tc_satisfied(c, story) and c.get("execution_type") == "manual"
     ]
 
     tested_commit = (args.commit or story.get("candidate_commit") or _detect_git_head_commit(repo_root) or "unknown").strip()
     open_bugs = [b for b in (story.get("bugs") or []) if b.get("status") not in ("completed", "closed")]
     uncovered_acs = find_uncovered_story_acs(story, test_cases)
+    invalid_waivers = [
+        c["id"] for c in test_cases
+        if c.get("result") in ("waived", "not-applicable") and not _is_tc_waiver_valid(c, story)
+    ]
 
-    if counts["fail"] > 0 or counts["blocked"] > 0:
+    if counts["fail"] > 0 or counts["blocked"] > 0 or invalid_waivers:
         qa_status = "failed"
     elif counts["not-executed"] > 0 or uncovered_acs:
         qa_status = "incomplete"
@@ -6312,13 +7020,19 @@ def cmd_record_qa(args) -> int:
     qa["verified_at"] = now_iso()
     story["qa"] = qa
 
+    waived_suffix = ""
+    if counts.get("waived", 0) > 0:
+        waived_suffix += f", waived={counts['waived']}"
+    if counts.get("not-applicable", 0) > 0:
+        waived_suffix += f", not-applicable={counts['not-applicable']}"
+
     if eff_backend == "qase" and qase_sync_info:
         if zh:
             report_lines = [
                 f"[站點 3b：QA 測試驗證報告 — {qa_status.upper()}（已同步至 Qase）]",
                 f"- **測試負責人 (QA Owner)**：{qa_badge}",
                 f"- **驗證 Commit**：`{tested_commit}`",
-                f"- **結果統計**：pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']} "
+                f"- **結果統計**：pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}{waived_suffix} "
                 f"（automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}）",
                 f"- **Qase 測試執行紀錄**：`{qase_sync_info['project_code']}` Run #{qase_sync_info['run_id']} — {qase_sync_info['run_url']}",
             ]
@@ -6327,7 +7041,7 @@ def cmd_record_qa(args) -> int:
                 f"[Station 3b: QA Verification Report — {qa_status.upper()} (Synced to Qase)]",
                 f"- **QA Owner**: {qa_badge}",
                 f"- **Tested Commit**: `{tested_commit}`",
-                f"- **Summary Counts**: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']} "
+                f"- **Summary Counts**: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}{waived_suffix} "
                 f"(automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)})",
                 f"- **Qase Test Run**: `{qase_sync_info['project_code']}` Run #{qase_sync_info['run_id']} — {qase_sync_info['run_url']}",
             ]
@@ -6338,7 +7052,7 @@ def cmd_record_qa(args) -> int:
                 f"[站點 3b：QA 測試驗證報告 — {qa_status.upper()}]",
                 f"- **測試負責人 (QA Owner)**：{qa_badge}",
                 f"- **驗證 Commit**：`{tested_commit}`",
-                f"- **結果統計**：pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}",
+                f"- **結果統計**：pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}{waived_suffix}",
                 f"- **執行類型分佈**：automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}",
                 "",
                 "| TC ID | AC ID | 執行類型 | 測試結果 |",
@@ -6349,7 +7063,7 @@ def cmd_record_qa(args) -> int:
                 f"[Station 3b: QA Verification Report — {qa_status.upper()}]",
                 f"- **QA Owner**: {qa_badge}",
                 f"- Tested Commit: `{tested_commit}`",
-                f"- Summary Counts: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}",
+                f"- Summary Counts: pass={counts['pass']}, fail={counts['fail']}, blocked={counts['blocked']}, not-executed={counts['not-executed']}{waived_suffix}",
                 f"- Execution Breakdown: automated={by_type.get('automated', 0)}, external={by_type.get('external', 0)}, manual={by_type.get('manual', 0)}",
                 "",
                 "| TC ID | AC ID | Type | Result |",
@@ -7006,6 +7720,382 @@ def cmd_create_bug(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand 8b: triage-bug (Station 3b: team-qa Mode 4 — Bug Triage)
+# ---------------------------------------------------------------------------
+
+def cmd_triage_bug(args) -> int:
+    repo_root = Path(args.repo_root).resolve()
+    config = load_team_config(repo_root)
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="qa")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
+
+    jira_key = validate_jira_key(args.key)
+
+    try:
+        res_slug, res_display = normalize_triage_resolution(getattr(args, "resolution", "") or "")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    reason = _clean_optional_text(getattr(args, "reason", None))
+    if not reason:
+        print("ERROR: --reason is required and must be non-empty.", file=sys.stderr)
+        return 1
+
+    decided_by = _clean_optional_text(getattr(args, "decided_by", None))
+    if not decided_by:
+        print("ERROR: --decided-by is required (human / PO / Dev / QA decision maker authorization).", file=sys.stderr)
+        return 1
+
+    raw_dup = _clean_optional_text(getattr(args, "duplicate_of", None))
+    duplicate_of = ""
+    if res_slug == "duplicate":
+        if not raw_dup:
+            print("ERROR: --duplicate-of <EXISTING-JIRA-KEY> is required when --resolution is 'duplicate'.", file=sys.stderr)
+            return 1
+        duplicate_of = validate_jira_key(raw_dup)
+    elif raw_dup:
+        duplicate_of = validate_jira_key(raw_dup)
+
+    story = load_active_story(repo_root, jira_key, client=client)
+    is_standalone = story.get("issue_kind") == "standalone_bug"
+
+    raw_bug_id = _clean_optional_text(getattr(args, "bug_id", None))
+    target_bug = None
+    if is_standalone:
+        if raw_bug_id and raw_bug_id.upper() != jira_key.upper():
+            # Allow matching a linked bug entry if one exists, otherwise reject unknown bug ID
+            for b in (story.get("bugs") or []):
+                if isinstance(b, dict) and (
+                    str(b.get("bug_key") or "").strip().upper() == raw_bug_id.upper()
+                    or str(b.get("id") or "").strip().upper() == raw_bug_id.upper()
+                ):
+                    target_bug = b
+                    break
+            if target_bug is None:
+                print(
+                    f"ERROR: Bug '{raw_bug_id}' does not match standalone Bug '{jira_key}'.",
+                    file=sys.stderr,
+                )
+                return 1
+        bug_ref_id = target_bug.get("bug_key") if target_bug is not None else jira_key
+    else:
+        if not raw_bug_id:
+            print("ERROR: --bug-id <BUG-ID-OR-JIRA-BUG-KEY> is required for Story-linked Bugs.", file=sys.stderr)
+            return 1
+        for b in (story.get("bugs") or []):
+            if isinstance(b, dict) and (
+                str(b.get("bug_key") or "").strip().upper() == raw_bug_id.upper()
+                or str(b.get("id") or "").strip().upper() == raw_bug_id.upper()
+            ):
+                target_bug = b
+                break
+        if target_bug is None:
+            print(f"ERROR: Bug '{raw_bug_id}' not found in Story {jira_key}.", file=sys.stderr)
+            return 1
+        bug_ref_id = str(target_bug.get("bug_key") or target_bug.get("id") or raw_bug_id).strip().upper()
+
+    raw_waive = _clean_optional_text(getattr(args, "waive_tcs", None))
+    waive_tc_ids = []
+    for part in raw_waive.split(","):
+        p_clean = part.strip().upper()
+        if p_clean and p_clean not in waive_tc_ids:
+            waive_tc_ids.append(p_clean)
+
+    raw_disp = _clean_optional_text(getattr(args, "tc_disposition", None)).lower()
+    if raw_disp and raw_disp not in ("waived", "not-applicable"):
+        print(
+            f"ERROR: Invalid --tc-disposition '{raw_disp}'. Allowed: 'waived' or 'not-applicable' (never 'pass').",
+            file=sys.stderr,
+        )
+        return 1
+    tc_disposition = raw_disp or "waived"
+
+    if waive_tc_ids:
+        if res_slug == "fixed":
+            print(
+                "ERROR: --waive-tcs cannot be used with --resolution 'fixed'. Fix the Bug and re-verify TCs instead.",
+                file=sys.stderr,
+            )
+            return 1
+        qa_tcs = ((story.get("qa") or {}).get("test_cases")) or []
+        tc_by_id = {
+            str(c.get("id") or "").strip().upper(): c
+            for c in qa_tcs
+            if isinstance(c, dict) and c.get("id")
+        }
+        unknown_tcs = [tid for tid in waive_tc_ids if tid not in tc_by_id]
+        if unknown_tcs:
+            print(
+                f"ERROR: Unknown test case ID(s) in --waive-tcs: {', '.join(unknown_tcs)} (planned: {sorted(tc_by_id.keys())}).",
+                file=sys.stderr,
+            )
+            return 1
+        passing_tcs = [tid for tid in waive_tc_ids if str(tc_by_id[tid].get("result") or "").strip().lower() == "pass"]
+        if passing_tcs:
+            print(
+                f"ERROR: Cannot waive already-passing test case(s): {', '.join(passing_tcs)}.",
+                file=sys.stderr,
+            )
+            return 1
+
+    qa_person = resolve_acting_person(config, "qa", client=client, story=story)
+    decided_at = now_iso()
+    done_status = config.get("status_mapping", {}).get("done", "Done")
+    triage_record = {
+        "resolution": res_slug,
+        "resolution_display": res_display,
+        "reason": reason,
+        "decided_by": decided_by,
+        "duplicate_of": duplicate_of,
+        "decided_at": decided_at,
+    }
+
+    zh = is_zh_tw(config)
+    transition_res = None
+    reopen_warning = ""
+    waived_tc_records = []
+
+    if res_slug in NON_CODE_FIX_RESOLUTIONS:
+        if target_bug is not None:
+            target_bug["status"] = "closed"
+            target_bug["jira_status"] = done_status
+            target_bug["jira_resolution"] = res_display
+            target_bug["last_synced_jira_status"] = done_status
+            target_bug["triage"] = triage_record
+            target_bug["closed_at"] = decided_at
+            jira_issue_to_update = str(target_bug.get("bug_key") or bug_ref_id)
+            bug_status = "closed"
+        else:
+            story["triage"] = triage_record
+            story["triage_closed"] = True
+            story["jira_status"] = done_status
+            story["jira_resolution"] = res_display
+            story["closed_at"] = decided_at
+            bug_rep = story.setdefault("bug_report", {})
+            bug_rep["status"] = "closed"
+            bug_rep["triage"] = triage_record
+            jira_issue_to_update = jira_key
+            bug_status = "closed"
+
+        if waive_tc_ids:
+            qa_obj = story.setdefault("qa", {"status": "planned", "test_cases": []})
+            for c in qa_obj.get("test_cases") or []:
+                cid = str(c.get("id") or "").strip().upper()
+                if cid in waive_tc_ids:
+                    # NEVER mark a waived/not-applicable TC as 'pass'
+                    c["result"] = tc_disposition
+                    c["waived_bug_id"] = bug_ref_id
+                    c["triage_resolution"] = res_slug
+                    c["waived_by"] = decided_by
+                    c["waived_reason"] = reason
+                    c["waived_at"] = decided_at
+                    waive_note = f"[{tc_disposition} via {bug_ref_id} ({res_display}) by {decided_by}: {reason}]"
+                    c["notes"] = f"{c['notes']} {waive_note}".strip() if c.get("notes") else waive_note
+                    waived_tc_records.append({
+                        "id": cid,
+                        "result": tc_disposition,
+                        "waived_bug_id": bug_ref_id,
+                        "triage_resolution": res_slug,
+                        "waived_by": decided_by,
+                        "waived_reason": reason,
+                        "waived_at": decided_at,
+                    })
+
+        # Recompute Story QA counts & status after bug closure / TC waiver
+        qa_obj = story.get("qa")
+        if isinstance(qa_obj, dict) and (qa_obj.get("test_cases") or []):
+            tcs = qa_obj.get("test_cases") or []
+            counts = {"pass": 0, "fail": 0, "blocked": 0, "not-executed": 0, "waived": 0, "not-applicable": 0}
+            for c in tcs:
+                st = c.get("result", "not-executed")
+                counts[st] = counts.get(st, 0) + 1
+            qa_obj["counts"] = counts
+            open_bugs = [b for b in (story.get("bugs") or []) if b.get("status") not in ("completed", "closed")]
+            uncovered_acs = find_uncovered_story_acs(story, tcs)
+            invalid_waivers = [
+                c["id"] for c in tcs
+                if c.get("result") in ("waived", "not-applicable") and not _is_tc_waiver_valid(c, story)
+            ]
+            if counts["fail"] > 0 or counts["blocked"] > 0 or invalid_waivers:
+                qa_obj["status"] = "failed"
+            elif counts["not-executed"] > 0 or uncovered_acs:
+                qa_obj["status"] = "incomplete"
+            elif open_bugs:
+                qa_obj["status"] = "blocked-by-open-bugs"
+            else:
+                qa_obj["status"] = "passed"
+                if not qa_obj.get("tested_commit"):
+                    qa_obj["tested_commit"] = story.get("candidate_commit") or _detect_git_head_commit(repo_root) or "HEAD"
+
+        if zh:
+            comment_lines = [
+                f"[缺陷分診結案 (Bug Triage)：{bug_ref_id} — {res_display}]",
+                f"- **處置結論 (Resolution)**：`{res_display}` (`{res_slug}`)",
+                f"- **判定理由 / 規格依據 (Reason)**：{reason}",
+                f"- **授權決策人 (Decided By)**：{decided_by}",
+                f"- **記錄人員**：{format_person_badge('qa', qa_person)}",
+            ]
+            if duplicate_of:
+                comment_lines.append(f"- **重複單據 (Duplicate Of)**：`{duplicate_of}`")
+            if waived_tc_records:
+                tc_list_str = ", ".join(f"`{w['id']}` -> `{w['result']}`" for w in waived_tc_records)
+                comment_lines.append(f"- **測試案例處置 (TC Disposition)**：{tc_list_str}（未偽標為 `pass`）")
+        else:
+            comment_lines = [
+                f"[Bug Triage Closed: {bug_ref_id} — {res_display}]",
+                f"- **Resolution**: `{res_display}` (`{res_slug}`)",
+                f"- **Reason**: {reason}",
+                f"- **Decided By**: {decided_by}",
+                f"- **Recorded By**: {format_person_badge('qa', qa_person)}",
+            ]
+            if duplicate_of:
+                comment_lines.append(f"- **Duplicate Of**: `{duplicate_of}`")
+            if waived_tc_records:
+                tc_list_str = ", ".join(f"`{w['id']}` -> `{w['result']}`" for w in waived_tc_records)
+                comment_lines.append(f"- **TC Disposition**: {tc_list_str} (never marked `pass`)")
+
+        client.add_comment(jira_issue_to_update, "\n".join(comment_lines))
+        transition_res = client.transition_issue(jira_issue_to_update, done_status, resolution_name=res_display)
+
+        # Resolve linked Qase defect gracefully if present
+        qase_def_id = (
+            target_bug.get("qase_defect_id")
+            if target_bug is not None
+            else (story.get("bug_report") or {}).get("qase_defect_id")
+        )
+        if qase_def_id:
+            eff_qa_backend = (
+                ((story.get("qa") or {}).get("qa_test_backend"))
+                or config.get("qa_test_backend")
+                or "jira-comment"
+            ).strip().lower()
+            if eff_qa_backend == "qase":
+                try:
+                    qase_client = QaseClient(config, offline=args.offline, repo_root=repo_root)
+                    q_res = qase_client.resolve_defect(int(qase_def_id))
+                    if q_res.get("resolved"):
+                        if target_bug is not None:
+                            target_bug["qase_defect_resolved"] = True
+                        else:
+                            story.setdefault("bug_report", {})["qase_defect_resolved"] = True
+                except Exception:
+                    pass
+    else:
+        # res_slug == "fixed": record triage note and reopen (both locally and in Jira) if previously closed
+        if target_bug is not None:
+            was_closed = (
+                target_bug.get("status") in ("completed", "closed")
+                or _is_jira_status_done(target_bug.get("jira_status", ""), config)
+            )
+            target_bug["status"] = "open"
+            target_bug.pop("closed_at", None)
+            target_bug["triage"] = triage_record
+            if isinstance(story.get("qa"), dict) and story["qa"].get("status") == "passed":
+                story["qa"]["status"] = "blocked-by-open-bugs"
+            jira_issue_to_update = str(target_bug.get("bug_key") or bug_ref_id)
+            bug_status = "open"
+        else:
+            was_closed = (
+                bool(story.get("triage_closed"))
+                or _is_jira_status_done(story.get("jira_status", ""), config)
+            )
+            story["triage"] = triage_record
+            story["triage_closed"] = False
+            story.pop("closed_at", None)
+            bug_rep = story.setdefault("bug_report", {})
+            bug_rep["triage"] = triage_record
+            bug_rep["status"] = "open"
+            for t_item in story.get("tasks") or []:
+                if isinstance(t_item, dict) and t_item.get("status") == "completed":
+                    t_item["status"] = "pending"
+            jira_issue_to_update = jira_key
+            bug_status = "open"
+
+        if zh:
+            comment_lines = [
+                f"[缺陷分診紀錄 (Bug Triage)：{bug_ref_id} — 確認需修復 ({res_display})]",
+                f"- **處置結論 (Resolution)**：`{res_display}` (`{res_slug}`)",
+                f"- **分析說明 (Reason)**：{reason}",
+                f"- **決策人 (Decided By)**：{decided_by}",
+                f"- **後續流程**：本缺陷維持開啟狀態，請依標準流程進入 `team-dev (implement)` 修復並執行 `complete-task`（附上 `--root-cause` 與 `--solution`），再經 `team-review` 與 `team-qa (verify)` 複測結案。",
+            ]
+        else:
+            comment_lines = [
+                f"[Bug Triage Recorded: {bug_ref_id} — Confirmed Fix Required ({res_display})]",
+                f"- **Resolution**: `{res_display}` (`{res_slug}`)",
+                f"- **Reason**: {reason}",
+                f"- **Decided By**: {decided_by}",
+                f"- **Next Step**: Bug remains open; proceed via standard `team-dev (implement)` (`complete-task` with `--root-cause` and `--solution`), `team-review`, and `team-qa (verify)` re-verification.",
+            ]
+        client.add_comment(jira_issue_to_update, "\n".join(comment_lines))
+
+        if was_closed and jira_issue_to_update:
+            in_progress_status = (config.get("status_mapping") or {}).get("in_progress") or "In Progress"
+            todo_status = (config.get("status_mapping") or {}).get("todo") or "To Do"
+            reopened_status = ""
+            if not client.is_live:
+                transition_res = client.transition_issue(jira_issue_to_update, in_progress_status)
+                reopened_status = in_progress_status
+            else:
+                candidates = [in_progress_status]
+                if todo_status and todo_status.strip().lower() != in_progress_status.strip().lower():
+                    candidates.append(todo_status)
+                last_err = ""
+                for cand_status in candidates:
+                    try:
+                        cand_res = client.transition_issue(jira_issue_to_update, cand_status)
+                    except Exception as exc:
+                        last_err = str(exc)
+                        transition_res = {"mode": "live", "transitioned_to": None, "warning": last_err}
+                        continue
+                    transition_res = cand_res
+                    if cand_res.get("transitioned_to"):
+                        reopened_status = cand_status
+                        break
+                    last_err = str(cand_res.get("warning") or f"Transition '{cand_status}' unavailable")
+                if not reopened_status:
+                    reopen_warning = (
+                        f"Failed to transition reopened Bug {jira_issue_to_update} out of Done "
+                        f"(tried {', '.join(candidates)}: {last_err}); local jira_status preserved as-is."
+                    )
+            if reopened_status:
+                if target_bug is not None:
+                    target_bug["jira_status"] = reopened_status
+                    target_bug["last_synced_jira_status"] = reopened_status
+                    target_bug["jira_resolution"] = ""
+                else:
+                    story["jira_status"] = reopened_status
+                    story["jira_resolution"] = ""
+
+    saved_path = save_active_story(repo_root, jira_key, story, client=client)
+    out = {
+        "ok": True,
+        "action": "triage-bug",
+        "jira_key": jira_key,
+        "bug_id": bug_ref_id,
+        "issue_kind": story.get("issue_kind", "story"),
+        "resolution": res_slug,
+        "resolution_display": res_display,
+        "reason": reason,
+        "decided_by": decided_by,
+        "duplicate_of": duplicate_of,
+        "bug_status": bug_status,
+        "triage_closed": bool(story.get("triage_closed")) if is_standalone and target_bug is None else (bug_status == "closed"),
+        "triage": triage_record,
+        "waived_tcs": waived_tc_records,
+        "tc_disposition": tc_disposition if waive_tc_ids else None,
+        "transition": transition_res,
+        "active_file": str(saved_path.relative_to(repo_root)),
+    }
+    if reopen_warning:
+        out["warning"] = reopen_warning
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand 9: close-story (Station 4: team-release)
 # ---------------------------------------------------------------------------
 
@@ -7044,7 +8134,14 @@ def cmd_close_story(args) -> int:
     qa = story.get("qa") or {}
     test_cases = qa.get("test_cases") or []
     uncovered_acs = find_uncovered_story_acs(story, test_cases)
-    non_passing_tcs = [c["id"] for c in test_cases if c.get("result") != "pass"]
+    invalid_waived_tcs = [
+        c["id"] for c in test_cases
+        if c.get("result") in ("waived", "not-applicable") and not _is_tc_waiver_valid(c, story)
+    ]
+    non_passing_tcs = [
+        c["id"] for c in test_cases
+        if not _is_tc_satisfied(c, story) and c["id"] not in invalid_waived_tcs
+    ]
     if qa.get("status") != "passed":
         unmet_gates.append(f"QA verification status is '{qa.get('status')}' (must be 'passed').")
     elif qa.get("tested_commit") and qa.get("tested_commit") != commit_sha:
@@ -7053,6 +8150,10 @@ def cmd_close_story(args) -> int:
         )
     if uncovered_acs:
         unmet_gates.append(f"Uncovered Story ACs in QA test cases: {', '.join(uncovered_acs)}.")
+    if invalid_waived_tcs:
+        unmet_gates.append(
+            f"Waived/not-applicable QA test cases missing valid Bug Triage audit metadata: {', '.join(invalid_waived_tcs)}."
+        )
     if non_passing_tcs:
         unmet_gates.append(f"Non-passing QA test cases: {', '.join(non_passing_tcs)}.")
 
@@ -7075,6 +8176,43 @@ def cmd_close_story(args) -> int:
 
     ac_count = len(story.get("acceptance_criteria") or [])
     tc_count = len(test_cases)
+    passed_tc_count = sum(1 for c in test_cases if c.get("result") == "pass")
+    waived_tcs = [
+        c for c in test_cases
+        if c.get("result") in ("waived", "not-applicable") and _is_tc_waiver_valid(c, story)
+    ]
+    triaged_bugs = [
+        b for b in (story.get("bugs") or [])
+        if isinstance(b, dict)
+        and isinstance(b.get("triage"), dict)
+        and str(b["triage"].get("resolution") or "").strip().lower() in NON_CODE_FIX_RESOLUTIONS
+    ]
+    triage_disclosure = {
+        "has_risk_acceptance": bool(triaged_bugs or waived_tcs),
+        "triaged_bugs": [
+            {
+                "bug_key": b.get("bug_key"),
+                "resolution": (b.get("triage") or {}).get("resolution"),
+                "resolution_display": (b.get("triage") or {}).get("resolution_display"),
+                "decided_by": (b.get("triage") or {}).get("decided_by"),
+                "reason": (b.get("triage") or {}).get("reason"),
+                "duplicate_of": (b.get("triage") or {}).get("duplicate_of") or "",
+            }
+            for b in triaged_bugs
+        ],
+        "waived_tcs": [
+            {
+                "id": c.get("id"),
+                "result": c.get("result"),
+                "waived_bug_id": c.get("waived_bug_id"),
+                "triage_resolution": c.get("triage_resolution"),
+                "waived_by": c.get("waived_by"),
+                "waived_reason": c.get("waived_reason"),
+            }
+            for c in waived_tcs
+        ],
+    }
+
     qa_breakdown = {"automated": 0, "external": 0, "manual": 0}
     for c in test_cases:
         et = c.get("execution_type", "automated")
@@ -7085,27 +8223,63 @@ def cmd_close_story(args) -> int:
         safe_assign_issue(client, jira_key, rm_person["jira_account_id"])
 
     if is_zh_tw(config):
-        release_md = (
-            f"[站點 4：發佈與結案摘要 — {version}]\n"
-            f"- **發佈負責人**：{format_person_badge('release_manager', rm_person)}\n"
-            f"- **需求單號**：`{jira_key}`\n"
-            f"- **發佈版本 / Tag**：`{version}`\n"
-            f"- **驗證通過 Commit**：`{commit_sha}`\n"
-            f"- **交付覆蓋率**：共 {ac_count} 項 AC、{len(tasks)} 項開發子任務完成、{tc_count} 項 QA 測試案例全數通過 "
-            f"（automated={qa_breakdown['automated']}, external={qa_breakdown['external']}, manual={qa_breakdown['manual']}）、0 個未結案 Bug\n"
-            f"- **發佈說明 (Release Notes)**：{args.notes or '已完整通過四站式研發品質門檻並完成發佈結案。'}"
+        tc_summary_zh = (
+            f"{passed_tc_count} 項通過 / {len(waived_tcs)} 項受控豁免或不適用（共 {tc_count} 項）"
+            if waived_tcs
+            else f"{tc_count} 項 QA 測試案例全數通過"
         )
+        release_lines = [
+            f"[站點 4：發佈與結案摘要 — {version}]",
+            f"- **發佈負責人**：{format_person_badge('release_manager', rm_person)}",
+            f"- **需求單號**：`{jira_key}`",
+            f"- **發佈版本 / Tag**：`{version}`",
+            f"- **驗證通過 Commit**：`{commit_sha}`",
+            f"- **交付覆蓋率**：共 {ac_count} 項 AC、{len(tasks)} 項開發子任務完成、{tc_summary_zh} "
+            f"（automated={qa_breakdown['automated']}, external={qa_breakdown['external']}, manual={qa_breakdown['manual']}）、0 個未結案 Bug",
+            f"- **發佈說明 (Release Notes)**：{args.notes or '已完整通過四站式研發品質門檻並完成發佈結案。'}",
+        ]
+        if triage_disclosure["has_risk_acceptance"]:
+            release_lines.append("")
+            release_lines.append("### Bug Triage & Risk Acceptance Disclosure (缺陷分診與風險接受揭露)")
+            for tb in triage_disclosure["triaged_bugs"]:
+                dup_str = f"（Duplicate Of: `{tb['duplicate_of']}`）" if tb["duplicate_of"] else ""
+                release_lines.append(
+                    f"- **Bug `{tb['bug_key']}`**：`{tb['resolution_display']}`{dup_str} — 決策人：{tb['decided_by']}；理由：{tb['reason']}"
+                )
+            for wt in triage_disclosure["waived_tcs"]:
+                release_lines.append(
+                    f"- **TC `{wt['id']}`**：`{wt['result']}`（關聯 `{wt['waived_bug_id']}` / `{wt['triage_resolution']}`）— 決策人：{wt['waived_by']}；理由：{wt['waived_reason']}"
+                )
+        release_md = "\n".join(release_lines)
     else:
-        release_md = (
-            f"[Station 4: Release & Closure — {version}]\n"
-            f"- **Released By**: {format_person_badge('release_manager', rm_person)}\n"
-            f"- Jira Story: `{jira_key}`\n"
-            f"- Release Version / Tag: `{version}`\n"
-            f"- Verified Commit: `{commit_sha}`\n"
-            f"- Coverage: {ac_count} ACs, {len(tasks)} Sub-tasks Done, {tc_count} QA Test Cases Passed "
-            f"(automated={qa_breakdown['automated']}, external={qa_breakdown['external']}, manual={qa_breakdown['manual']}), 0 Open Bugs\n"
-            f"- Release Notes: {args.notes or 'Released and verified through 4-station workflow.'}"
+        tc_summary_en = (
+            f"{passed_tc_count} Passed / {len(waived_tcs)} Waived or Not-Applicable ({tc_count} total)"
+            if waived_tcs
+            else f"{tc_count} QA Test Cases Passed"
         )
+        release_lines = [
+            f"[Station 4: Release & Closure — {version}]",
+            f"- **Released By**: {format_person_badge('release_manager', rm_person)}",
+            f"- Jira Story: `{jira_key}`",
+            f"- Release Version / Tag: `{version}`",
+            f"- Verified Commit: `{commit_sha}`",
+            f"- Coverage: {ac_count} ACs, {len(tasks)} Sub-tasks Done, {tc_summary_en} "
+            f"(automated={qa_breakdown['automated']}, external={qa_breakdown['external']}, manual={qa_breakdown['manual']}), 0 Open Bugs",
+            f"- Release Notes: {args.notes or 'Released and verified through 4-station workflow.'}",
+        ]
+        if triage_disclosure["has_risk_acceptance"]:
+            release_lines.append("")
+            release_lines.append("### Bug Triage & Risk Acceptance Disclosure")
+            for tb in triage_disclosure["triaged_bugs"]:
+                dup_str = f" (Duplicate Of: `{tb['duplicate_of']}`)" if tb["duplicate_of"] else ""
+                release_lines.append(
+                    f"- **Bug `{tb['bug_key']}`**: `{tb['resolution_display']}`{dup_str} — Decided By: {tb['decided_by']}; Reason: {tb['reason']}"
+                )
+            for wt in triage_disclosure["waived_tcs"]:
+                release_lines.append(
+                    f"- **TC `{wt['id']}`**: `{wt['result']}` (Bug `{wt['waived_bug_id']}` / `{wt['triage_resolution']}`) — Decided By: {wt['waived_by']}; Reason: {wt['waived_reason']}"
+                )
+        release_md = "\n".join(release_lines)
 
     done_status = config.get("status_mapping", {}).get("done", "Done")
     client.add_comment(jira_key, release_md)
@@ -7131,6 +8305,8 @@ def cmd_close_story(args) -> int:
         "commit": commit_sha,
         "jira_status": done_status,
         "qa_breakdown": qa_breakdown,
+        "triage_disclosure": triage_disclosure,
+        "release_summary": release_md,
         "transition": trans_res,
         "active_file_removed": True,
     }, ensure_ascii=False, indent=2))
@@ -7163,6 +8339,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--language", choices=["zh-TW", "en"], default=None, help="Default prose language for Jira comments and descriptions (default: zh-TW)")
     p_init.add_argument("--commit-policy", choices=list(VALID_COMMIT_POLICIES), default=None, help="Commit confirmation policy ('confirm_before_commit' default or 'auto_on_test_pass' opt-in)")
     p_init.add_argument("--commit-message-pattern", default=None, help="Optional regex for non-blocking commit message format validation in complete-task")
+    p_init.add_argument("--qa-handoff-mode", choices=list(VALID_QA_HANDOFF_MODES), default=None, help="QA handoff mode ('immediate' default or 'gated_by_deploy' for multi-environment CI/CD decoupling)")
+    p_init.add_argument("--status-dev-done", default=None, help="Optional Jira status name for status_mapping.dev_done (used when qa_handoff_mode='gated_by_deploy')")
     p_init.add_argument("--name", help="Display name for the role(s) claimed via --role (auto-resolved from Jira /myself if omitted)")
     p_init.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for Jira URL, project key, account email, API token, and role mappings")
     p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")
@@ -7269,12 +8447,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_subtasks.set_defaults(func=cmd_create_subtasks)
 
     # 5. complete-task
-    p_comp = sub.add_parser("complete-task", parents=[sub_common], help="Mark one or more TASK-###, BUG-*, or REV-### completed with commit and test evidence")
+    p_comp = sub.add_parser("complete-task", parents=[sub_common], help="Mark one or more TASK-###, BUG-*, or REV-### completed with commit, test evidence, and optional bug root-cause/solution")
     p_comp.add_argument("--key", required=True, help="Jira Story key")
     p_comp.add_argument("--task-id", default="TASK-001", help="Comma-separated IDs: Task ID (TASK-001), Bug key (PROJ-101-BUG-1), or Finding ID (REV-001,REV-002)")
     p_comp.add_argument("--commit", default=None, help="Git commit SHA implementing the task/fix (auto-detected from git HEAD if omitted)")
     p_comp.add_argument("--files", default=None, help="Comma-separated list of changed file paths (auto-detected from git if omitted)")
     p_comp.add_argument("--test-result", required=True, help="Executed test command and pass summary")
+    p_comp.add_argument("--root-cause", default=None, help="Optional root cause analysis (recommended/guided when completing a Bug fix)")
+    p_comp.add_argument("--solution", default=None, help="Optional fix strategy / solution summary (recommended/guided when completing a Bug fix)")
     p_comp.set_defaults(func=cmd_complete_task)
 
     # 6. handoff
@@ -7289,6 +8469,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_handoff.add_argument("--findings-json", help="JSON string or file with review findings")
     p_handoff.add_argument("--target-status", help="Optional status_mapping key override")
     p_handoff.set_defaults(func=cmd_handoff)
+
+    # 6b. promote-qa
+    p_promote_qa = sub.add_parser("promote-qa", parents=[sub_common], help="Promote a review-approved Story to in_qa and notify QA after QA environment deployment")
+    p_promote_qa.add_argument("--key", required=True, help="Jira Story key")
+    p_promote_qa.add_argument("--from-role", default="developer", help="Acting role promoting the build to QA (default: developer)")
+    p_promote_qa.add_argument("--tag", default="", help="Optional QA deployment tag/release identifier (informational only; never invokes git tag)")
+    p_promote_qa.add_argument("--environment", default="", help="Optional target QA environment name (e.g. qa, staging)")
+    p_promote_qa.add_argument("--note", default="", help="Optional QA promotion note")
+    p_promote_qa.add_argument("--to-assignee", default=None, help="Optional specific QA member (email/name/accountId) in roles.qa pool")
+    p_promote_qa.set_defaults(func=cmd_promote_qa)
 
     # 7. record-qa
     p_qa = sub.add_parser("record-qa", parents=[sub_common], help="Record QA test plan (plan) or verification results (verify) via Jira comments or Qase")
@@ -7331,6 +8521,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_bug.add_argument("--attach", action="append", default=[], help="Screenshot, video, or log file to upload to the Jira Bug (and Qase when qa_test_backend='qase'); repeatable")
     p_bug.add_argument("--commit", help="Tested commit SHA where the bug occurred")
     p_bug.set_defaults(func=cmd_create_bug)
+
+    # 8b. triage-bug (Bug Triage: Not a Bug / Won't Fix / Duplicate / Cannot Reproduce / Fixed)
+    p_triage = sub.add_parser("triage-bug", parents=[sub_common], help="Triage a Story-linked or standalone Bug with human decision audit and optional controlled TC waiver")
+    p_triage.add_argument("--key", required=True, help="Jira Story key or standalone Bug key")
+    p_triage.add_argument("--bug-id", default=None, help="Bug key or ID (required for Story-linked bugs; optional for standalone_bug)")
+    p_triage.add_argument("--resolution", required=True, help="Triage resolution: not-a-bug | wont-fix | duplicate | cannot-reproduce | fixed (case-insensitive display aliases accepted)")
+    p_triage.add_argument("--reason", required=True, help="Rationale, spec reference, or evidence supporting the triage decision")
+    p_triage.add_argument("--decided-by", required=True, help="Human / PO / Dev / QA decision maker authorizing this triage")
+    p_triage.add_argument("--duplicate-of", default="", help="Existing Jira issue key (required when resolution is 'duplicate')")
+    p_triage.add_argument("--waive-tcs", default="", help="Optional comma-separated TC IDs (e.g. TC-001,TC-002) to mark waived/not-applicable for non-code-fix resolutions (never marks 'pass')")
+    p_triage.add_argument("--tc-disposition", choices=["waived", "not-applicable"], default=None, help="Disposition for --waive-tcs (default: 'waived'; 'not-applicable' primarily for not-a-bug)")
+    p_triage.set_defaults(func=cmd_triage_bug)
 
     # 9. close-story
     p_close = sub.add_parser("close-story", parents=[sub_common], help="Verify all gates, transition Story to Done, and delete active JSON")

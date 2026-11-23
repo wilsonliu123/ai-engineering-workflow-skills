@@ -63,4 +63,23 @@
 
 3. **Standalone Production / User-Reported Bug (`report` mode — `--standalone` or `--standalone --adopt --key <BUG-KEY>`):**
    - Files a standalone Jira `Bug` without a parent Story link (or adopts an existing CS/user Jira `Bug` via `--adopt --key <BUG-KEY>` **without overwriting its original Jira description**), uploads `--attach` evidence to Jira + Qase Defect, and initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`).
-   - **Lightweight 4-Station Closure:** Skips `team-spec` and creates zero redundant Jira `Sub-task`s (`jira_subtask_key: None`). Flows directly through `team-dev (implement)` (`complete-task --key <BUG-KEY>`, posting the fix comment on `<BUG-KEY>` without prematurely closing it) $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` (resolving Qase Defect on `pass`, or uploading failure media onto `<BUG-KEY>` and reopening `TASK-001` on `fail` without nested Bugs) $\rightarrow$ `team-release` (`close-story --key <BUG-KEY>` transitions `<BUG-KEY>` to `Done` and deletes `.ai-workflow/active/<BUG-KEY>.json`).
+   - **Lightweight 4-Station Closure or Direct Triage:** Skips `team-spec` and creates zero redundant Jira `Sub-task`s (`jira_subtask_key: None`). Flows directly through `team-dev (implement)` (`complete-task --key <BUG-KEY> --root-cause ... --solution ...`, posting the fix comment on `<BUG-KEY>` without prematurely closing it) $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` $\rightarrow$ `team-release` (`close-story --key <BUG-KEY>`), **OR** closes directly via **Mode 4 (`triage`)** (`jira_sync.py triage-bug --key <BUG-KEY>`) when human/PO triage determines no code fix is required (`Not a Bug` / `Won't Fix` / `Duplicate` / `Cannot Reproduce`).
+
+---
+
+## 5. Mode 4: Bug Triage & Controlled TC Waiver (`triage` mode)
+
+Not every reported Bug requires code modification. `jira_sync.py triage-bug` formalizes human-authorized defect triage across Story-linked Bugs and standalone/adopted Bugs:
+
+| Resolution (`--resolution`) | Meaning | Effect on Bug & Test Cases |
+|---|---|---|
+| **`not-a-bug`** (`Not a Bug`) | Behavior matches approved spec / intended design | Closes Bug with audit comment; if original TC expectation was invalid, update TC spec and re-verify or explicitly mark `--waive-tcs <TC-ID> --tc-disposition not-applicable` with human decision record |
+| **`wont-fix`** (`Won't Fix`) | Real defect, accepted business/cost trade-off by PO | Closes Bug with risk acceptance audit; optionally marks linked TC(s) via `--waive-tcs <TC-ID>` (`result: "waived"`, **NEVER `"pass"`**) |
+| **`duplicate`** (`Duplicate`) | Already tracked under an existing Jira Bug (`--duplicate-of <KEY>` required) | Closes Bug referencing `--duplicate-of <KEY>`; optionally waives redundant TC via `--waive-tcs` |
+| **`cannot-reproduce`** (`Cannot Reproduce`) | Insufficient reproduction evidence after investigation | Closes Bug preserving investigation evidence; optionally waives TC via `--waive-tcs` |
+| **`fixed`** (`Fixed`) | Confirmed defect requiring code fix | Records triage rationale **without** closing Bug; routes to standard `team-dev` (`complete-task` with `--root-cause`/`--solution`) $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` |
+
+### Mandatory HITL & Evidence Integrity Guardrails
+- **Human Authorization Required (`--decided-by`):** AI may analyze code, specs, and logs to recommend a triage resolution, but **MUST NEVER** autonomously close a Bug as `Won't Fix`, `Not a Bug`, `Duplicate`, or `Cannot Reproduce` or waive any TC without explicit human/PO approval.
+- **Never Falsify `pass`:** A waived TC is always recorded as `result: "waived"` or `"not-applicable"` with complete audit metadata (`waived_bug_id`, `triage_resolution`, `waived_by`, `waived_reason`, `waived_at`) referencing a closed/triaged Bug. Forged `waived` entries missing audit metadata remain blocked by `close-story`.
+- **Transparent Release Disclosure:** `team-release` (`close-story`) automatically appends a **Bug Triage & Risk Acceptance Disclosure** section to the Release Summary listing every triaged non-fixed Bug and waived/not-applicable TC with `decided_by` and `reason`.
