@@ -349,6 +349,8 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                 self.stored_issues[key].setdefault("fields", {})["status"] = {"name": id_to_status[tid]}
                 if (data.get("fields") or {}).get("resolution"):
                     self.stored_issues[key]["fields"]["resolution"] = data["fields"]["resolution"]
+                elif tid != "41":
+                    self.stored_issues[key]["fields"]["resolution"] = None
             self._send_json(204, {})
         else:
             self._send_json(200, {"ok": True})
@@ -5416,6 +5418,126 @@ class WorkflowTestSuite(unittest.TestCase):
                 )
                 self.assertEqual(c_rev.returncode, 0, c_rev.stderr)
                 self.assertEqual(json.loads(c_rev.stdout)["bug_fix_warnings"], [])
+
+            # P1-R2-1 (live Jira reopen on fixed re-triage for Story-linked & Standalone bugs)
+            # + P2-R2-1 (creds_missing triggers team-init auth when only triage_closed file exists)
+            with tempfile.TemporaryDirectory() as tmp4:
+                root4 = Path(tmp4)
+                roles4 = {
+                    "pm": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice", "api_token": "tok-a"},
+                    "tech_lead": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                    "developer": {"name": "Bob Lin", "email": "bob@team.io", "jira_account_id": "acc-bob", "api_token": "tok-b"},
+                    "reviewer": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                    "qa": {"name": "Carol Wu", "email": "carol@team.io", "jira_account_id": "acc-carol", "api_token": "tok-c"},
+                    "release_manager": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                }
+                self.assertEqual(
+                    run_cli(root4, "init", "--project-key", "R2", "--jira-url", f"http://127.0.0.1:{jira_port}", "--roles-json", json.dumps(roles4)).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root4, "sync-story", "--key", "R2-1", "--title", "Live Reopen Story", "--ac", "AC-001:A", "--ac", "AC-002:B", "--status", "approved", "--create").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root4, "complete-task", "--key", "R2-1", "--task-id", "TASK-001", "--commit", "r2c1", "--files", "r2.py", "--test-result", "ok").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root4, "handoff", "--key", "R2-1", "--review-status", "approved", "--commit", "r2c1").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root4, "record-qa", "--key", "R2-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:A", "--tc", "TC-002:AC-002:manual:B").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root4, "record-qa", "--key", "R2-1", "--mode", "verify", "--commit", "r2c1", "--result", "TC-001=pass", "--result", "TC-002=fail:broken").returncode,
+                    0,
+                )
+                story_bug = json.loads(run_cli(
+                    root4, "create-bug", "--key", "R2-1", "--tc-id", "TC-002", "--ac-id", "AC-002",
+                    "--title", "Live Story Bug", "--severity", "major",
+                    "--steps", "s", "--expected", "e", "--actual", "a", "--commit", "r2c1",
+                ).stdout)["bug_key"]
+
+                # 1) Triage Story-linked bug as wont-fix -> Jira transitions bug to Done
+                tr_sb_close = run_cli(
+                    root4, "triage-bug", "--key", "R2-1", "--bug-id", story_bug,
+                    "--resolution", "wont-fix", "--reason", "Defer", "--decided-by", "PO Alice", "--waive-tcs", "TC-002",
+                )
+                self.assertEqual(tr_sb_close.returncode, 0, tr_sb_close.stderr)
+                self.assertEqual(MockJiraHandler.stored_issues[story_bug]["fields"]["status"]["name"], "Done")
+
+                # Re-triage as fixed -> remote Jira bug transitions OUT of Done, live status keeps it open & routes to team-dev!
+                tr_sb_reopen = run_cli(
+                    root4, "triage-bug", "--key", "R2-1", "--bug-id", story_bug,
+                    "--resolution", "fixed", "--reason", "Customer escalated; must fix", "--decided-by", "PO Alice",
+                )
+                self.assertEqual(tr_sb_reopen.returncode, 0, tr_sb_reopen.stderr)
+                tr_sb_reopen_out = json.loads(tr_sb_reopen.stdout)
+                self.assertEqual(tr_sb_reopen_out["bug_status"], "open")
+                self.assertEqual(tr_sb_reopen_out["transition"]["transitioned_to"], "In Progress")
+                self.assertEqual(MockJiraHandler.stored_issues[story_bug]["fields"]["status"]["name"], "In Progress")
+
+                st_r2_live = json.loads(run_cli(root4, "status", "--key", "R2-1").stdout)
+                self.assertEqual(st_r2_live["recommended_skill"], "team-dev")
+                self.assertEqual(st_r2_live["recommended_mode"], "implement")
+                st_r2_disk = json.loads((root4 / ".ai-workflow" / "active" / "R2-1.json").read_text(encoding="utf-8"))
+                reopened_b = next(b for b in st_r2_disk["bugs"] if b["bug_key"] == story_bug)
+                self.assertEqual(reopened_b["status"], "open")
+                self.assertEqual(reopened_b["jira_status"], "In Progress")
+                self.assertEqual(reopened_b["jira_resolution"], "")
+
+                # 2) Standalone adopted bug: triage as not-a-bug (Done) -> re-triage as fixed -> Jira reopened, live status -> team-dev!
+                MockJiraHandler.stored_issues["R2-777"] = {
+                    "key": "R2-777",
+                    "fields": {
+                        "summary": "Adopted prod bug",
+                        "description": {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Prod issue"}]}]},
+                        "issuetype": {"name": "Bug", "subtask": False},
+                        "status": {"name": "To Do"},
+                    },
+                }
+                self.assertEqual(run_cli(root4, "create-bug", "--standalone", "--adopt", "--key", "R2-777").returncode, 0)
+                self.assertEqual(
+                    run_cli(root4, "triage-bug", "--key", "R2-777", "--resolution", "not-a-bug", "--reason", "Misread", "--decided-by", "PO Alice").returncode,
+                    0,
+                )
+                self.assertEqual(MockJiraHandler.stored_issues["R2-777"]["fields"]["status"]["name"], "Done")
+                self.assertEqual(MockJiraHandler.stored_issues["R2-777"]["fields"]["resolution"]["name"], "Not a Bug")
+
+                tr_sa_reopen = run_cli(
+                    root4, "triage-bug", "--key", "R2-777",
+                    "--resolution", "fixed", "--reason", "Confirmed regression", "--decided-by", "PO Alice",
+                )
+                self.assertEqual(tr_sa_reopen.returncode, 0, tr_sa_reopen.stderr)
+                tr_sa_out = json.loads(tr_sa_reopen.stdout)
+                self.assertFalse(tr_sa_out["triage_closed"])
+                self.assertEqual(tr_sa_out["transition"]["transitioned_to"], "In Progress")
+                self.assertEqual(MockJiraHandler.stored_issues["R2-777"]["fields"]["status"]["name"], "In Progress")
+
+                st_sa_live = json.loads(run_cli(root4, "status", "--key", "R2-777").stdout)
+                self.assertFalse(st_sa_live.get("triage_closed", False))
+                self.assertEqual(st_sa_live["recommended_skill"], "team-dev")
+                self.assertEqual(st_sa_live["recommended_mode"], "implement")
+                sa_disk = json.loads((root4 / ".ai-workflow" / "active" / "R2-777.json").read_text(encoding="utf-8"))
+                self.assertEqual(sa_disk["jira_status"], "In Progress")
+                self.assertEqual(sa_disk["jira_resolution"], "")
+
+                # 3) P2-R2-1: when .ai-workflow/active/ contains ONLY a triage_closed=True file and credentials.json is missing,
+                #    `status` MUST return credentials_missing=True / team-init (auth) rather than skipping auth!
+                self.assertEqual(
+                    run_cli(root4, "triage-bug", "--key", "R2-777", "--resolution", "not-a-bug", "--reason", "Closed again", "--decided-by", "PO Alice").returncode,
+                    0,
+                )
+                (root4 / ".ai-workflow" / "active" / "R2-1.json").unlink()
+                (root4 / ".ai-workflow" / "credentials.json").unlink()
+                st_need_auth = json.loads(run_cli(root4, "status").stdout)
+                self.assertTrue(st_need_auth.get("credentials_missing"))
+                self.assertTrue(st_need_auth.get("requires_member_auth"))
+                self.assertEqual(st_need_auth["recommended_skill"], "team-init")
+                self.assertEqual(st_need_auth["recommended_mode"], "auth")
         finally:
             jira_srv.shutdown()
             jira_srv.server_close()

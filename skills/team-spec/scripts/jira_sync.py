@@ -2448,7 +2448,10 @@ def reconcile_story_with_jira(
         changed = True
 
     remote_resolution = _extract_jira_resolution(fields)
-    if remote_resolution and story.get("jira_resolution") != remote_resolution:
+    if "resolution" in fields and story.get("jira_resolution", "") != remote_resolution:
+        story["jira_resolution"] = remote_resolution
+        changed = True
+    elif remote_resolution and story.get("jira_resolution") != remote_resolution:
         story["jira_resolution"] = remote_resolution
         changed = True
 
@@ -4836,7 +4839,20 @@ def cmd_status(args) -> int:
         print(json.dumps(rec, ensure_ascii=False, indent=2))
         return 0
 
-    active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+    def _filter_open_active_files(files: list) -> list:
+        out_files = []
+        for af in files:
+            try:
+                st_peek = json.loads(af.read_text(encoding="utf-8"))
+                if isinstance(st_peek, dict) and st_peek.get("triage_closed"):
+                    continue
+            except Exception:
+                pass
+            out_files.append(af)
+        return out_files
+
+    all_active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+    active_files = _filter_open_active_files(all_active_files)
     hydrated_from_source = None
     discovered_from_jira = []
     if not active_files:
@@ -4844,7 +4860,8 @@ def cmd_status(args) -> int:
         if main_root and get_active_dir(main_root).exists():
             for mf in sorted(get_active_dir(main_root).glob("*.json")):
                 _hydrate_story_from_worktree(repo_root, mf.stem)
-            active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            all_active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            active_files = _filter_open_active_files(all_active_files)
             if active_files:
                 hydrated_from_source = "worktree"
 
@@ -4872,8 +4889,8 @@ def cmd_status(args) -> int:
         return 0
 
     if client.is_live:
-        existing_local_keys = {f.stem.upper() for f in active_files}
-        for af in active_files:
+        existing_local_keys = {f.stem.upper() for f in all_active_files}
+        for af in all_active_files:
             try:
                 st_tmp = json.loads(af.read_text(encoding="utf-8"))
                 for b_item in st_tmp.get("bugs") or []:
@@ -4895,20 +4912,9 @@ def cmd_status(args) -> int:
                         if isinstance(b_item, dict) and b_item.get("bug_key"):
                             existing_local_keys.add(str(b_item["bug_key"]).strip().upper())
         if discovered_from_jira:
-            active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            all_active_files = sorted(active_dir.glob("*.json")) if active_dir.exists() else []
+            active_files = _filter_open_active_files(all_active_files)
             hydrated_from_source = "jira"
-
-    # Skip triage-closed standalone bugs during multi-story auto-discovery (explicit --key lookup still works)
-    open_active_files = []
-    for af in active_files:
-        try:
-            st_peek = json.loads(af.read_text(encoding="utf-8"))
-            if isinstance(st_peek, dict) and st_peek.get("triage_closed"):
-                continue
-        except Exception:
-            pass
-        open_active_files.append(af)
-    active_files = open_active_files
 
     if not active_files:
         owner = resolve_role_person(config, "pm")
@@ -7848,6 +7854,7 @@ def cmd_triage_bug(args) -> int:
 
     zh = is_zh_tw(config)
     transition_res = None
+    reopen_warning = ""
     waived_tc_records = []
 
     if res_slug in NON_CODE_FIX_RESOLUTIONS:
@@ -7976,8 +7983,12 @@ def cmd_triage_bug(args) -> int:
                 except Exception:
                     pass
     else:
-        # res_slug == "fixed": record triage note and reopen if previously closed, directing to standard team-dev fix & QA re-verify
+        # res_slug == "fixed": record triage note and reopen (both locally and in Jira) if previously closed
         if target_bug is not None:
+            was_closed = (
+                target_bug.get("status") in ("completed", "closed")
+                or _is_jira_status_done(target_bug.get("jira_status", ""), config)
+            )
             target_bug["status"] = "open"
             target_bug.pop("closed_at", None)
             target_bug["triage"] = triage_record
@@ -7986,6 +7997,10 @@ def cmd_triage_bug(args) -> int:
             jira_issue_to_update = str(target_bug.get("bug_key") or bug_ref_id)
             bug_status = "open"
         else:
+            was_closed = (
+                bool(story.get("triage_closed"))
+                or _is_jira_status_done(story.get("jira_status", ""), config)
+            )
             story["triage"] = triage_record
             story["triage_closed"] = False
             story.pop("closed_at", None)
@@ -8016,6 +8031,44 @@ def cmd_triage_bug(args) -> int:
             ]
         client.add_comment(jira_issue_to_update, "\n".join(comment_lines))
 
+        if was_closed and jira_issue_to_update:
+            in_progress_status = (config.get("status_mapping") or {}).get("in_progress") or "In Progress"
+            todo_status = (config.get("status_mapping") or {}).get("todo") or "To Do"
+            reopened_status = ""
+            if not client.is_live:
+                transition_res = client.transition_issue(jira_issue_to_update, in_progress_status)
+                reopened_status = in_progress_status
+            else:
+                candidates = [in_progress_status]
+                if todo_status and todo_status.strip().lower() != in_progress_status.strip().lower():
+                    candidates.append(todo_status)
+                last_err = ""
+                for cand_status in candidates:
+                    try:
+                        cand_res = client.transition_issue(jira_issue_to_update, cand_status)
+                    except Exception as exc:
+                        last_err = str(exc)
+                        transition_res = {"mode": "live", "transitioned_to": None, "warning": last_err}
+                        continue
+                    transition_res = cand_res
+                    if cand_res.get("transitioned_to"):
+                        reopened_status = cand_status
+                        break
+                    last_err = str(cand_res.get("warning") or f"Transition '{cand_status}' unavailable")
+                if not reopened_status:
+                    reopen_warning = (
+                        f"Failed to transition reopened Bug {jira_issue_to_update} out of Done "
+                        f"(tried {', '.join(candidates)}: {last_err}); local jira_status preserved as-is."
+                    )
+            if reopened_status:
+                if target_bug is not None:
+                    target_bug["jira_status"] = reopened_status
+                    target_bug["last_synced_jira_status"] = reopened_status
+                    target_bug["jira_resolution"] = ""
+                else:
+                    story["jira_status"] = reopened_status
+                    story["jira_resolution"] = ""
+
     saved_path = save_active_story(repo_root, jira_key, story, client=client)
     out = {
         "ok": True,
@@ -8036,6 +8089,8 @@ def cmd_triage_bug(args) -> int:
         "transition": transition_res,
         "active_file": str(saved_path.relative_to(repo_root)),
     }
+    if reopen_warning:
+        out["warning"] = reopen_warning
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
