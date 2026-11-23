@@ -5111,6 +5111,315 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertIn("--solution", txt, f"{rel_path} missing --solution")
             self.assertIn("bug_fix_warnings", txt, f"{rel_path} missing bug_fix_warnings")
 
+    def test_31_round1_review_regressions_p1_and_p2(self):
+        mod = self._load_jira_sync_module()
+
+        # P1-4d: load_team_config sanitizes every status_mapping entry (non-string or blank required keys -> defaults)
+        with tempfile.TemporaryDirectory() as tmp_sm:
+            root_sm = Path(tmp_sm)
+            self.assertEqual(run_cli(root_sm, "init", "--project-key", "SM").returncode, 0)
+            cfg_p = root_sm / ".ai-workflow" / "team-config.json"
+            for bad_in_qa in (123, None, "", "   ", True, ["In QA"]):
+                cfg_d = json.loads(cfg_p.read_text(encoding="utf-8"))
+                cfg_d["status_mapping"]["in_qa"] = bad_in_qa
+                cfg_d["status_mapping"]["done"] = None
+                cfg_d["status_mapping"]["dev_done"] = "   "
+                cfg_p.write_text(json.dumps(cfg_d, indent=2) + "\n", encoding="utf-8")
+                loaded = mod.load_team_config(root_sm)
+                self.assertEqual(loaded["status_mapping"]["in_qa"], "In QA")
+                self.assertEqual(loaded["status_mapping"]["done"], "Done")
+                self.assertEqual(loaded["status_mapping"]["dev_done"], "")
+
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+        MockJiraHandler.reject_resolution_transition_keys.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        try:
+            # P1-1 (Probe 1.1) + P1-2 (blank & unmapped dev_done while Jira at In QA) + P1-3 (verify CLI gate) + P1-4 + P2-4
+            with tempfile.TemporaryDirectory() as tmp1:
+                root = Path(tmp1)
+                # Notice P2-4 setup: reviewer == qa (Carol), developer == Bob (distinct!)
+                roles = {
+                    "pm": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice", "api_token": "tok-a"},
+                    "tech_lead": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                    "developer": {"name": "Bob Lin", "email": "bob@team.io", "jira_account_id": "acc-bob", "api_token": "tok-b"},
+                    "reviewer": {"name": "Carol Wu", "email": "carol@team.io", "jira_account_id": "acc-carol", "api_token": "tok-c"},
+                    "qa": {"name": "Carol Wu", "email": "carol@team.io", "jira_account_id": "acc-carol"},
+                    "release_manager": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                }
+                self.assertEqual(
+                    run_cli(
+                        root, "init",
+                        "--project-key", "R1",
+                        "--jira-url", f"http://127.0.0.1:{jira_port}",
+                        "--roles-json", json.dumps(roles),
+                        "--qa-handoff-mode", "gated_by_deploy",
+                        "--status-dev-done", "Dev Completed",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root, "sync-story", "--key", "R1-1", "--title", "Re-deploy Gate", "--ac", "AC-001:Works", "--status", "approved", "--create").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root, "complete-task", "--key", "R1-1", "--task-id", "TASK-001", "--commit", "commit1", "--files", "a.py", "--test-result", "ok").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root, "handoff", "--key", "R1-1", "--review-status", "approved", "--commit", "commit1").returncode,
+                    0,
+                )
+                # P1-3: plan allowed, verify rejected while awaiting_qa_deploy
+                self.assertEqual(
+                    run_cli(root, "record-qa", "--key", "R1-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Check").returncode,
+                    0,
+                )
+                blocked_verify = run_cli(root, "record-qa", "--key", "R1-1", "--mode", "verify", "--commit", "commit1", "--all-pass")
+                self.assertNotEqual(blocked_verify.returncode, 0)
+                self.assertIn("gated", blocked_verify.stderr.lower())
+
+                # P2-4: promote-qa defaults --from-role developer (Bob) -> qa (Carol) so qa_notified=True even though reviewer==qa!
+                MockJiraHandler.requests_log.clear()
+                prom1 = run_cli(root, "promote-qa", "--key", "R1-1", "--tag", "qa-c1")
+                self.assertEqual(prom1.returncode, 0, prom1.stderr)
+                prom1_out = json.loads(prom1.stdout)
+                self.assertFalse(prom1_out["already_deployed"])
+                self.assertTrue(prom1_out["qa_notified"])
+                self.assertFalse(prom1_out["same_person"])
+                self.assertTrue(prom1_out["cross_person_clean_stop"])
+                self.assertEqual(prom1_out["qa_deploy_gate"]["commit"], "commit1")
+
+                # P1-4b: Duplicate promote-qa on commit1 is idempotent no-op with ZERO Jira comments/transitions
+                MockJiraHandler.requests_log.clear()
+                prom_dup = run_cli(root, "promote-qa", "--key", "R1-1", "--tag", "qa-c1-dup")
+                self.assertEqual(prom_dup.returncode, 0, prom_dup.stderr)
+                prom_dup_out = json.loads(prom_dup.stdout)
+                self.assertTrue(prom_dup_out["ok"])
+                self.assertTrue(prom_dup_out["already_deployed"])
+                self.assertFalse(prom_dup_out["qa_notified"])
+                self.assertFalse(prom_dup_out["can_auto_chain_next_station"])
+                self.assertTrue(prom_dup_out["requires_user_confirmation_for_next_station"])
+                dup_mutations = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and (r[1].endswith("/comment") or r[1].endswith("/transitions"))]
+                self.assertEqual(dup_mutations, [])
+
+                # P1-3: verify now succeeds on commit1 -> qa.status == "passed", qa.tested_commit == "commit1"
+                ver1 = run_cli(root, "record-qa", "--key", "R1-1", "--mode", "verify", "--commit", "commit1", "--all-pass")
+                self.assertEqual(ver1.returncode, 0, ver1.stderr)
+
+                # Probe 1.1 (P1-1): commit2 fix & re-approve -> status MUST report awaiting_qa_deploy=True & recommended_skill=None!
+                self.assertEqual(
+                    run_cli(root, "complete-task", "--key", "R1-1", "--task-id", "TASK-001", "--commit", "commit2", "--files", "a.py", "--test-result", "ok2").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root, "handoff", "--key", "R1-1", "--review-status", "approved", "--commit", "commit2").returncode,
+                    0,
+                )
+                st_c2 = json.loads(run_cli(root, "status", "--key", "R1-1").stdout)
+                self.assertTrue(st_c2["awaiting_qa_deploy"])
+                self.assertIsNone(st_c2["recommended_skill"])
+                # Verify on commit2 is gated until commit2 is deployed
+                self.assertNotEqual(
+                    run_cli(root, "record-qa", "--key", "R1-1", "--mode", "verify", "--commit", "commit2", "--all-pass").returncode,
+                    0,
+                )
+
+                # P1-2a: Blank dev_done when Jira remained at "In QA" from commit1 -> MUST NOT auto-unblock on stale "In QA"!
+                cfg_p = root / ".ai-workflow" / "team-config.json"
+                cfg_d = json.loads(cfg_p.read_text(encoding="utf-8"))
+                cfg_d["status_mapping"]["dev_done"] = ""
+                cfg_p.write_text(json.dumps(cfg_d, indent=2) + "\n", encoding="utf-8")
+                MockJiraHandler.stored_issues["R1-1"]["fields"]["status"] = {"name": "In QA"}
+                self.assertEqual(
+                    run_cli(root, "complete-task", "--key", "R1-1", "--task-id", "TASK-001", "--commit", "commit3", "--files", "a.py", "--test-result", "ok3").returncode,
+                    0,
+                )
+                ho_c3 = run_cli(root, "handoff", "--key", "R1-1", "--review-status", "approved", "--commit", "commit3")
+                self.assertEqual(ho_c3.returncode, 0, ho_c3.stderr)
+                st_c3_disk = json.loads((root / ".ai-workflow" / "active" / "R1-1.json").read_text(encoding="utf-8"))
+                self.assertTrue(st_c3_disk["qa_deploy_gate"]["awaiting_in_qa_cycle"])
+
+                # Status while Jira is STILL at stale "In QA" MUST stay gated!
+                st_c3_stale = json.loads(run_cli(root, "status", "--key", "R1-1").stdout)
+                self.assertTrue(st_c3_stale["awaiting_qa_deploy"])
+                self.assertIsNone(st_c3_stale["recommended_skill"])
+
+                # Once Jira leaves "In QA" -> clears awaiting_in_qa_cycle; subsequent "In QA" -> auto-unblocks!
+                MockJiraHandler.stored_issues["R1-1"]["fields"]["status"] = {"name": "In Progress"}
+                st_c3_left = json.loads(run_cli(root, "status", "--key", "R1-1").stdout)
+                self.assertTrue(st_c3_left["awaiting_qa_deploy"])
+                st_c3_left_disk = json.loads((root / ".ai-workflow" / "active" / "R1-1.json").read_text(encoding="utf-8"))
+                self.assertFalse(st_c3_left_disk["qa_deploy_gate"]["awaiting_in_qa_cycle"])
+
+                MockJiraHandler.stored_issues["R1-1"]["fields"]["status"] = {"name": "In QA"}
+                st_c3_reentered = json.loads(run_cli(root, "status", "--key", "R1-1").stdout)
+                self.assertFalse(st_c3_reentered.get("awaiting_qa_deploy", False))
+                self.assertEqual(st_c3_reentered["recommended_skill"], "team-qa")
+                self.assertEqual(st_c3_reentered["recommended_mode"], "verify")
+
+                # P1-2b: Unmapped/failed dev_done transition when Jira remained at "In QA" -> preserves "In QA", warns, stays gated!
+                cfg_d["status_mapping"]["dev_done"] = "Nonexistent Dev Done"
+                cfg_p.write_text(json.dumps(cfg_d, indent=2) + "\n", encoding="utf-8")
+                self.assertEqual(
+                    run_cli(root, "complete-task", "--key", "R1-1", "--task-id", "TASK-001", "--commit", "commit4", "--files", "a.py", "--test-result", "ok4").returncode,
+                    0,
+                )
+                ho_c4 = run_cli(root, "handoff", "--key", "R1-1", "--review-status", "approved", "--commit", "commit4")
+                self.assertEqual(ho_c4.returncode, 0, ho_c4.stderr)
+                ho_c4_out = json.loads(ho_c4.stdout)
+                self.assertIn("warning", ho_c4_out)
+                st_c4 = json.loads(run_cli(root, "status", "--key", "R1-1").stdout)
+                self.assertTrue(st_c4["awaiting_qa_deploy"])
+                self.assertIsNone(st_c4["recommended_skill"])
+                # Explicit promote-qa clears awaiting_in_qa_cycle and unblocks!
+                prom_c4 = run_cli(root, "promote-qa", "--key", "R1-1", "--tag", "qa-c4")
+                self.assertEqual(prom_c4.returncode, 0, prom_c4.stderr)
+                self.assertFalse(json.loads(prom_c4.stdout)["qa_deploy_gate"]["awaiting_in_qa_cycle"])
+
+                # P1-4a: promote-qa rejects open bugs & incomplete tasks
+                bug_open = json.loads(run_cli(
+                    root, "create-bug", "--key", "R1-1", "--tc-id", "TC-001", "--ac-id", "AC-001",
+                    "--title", "Blocking bug", "--severity", "major",
+                    "--steps", "s", "--expected", "e", "--actual", "a", "--commit", "commit4",
+                ).stdout)["bug_key"]
+                prom_open_bug = run_cli(root, "promote-qa", "--key", "R1-1")
+                self.assertNotEqual(prom_open_bug.returncode, 0)
+                self.assertIn(bug_open, prom_open_bug.stderr)
+
+            # P1-4c: immediate-mode promote-qa is an idempotent no-op with ZERO duplicate comments/transitions
+            with tempfile.TemporaryDirectory() as tmp_imm:
+                root_i = Path(tmp_imm)
+                self.assertEqual(
+                    run_cli(root_i, "init", "--project-key", "IMM", "--jira-url", f"http://127.0.0.1:{jira_port}", "--jira-email", "alice@team.io", "--jira-token", "tok-a").returncode,
+                    0,
+                )
+                self.assertEqual(run_cli(root_i, "sync-story", "--key", "IMM-1", "--title", "Immediate Story", "--ac", "AC-001:ok", "--status", "approved", "--create").returncode, 0)
+                self.assertEqual(run_cli(root_i, "complete-task", "--key", "IMM-1", "--task-id", "TASK-001", "--commit", "imm1", "--files", "i.py", "--test-result", "ok").returncode, 0)
+                self.assertEqual(run_cli(root_i, "handoff", "--key", "IMM-1", "--review-status", "approved", "--commit", "imm1").returncode, 0)
+                MockJiraHandler.requests_log.clear()
+                prom_imm = run_cli(root_i, "promote-qa", "--key", "IMM-1")
+                self.assertEqual(prom_imm.returncode, 0, prom_imm.stderr)
+                prom_imm_out = json.loads(prom_imm.stdout)
+                self.assertTrue(prom_imm_out["already_deployed"])
+                self.assertFalse(prom_imm_out["qa_notified"])
+                self.assertEqual(prom_imm_out["qa_handoff_mode"], "immediate")
+                imm_mutations = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and (r[1].endswith("/comment") or r[1].endswith("/transitions"))]
+                self.assertEqual(imm_mutations, [])
+
+            # P1-5 + P2-1 + P2-2 + P2-5: passing-TC waiver rejection, fixed reopen, mismatch resolution check, stale waiver clear, multi-story skip
+            with tempfile.TemporaryDirectory() as tmp2:
+                root2 = Path(tmp2)
+                self.assertEqual(run_cli(root2, "init", "--project-key", "T5").returncode, 0)
+                self.assertEqual(run_cli(root2, "sync-story", "--key", "T5-1", "--title", "Triage Hardening", "--ac", "AC-001:A", "--ac", "AC-002:B", "--status", "approved").returncode, 0)
+                self.assertEqual(run_cli(root2, "complete-task", "--key", "T5-1", "--task-id", "TASK-001", "--commit", "t5c1", "--files", "x.py", "--test-result", "ok").returncode, 0)
+                self.assertEqual(run_cli(root2, "handoff", "--key", "T5-1", "--review-status", "approved", "--commit", "t5c1").returncode, 0)
+                self.assertEqual(run_cli(root2, "record-qa", "--key", "T5-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:A", "--tc", "TC-002:AC-002:manual:B").returncode, 0)
+                self.assertEqual(run_cli(root2, "record-qa", "--key", "T5-1", "--mode", "verify", "--commit", "t5c1", "--result", "TC-001=pass", "--result", "TC-002=fail:bad").returncode, 0)
+                b_key = json.loads(run_cli(root2, "create-bug", "--key", "T5-1", "--tc-id", "TC-002", "--ac-id", "AC-002", "--title", "Bug B", "--severity", "minor", "--steps", "s", "--expected", "e", "--actual", "a", "--commit", "t5c1").stdout)["bug_key"]
+
+                # P1-5a: Reject waiving an already-passing TC (TC-001)
+                waive_pass = run_cli(root2, "triage-bug", "--key", "T5-1", "--bug-id", b_key, "--resolution", "wont-fix", "--reason", "try waive pass", "--decided-by", "PO", "--waive-tcs", "TC-001")
+                self.assertNotEqual(waive_pass.returncode, 0)
+                self.assertIn("TC-001", waive_pass.stderr)
+
+                # Waive failing TC-002 properly
+                self.assertEqual(run_cli(root2, "triage-bug", "--key", "T5-1", "--bug-id", b_key, "--resolution", "wont-fix", "--reason", "accepted", "--decided-by", "PO", "--waive-tcs", "TC-002").returncode, 0)
+
+                # P2-1: _is_tc_waiver_valid rejects resolution mismatch between TC and bug
+                st_t5 = json.loads((root2 / ".ai-workflow" / "active" / "T5-1.json").read_text(encoding="utf-8"))
+                tc2 = next(c for c in st_t5["qa"]["test_cases"] if c["id"] == "TC-002")
+                self.assertTrue(mod._is_tc_waiver_valid(tc2, st_t5))
+                tampered_tc2 = dict(tc2, triage_resolution="not-a-bug")
+                self.assertFalse(mod._is_tc_waiver_valid(tampered_tc2, st_t5))
+
+                # P2-2: record-qa verify updating TC-002 to pass strips stale waiver metadata
+                self.assertEqual(run_cli(root2, "record-qa", "--key", "T5-1", "--mode", "verify", "--commit", "t5c1", "--result", "TC-002=pass").returncode, 0)
+                st_t5_cleared = json.loads((root2 / ".ai-workflow" / "active" / "T5-1.json").read_text(encoding="utf-8"))
+                tc2_cleared = next(c for c in st_t5_cleared["qa"]["test_cases"] if c["id"] == "TC-002")
+                self.assertEqual(tc2_cleared["result"], "pass")
+                for stale_k in ("waived_bug_id", "triage_resolution", "waived_by", "waived_reason", "waived_at"):
+                    self.assertNotIn(stale_k, tc2_cleared)
+
+                # P1-5b + P2-5: Standalone bug closed via triage -> skipped by multi-story status without --key,
+                #               and re-triaging as "fixed" reopens it cleanly back to team-dev!
+                sb_k = json.loads(run_cli(root2, "create-bug", "--standalone", "--title", "Stand bug", "--severity", "minor", "--steps", "s", "--expected", "e", "--actual", "a").stdout)["bug_key"]
+                self.assertEqual(run_cli(root2, "triage-bug", "--key", sb_k, "--resolution", "not-a-bug", "--reason", "spec", "--decided-by", "PO").returncode, 0)
+
+                # P2-5: status without --key ignores triage_closed sb_k and routes cleanly to T5-1 (NOT ambiguous!)
+                st_no_key = json.loads(run_cli(root2, "status").stdout)
+                self.assertFalse(st_no_key.get("ambiguous", False))
+                self.assertEqual(st_no_key["jira_key"], "T5-1")
+                # Explicit --key lookup on sb_k still works
+                st_sb_closed = json.loads(run_cli(root2, "status", "--key", sb_k).stdout)
+                self.assertTrue(st_sb_closed["triage_closed"])
+
+                # P1-5b: Re-triage closed standalone bug as "fixed" -> reopens & routes back to team-dev!
+                retriage = run_cli(root2, "triage-bug", "--key", sb_k, "--resolution", "fixed", "--reason", "Actually a bug", "--decided-by", "PO")
+                self.assertEqual(retriage.returncode, 0, retriage.stderr)
+                retriage_out = json.loads(retriage.stdout)
+                self.assertEqual(retriage_out["bug_status"], "open")
+                self.assertFalse(retriage_out["triage_closed"])
+                st_sb_reopened = json.loads(run_cli(root2, "status", "--key", sb_k).stdout)
+                self.assertFalse(st_sb_reopened.get("triage_closed", False))
+                self.assertEqual(st_sb_reopened["recommended_skill"], "team-dev")
+                self.assertEqual(st_sb_reopened["recommended_mode"], "implement")
+
+            # P1-6 (Probe 3.3) + P2-3 (English labels when language == "en")
+            with tempfile.TemporaryDirectory() as tmp3:
+                root3 = Path(tmp3)
+                self.assertEqual(
+                    run_cli(root3, "init", "--project-key", "EN", "--language", "en", "--jira-url", f"http://127.0.0.1:{jira_port}", "--jira-email", "alice@team.io", "--jira-token", "tok-a").returncode,
+                    0,
+                )
+                sb_en = json.loads(run_cli(root3, "create-bug", "--standalone", "--title", "EN prod bug", "--severity", "major", "--steps", "s", "--expected", "e", "--actual", "a").stdout)["bug_key"]
+
+                MockJiraHandler.requests_log.clear()
+                c1 = run_cli(
+                    root3, "complete-task",
+                    "--key", sb_en,
+                    "--commit", "en111",
+                    "--files", "fix.py",
+                    "--test-result", "pytest ok",
+                    "--root-cause", "Null pointer on empty payload",
+                    "--solution", "Added guard before dereference",
+                )
+                self.assertEqual(c1.returncode, 0, c1.stderr)
+                self.assertEqual(json.loads(c1.stdout)["bug_fix_warnings"], [])
+                # P2-3: English comment uses **Root Cause** and **Solution** without Chinese labels
+                en_comments = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1] == f"/rest/api/3/issue/{sb_en}/comment"]
+                self.assertEqual(len(en_comments), 1)
+                en_adf_str = json.dumps(en_comments[0][2]["body"], ensure_ascii=False)
+                self.assertIn("Root Cause", en_adf_str)
+                self.assertIn("Solution", en_adf_str)
+                self.assertNotIn("問題原因", en_adf_str)
+                self.assertNotIn("解決辦法", en_adf_str)
+
+                # Probe 3.3 (P1-6): review requests changes -> complete-task REV-001 without re-passing args -> bug_fix_warnings == []
+                self.assertEqual(
+                    run_cli(root3, "handoff", "--key", sb_en, "--review-status", "changes-requested", "--commit", "en111", "--summary", "Add edge test").returncode,
+                    0,
+                )
+                c_rev = run_cli(
+                    root3, "complete-task",
+                    "--key", sb_en,
+                    "--task-id", "REV-001",
+                    "--commit", "en222",
+                    "--files", "test_fix.py",
+                    "--test-result", "pytest 2 passed",
+                )
+                self.assertEqual(c_rev.returncode, 0, c_rev.stderr)
+                self.assertEqual(json.loads(c_rev.stdout)["bug_fix_warnings"], [])
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
