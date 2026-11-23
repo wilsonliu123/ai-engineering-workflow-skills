@@ -1007,13 +1007,120 @@ class JiraClient:
         )
 
     @staticmethod
+    def _parse_inline_markdown(text: str) -> list:
+        """Parse inline Markdown (`code` and **bold**) into valid Jira ADF text nodes.
+
+        Guarantees:
+        - Inline code (`...`) takes precedence over bold (**...**): asterisks inside
+          backticks remain literal inside the `code` mark.
+        - ADF `code` mark is NEVER combined with `strong` (or other formatting marks).
+        - Empty text nodes ({"type": "text", "text": ""}) are NEVER emitted.
+        - Unclosed delimiters (**abc, `abc) and degenerate markers (****, ``) fall
+          back safely to literal text without dropping content.
+        """
+        if not text:
+            return []
+
+        nodes = []
+
+        def _append_node(seg: str, mark_type: str = None) -> None:
+            if not seg:
+                return
+            if mark_type is None:
+                if nodes and "marks" not in nodes[-1]:
+                    nodes[-1]["text"] += seg
+                else:
+                    nodes.append({"type": "text", "text": seg})
+            else:
+                nodes.append({"type": "text", "text": seg, "marks": [{"type": mark_type}]})
+
+        def _find_closing_bold(src: str, start: int) -> int:
+            pos = start
+            length = len(src)
+            while pos < length:
+                if src[pos] == "`":
+                    close_tick = src.find("`", pos + 1)
+                    if close_tick != -1:
+                        pos = close_tick + 1
+                        continue
+                    pos += 1
+                    continue
+                if src[pos:pos + 2] == "**":
+                    return pos
+                pos += 1
+            return -1
+
+        def _emit_bold_inner(inner: str) -> None:
+            pos = 0
+            length = len(inner)
+            while pos < length:
+                if inner[pos] == "`":
+                    close_tick = inner.find("`", pos + 1)
+                    if close_tick != -1:
+                        code_text = inner[pos + 1:close_tick]
+                        if code_text:
+                            _append_node(code_text, "code")
+                        else:
+                            _append_node("``", "strong")
+                        pos = close_tick + 1
+                        continue
+                    _append_node("`", "strong")
+                    pos += 1
+                    continue
+                next_tick = inner.find("`", pos)
+                if next_tick == -1:
+                    _append_node(inner[pos:], "strong")
+                    break
+                _append_node(inner[pos:next_tick], "strong")
+                pos = next_tick
+
+        i = 0
+        n = len(text)
+        while i < n:
+            if text[i] == "`":
+                close_tick = text.find("`", i + 1)
+                if close_tick != -1:
+                    code_text = text[i + 1:close_tick]
+                    if code_text:
+                        _append_node(code_text, "code")
+                    else:
+                        _append_node("``")
+                    i = close_tick + 1
+                    continue
+                _append_node("`")
+                i += 1
+                continue
+
+            if text[i:i + 2] == "**":
+                close_bold = _find_closing_bold(text, i + 2)
+                if close_bold != -1:
+                    inner = text[i + 2:close_bold]
+                    if inner:
+                        _emit_bold_inner(inner)
+                    else:
+                        _append_node("****")
+                    i = close_bold + 2
+                    continue
+                _append_node("**")
+                i += 2
+                continue
+
+            next_pos = i + 1
+            while next_pos < n and text[next_pos] != "`" and text[next_pos:next_pos + 2] != "**":
+                next_pos += 1
+            _append_node(text[i:next_pos])
+            i = next_pos
+
+        return nodes
+
+    @staticmethod
     def text_to_adf(
         text: str,
         mention_account_id: str = "",
         mention_name: str = "",
         lang_zh: bool = True,
     ) -> dict:
-        """Convert Markdown/plain text into Atlassian Document Format (ADF) v1 with heading, bulletList, and table support."""
+        """Convert Markdown/plain text into Atlassian Document Format (ADF) v1 with heading, bulletList, table, and inline bold/code support."""
         content_nodes = []
         handoff_prompt = " 請接手下一階段工作：" if lang_zh else " — ready for next station:"
         if mention_account_id:
@@ -1047,6 +1154,10 @@ class JiraClient:
             s = ln.strip()
             return len(s) >= 2 and s.startswith("|") and s.endswith("|")
 
+        def _inline_or_fallback(raw: str, fallback: str = " ") -> list:
+            parsed = JiraClient._parse_inline_markdown(raw)
+            return parsed if parsed else [{"type": "text", "text": fallback}]
+
         while i < n:
             raw_line = lines[i]
             stripped = raw_line.strip()
@@ -1058,10 +1169,11 @@ class JiraClient:
             hm = heading_re.match(stripped)
             if hm:
                 level = min(max(len(hm.group(1)), 1), 6)
+                heading_text = hm.group(2).strip()
                 content_nodes.append({
                     "type": "heading",
                     "attrs": {"level": level},
-                    "content": [{"type": "text", "text": hm.group(2).strip()}],
+                    "content": _inline_or_fallback(heading_text, heading_text),
                 })
                 i += 1
                 continue
@@ -1084,7 +1196,7 @@ class JiraClient:
                             "content": [
                                 {
                                     "type": "paragraph",
-                                    "content": [{"type": "text", "text": item_text}],
+                                    "content": _inline_or_fallback(item_text, item_text),
                                 }
                             ],
                         }
@@ -1118,7 +1230,7 @@ class JiraClient:
                                     "content": [
                                         {
                                             "type": "paragraph",
-                                            "content": [{"type": "text", "text": c_text or " "}],
+                                            "content": _inline_or_fallback(c_text, " "),
                                         }
                                     ],
                                 }
@@ -1142,9 +1254,10 @@ class JiraClient:
                 para_lines.append(cur_s)
                 i += 1
             if para_lines:
+                para_text = "\n".join(para_lines)
                 content_nodes.append({
                     "type": "paragraph",
-                    "content": [{"type": "text", "text": "\n".join(para_lines)}],
+                    "content": _inline_or_fallback(para_text, para_text),
                 })
 
         if not content_nodes:
@@ -1831,6 +1944,8 @@ def _adf_to_plain_text(node) -> str:
         ntype = node.get("type")
         if ntype == "text":
             return str(node.get("text") or "")
+        if ntype == "hardBreak":
+            return "\n"
         if ntype == "mention":
             return str((node.get("attrs") or {}).get("text") or "")
         content = node.get("content") or []
@@ -2497,6 +2612,133 @@ def save_active_story(
     return p
 
 
+def _handoff_governance_fields(handoff_record: dict) -> dict:
+    """Build explicit SoD & Human-in-the-Loop governance flags for handoff JSON outputs."""
+    same_person = bool((handoff_record or {}).get("same_person"))
+    return {
+        "same_person": same_person,
+        "can_auto_chain_next_station": False,
+        "requires_user_confirmation_for_next_station": True,
+        "cross_person_clean_stop": not same_person,
+        "next_station_prompt_allowed": same_person,
+        "next_station_owner": str((handoff_record or {}).get("to_person") or ""),
+    }
+
+
+def _resolve_local_actor_identity(repo_root: Path, config: dict):
+    """Resolve the current local machine actor identity from env / local credentials matched against team-config.json."""
+    local_creds = load_jira_credentials(repo_root)
+    actor_email = (os.environ.get("JIRA_EMAIL") or local_creds.get("jira_email") or "").strip()
+    if not actor_email:
+        mc = local_creds.get("member_credentials") or {}
+        if isinstance(mc, dict) and len(mc) == 1:
+            only_entry = next(iter(mc.values()))
+            actor_email = str((only_entry or {}).get("jira_email") or "").strip()
+    if not actor_email:
+        rc = local_creds.get("role_credentials") or {}
+        if isinstance(rc, dict):
+            rc_emails = {
+                str((v or {}).get("jira_email") or "").strip().lower()
+                for v in rc.values()
+                if isinstance(v, dict) and str((v or {}).get("jira_email") or "").strip()
+            }
+            if len(rc_emails) == 1:
+                actor_email = next(iter(rc_emails))
+    if not actor_email:
+        return None
+
+    matched_roles = []
+    matched_name = ""
+    matched_acct = ""
+    em_lower = actor_email.lower()
+    for rk in (config.get("roles") or {}).keys():
+        for m in resolve_role_members(config, rk):
+            if not _is_member_claimed(rk, m):
+                continue
+            if (m.get("email") or "").strip().lower() == em_lower:
+                if rk not in matched_roles:
+                    matched_roles.append(rk)
+                if not matched_name and m.get("name"):
+                    matched_name = str(m["name"]).strip()
+                if not matched_acct and m.get("jira_account_id"):
+                    matched_acct = str(m["jira_account_id"]).strip()
+    return {
+        "name": matched_name or actor_email,
+        "email": actor_email,
+        "jira_account_id": matched_acct,
+        "roles": matched_roles,
+    }
+
+
+def _build_qa_identity_guardrail(repo_root: Path, config: dict, story: dict = None) -> dict:
+    """Compare current local actor against explicitly configured roles.qa for Station 3b SoD Entry Identity Guardrail."""
+    actor = _resolve_local_actor_identity(repo_root, config)
+    claimed_qa = [m for m in resolve_role_members(config, "qa") if _is_member_claimed("qa", m)]
+    if not claimed_qa and isinstance(story, dict):
+        ro_qa = (story.get("role_owners") or {}).get("qa")
+        if isinstance(ro_qa, dict) and _is_member_claimed("qa", ro_qa):
+            claimed_qa.append(_normalize_member_dict("qa", ro_qa))
+
+    qa_role_claimed = len(claimed_qa) > 0
+    identifiers_comparable = True
+    if not qa_role_claimed:
+        actor_matches_qa = False if actor is not None else None
+    elif actor is None:
+        actor_matches_qa = None
+    else:
+        identifiers_comparable = (
+            bool(actor.get("roles"))
+            or bool(actor.get("jira_account_id"))
+            or any(bool(qm.get("email")) for qm in claimed_qa)
+        )
+        if identifiers_comparable:
+            actor_matches_qa = any(is_same_person(actor, qm) for qm in claimed_qa)
+        else:
+            actor_matches_qa = None
+
+    story_devs = []
+    if isinstance(story, dict):
+        for t in story.get("tasks") or []:
+            t_ass = t.get("assignee")
+            if isinstance(t_ass, dict) and _is_member_claimed("developer", t_ass):
+                story_devs.append(t_ass)
+        if not story_devs:
+            ro_dev = (story.get("role_owners") or {}).get("developer")
+            if isinstance(ro_dev, dict) and _is_member_claimed("developer", ro_dev):
+                story_devs.append(ro_dev)
+    if not story_devs:
+        story_devs = [m for m in resolve_role_members(config, "developer") if _is_member_claimed("developer", m)]
+    actor_is_story_developer = bool(actor is not None and any(is_same_person(actor, d) for d in story_devs))
+
+    identity_mismatch = bool(qa_role_claimed and actor is not None and actor_matches_qa is False)
+    if qa_role_claimed and actor is not None and not identifiers_comparable:
+        warning = None
+    else:
+        warning = ""
+    if identity_mismatch:
+        qa_labels = ", ".join(
+            f"{q.get('name') or 'qa'} ({q.get('email')})" if q.get("email") else str(q.get("name") or "qa")
+            for q in claimed_qa
+        )
+        actor_label = f"{actor.get('name')} ({actor.get('email')})" if actor.get("email") else str(actor.get("name") or "")
+        dev_note = " (who is also the Story developer)" if actor_is_story_developer else ""
+        warning = (
+            f"SoD Identity Mismatch: current local actor {actor_label}{dev_note} does not match configured "
+            f"roles.qa ({qa_labels}). Warn the user clearly and require explicit user confirmation before executing QA verification."
+        )
+
+    return {
+        "qa_role_claimed": qa_role_claimed,
+        "current_actor": actor,
+        "configured_qa_owners": [serialize_member_for_config(q, "qa") for q in claimed_qa],
+        "actor_matches_qa": actor_matches_qa,
+        "actor_is_story_developer": actor_is_story_developer,
+        "identity_mismatch": identity_mismatch,
+        "requires_explicit_confirmation": identity_mismatch,
+        "warning": warning,
+    }
+
+
 def execute_role_handoff(
     client: JiraClient,
     config: dict,
@@ -2535,7 +2777,12 @@ def execute_role_handoff(
             "to_role": to_role,
             "from_person": from_person["name"],
             "to_person": to_person["name"],
+            "next_station_owner": to_person["name"],
             "same_person": True,
+            "can_auto_chain_next_station": False,
+            "requires_user_confirmation_for_next_station": True,
+            "cross_person_clean_stop": False,
+            "next_station_prompt_allowed": True,
             "handoff_mode": "auto-consolidated",
             "target_jira_status": target_jira_status,
             "assigned_account_id": to_person.get("jira_account_id", ""),
@@ -2572,7 +2819,12 @@ def execute_role_handoff(
             "to_role": to_role,
             "from_person": from_person["name"],
             "to_person": to_person["name"],
+            "next_station_owner": to_person["name"],
             "same_person": False,
+            "can_auto_chain_next_station": False,
+            "requires_user_confirmation_for_next_station": True,
+            "cross_person_clean_stop": True,
+            "next_station_prompt_allowed": False,
             "role_claimed": role_claimed,
             "handoff_mode": "jira-notification" if role_claimed else "awaiting-role-claim",
             "target_jira_status": target_jira_status,
@@ -4089,6 +4341,8 @@ def cmd_status(args) -> int:
         rec["initialized"] = True
         rec["standards_exists"] = standards_exists
         rec["story_found"] = True
+        if rec.get("recommended_skill") == "team-qa":
+            rec["qa_identity_guardrail"] = _build_qa_identity_guardrail(repo_root, config, story=story)
         if creds_missing:
             rec["credentials_missing"] = True
         if hydrated_source:
@@ -4198,6 +4452,8 @@ def cmd_status(args) -> int:
     rec["initialized"] = True
     rec["standards_exists"] = standards_exists
     rec["story_found"] = True
+    if rec.get("recommended_skill") == "team-qa":
+        rec["qa_identity_guardrail"] = _build_qa_identity_guardrail(repo_root, config, story=story)
     if creds_missing:
         rec["credentials_missing"] = True
     if hydrated_from_source:
@@ -4606,6 +4862,8 @@ def cmd_sync_story(args) -> int:
         "jira_sync": sync_res,
         "handoff": handoff_info,
     }
+    if handoff_info is not None:
+        out.update(_handoff_governance_fields(handoff_info))
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
@@ -5085,7 +5343,20 @@ def cmd_complete_task(args) -> int:
 
     remaining_tasks = [t["id"] for t in (story.get("tasks") or []) if t.get("status") != "completed"]
     remaining_bugs = [b.get("bug_key") for b in (story.get("bugs") or []) if b.get("status") not in ("completed", "closed")]
+    remaining_review_findings = [
+        f.get("id") for f in ((review or {}).get("findings") or [])
+        if isinstance(review, dict)
+        and review.get("status") == "changes-requested"
+        and isinstance(f, dict)
+        and f.get("severity") in ("blocker", "major")
+        and f.get("status", "open") == "open"
+    ]
 
+    ready_for_review = (
+        len(remaining_tasks) == 0
+        and len(remaining_bugs) == 0
+        and len(remaining_review_findings) == 0
+    )
     saved_path = save_active_story(repo_root, jira_key, story, client=client)
     out = {
         "ok": True,
@@ -5099,9 +5370,22 @@ def cmd_complete_task(args) -> int:
         "changed_files": changed_files,
         "remaining_tasks": remaining_tasks,
         "remaining_bugs": remaining_bugs,
-        "ready_for_review": len(remaining_tasks) == 0 and len(remaining_bugs) == 0,
+        "remaining_review_findings": remaining_review_findings,
+        "ready_for_review": ready_for_review,
         "active_file": str(saved_path.relative_to(repo_root)),
     }
+    if ready_for_review:
+        _, next_rev_person, _ = resolve_effective_reviewer(config, story)
+        dev_actor = resolve_acting_person(config, "developer", client=client, story=story)
+        same_dev_rev = is_same_person(dev_actor, next_rev_person)
+        out.update({
+            "same_person": same_dev_rev,
+            "can_auto_chain_next_station": False,
+            "requires_user_confirmation_for_next_station": True,
+            "cross_person_clean_stop": not same_dev_rev,
+            "next_station_prompt_allowed": same_dev_rev,
+            "next_station_owner": next_rev_person["name"],
+        })
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
@@ -5248,6 +5532,7 @@ def cmd_handoff(args) -> int:
         "review_status": review_status,
         "reviewed_commit": commit_sha,
         "findings_count": len(findings),
+        **_handoff_governance_fields(handoff_record),
         "handoff": handoff_record,
         "active_file": str(saved_path.relative_to(repo_root)),
     }
@@ -5286,7 +5571,7 @@ def parse_junit_xml_results(xml_path: Path) -> dict:
                 results[tc_id] = st
     return results
 
-def _inspect_qa_state(repo_root: Path, config: dict) -> dict:
+def _inspect_qa_state(repo_root: Path, config: dict, story: dict = None) -> dict:
     local_creds = load_jira_credentials(repo_root)
     role_creds = local_creds.get("role_credentials") or {}
     qa_rc = role_creds.get("qa") if isinstance(role_creds.get("qa"), dict) else {}
@@ -5295,6 +5580,21 @@ def _inspect_qa_state(repo_root: Path, config: dict) -> dict:
     qase_cfg = config.get("qase") if isinstance(config.get("qase"), dict) else {}
     qase_code = (os.environ.get("QASE_PROJECT_CODE") or qase_cfg.get("project_code") or "").strip().upper()
     has_qase_token = bool((os.environ.get("QASE_API_TOKEN") or local_creds.get("qase_api_token") or "").strip())
+    guardrail = _build_qa_identity_guardrail(repo_root, config, story=story)
+    base_instruction = (
+        "STOP and ask the user whether QA test cases should be managed in 'jira-comment' (Jira comments) or 'qase' (Qase TestOps). "
+        "If 'qase', also confirm Qase Project Code and Qase API Token, then pass --qa-backend to remember the choice."
+        if not qa_backend
+        else f"QA test backend is already remembered as '{qa_backend}'. Proceed using '{qa_backend}' automatically."
+    )
+    if guardrail["identity_mismatch"]:
+        if qa_backend:
+            base_instruction = (
+                f"{guardrail['warning']} STOP and wait for explicit user confirmation before running QA "
+                f"(QA test backend is already remembered as '{qa_backend}'; do not re-ask backend choice once confirmed)."
+            )
+        else:
+            base_instruction = f"{guardrail['warning']} Also {base_instruction}"
     return {
         "ok": True,
         "action": "qa-inspect",
@@ -5313,12 +5613,8 @@ def _inspect_qa_state(repo_root: Path, config: dict) -> dict:
             "jira_account_id": qa_person.get("jira_account_id", ""),
             "has_role_token": bool((qa_rc.get("jira_api_token") or "").strip() or os.environ.get("JIRA_API_TOKEN_QA", "").strip()),
         },
-        "agent_instruction": (
-            "STOP and ask the user whether QA test cases should be managed in 'jira-comment' (Jira comments) or 'qase' (Qase TestOps). "
-            "If 'qase', also confirm Qase Project Code and Qase API Token, then pass --qa-backend to remember the choice."
-            if not qa_backend
-            else f"QA test backend is already remembered as '{qa_backend}'. Proceed using '{qa_backend}' automatically."
-        ),
+        "qa_identity_guardrail": guardrail,
+        "agent_instruction": base_instruction,
     }
 
 
@@ -5327,7 +5623,16 @@ def cmd_record_qa(args) -> int:
     config = load_team_config(repo_root)
 
     if getattr(args, "inspect", False):
-        print(json.dumps(_inspect_qa_state(repo_root, config), ensure_ascii=False, indent=2))
+        insp_story = None
+        if getattr(args, "key", None):
+            try:
+                clean_k = validate_jira_key(args.key)
+                ap = get_active_dir(repo_root) / f"{clean_k}.json"
+                if ap.exists():
+                    insp_story = json.loads(ap.read_text(encoding="utf-8"))
+            except Exception:
+                insp_story = None
+        print(json.dumps(_inspect_qa_state(repo_root, config, story=insp_story), ensure_ascii=False, indent=2))
         return 0
 
     if not args.key or not args.mode:
@@ -5547,6 +5852,7 @@ def cmd_record_qa(args) -> int:
             "qa_owner": qa_person["name"],
             "qa_test_backend": eff_backend,
             "tc_count": len(normalized_cases),
+            "qa_identity_guardrail": _build_qa_identity_guardrail(repo_root, config, story=story),
             "active_file": str(saved_path.relative_to(repo_root)),
         }
         if qase_sync_info is not None:
@@ -5857,9 +6163,12 @@ def cmd_record_qa(args) -> int:
         "by_type": by_type,
         "pending_external_tcs": pending_external_tcs,
         "pending_manual_tcs": pending_manual_tcs,
+        "qa_identity_guardrail": _build_qa_identity_guardrail(repo_root, config, story=story),
         "handoff": handoff_info,
         "active_file": str(saved_path.relative_to(repo_root)),
     }
+    if handoff_info is not None:
+        out.update(_handoff_governance_fields(handoff_info))
     if qase_sync_info is not None:
         out["qase_sync"] = qase_sync_info
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -6169,6 +6478,7 @@ def cmd_create_bug(args) -> int:
             "severity": args.severity,
             "qa_test_backend": eff_backend,
             "attachments": uploaded_jira_atts,
+            **_handoff_governance_fields(handoff_info),
             "handoff": handoff_info,
             "active_file": str(saved_path.relative_to(repo_root)),
         }
@@ -6420,6 +6730,7 @@ def cmd_create_bug(args) -> int:
         "severity": args.severity,
         "qa_test_backend": eff_backend,
         "attachments": uploaded_jira_atts,
+        **_handoff_governance_fields(handoff_info),
         "handoff": handoff_info,
         "active_file": str(saved_path.relative_to(repo_root)),
     }

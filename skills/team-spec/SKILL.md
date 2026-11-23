@@ -99,10 +99,10 @@ python3 "<skill-dir>/scripts/jira_sync.py" --repo-root . sync-story \
   ```
   This automatically updates `.ai-workflow/bin/jira_sync.py`, hydrates `<JIRA-KEY>` (from local `.ai-workflow/active/<JIRA-KEY>.json` or remote Jira), re-writes the clean human-readable Story Description (Sections 1–5 only), and migrates the machine state into Jira's hidden `ai_workflow_state` Issue Property without posting duplicate handoff comments.
 
-### 5. Role-aware handoff & Auto-Chaining to Station 2 (`team-dev`)
-`jira_sync.py sync-story --status approved` automatically stores the state snapshot in Jira's hidden `ai_workflow_state` Issue Property for cross-machine hydration and checks `.ai-workflow/team-config.json`:
-- **Same person (`pm` == `developer`, `same_person: true`):** Auto-consolidates the transition without notification spam; **proactively auto-chain** into `$team-dev` (`plan` mode, or Dev Fast-Track for single-task stories) or ask in one line: `"下一站（Station 2 任務拆解與開發）同由您負責，是否直接繼續執行？"`.
-- **Different person (`pm` != `developer`):** Transitions the Jira Story to `In Progress`, reassigns it to the Developer, and posts an `@mention` comment on Jira. Note that `$team-qa` (`plan` mode) can also run in parallel.
+### 5. Role-aware handoff & Station Boundary (`team-dev`)
+`jira_sync.py sync-story --status approved` automatically stores the state snapshot in Jira's hidden `ai_workflow_state` Issue Property for cross-machine hydration, returns `can_auto_chain_next_station: false` and `requires_user_confirmation_for_next_station: true`, and checks `.ai-workflow/team-config.json`:
+- **Same person (`pm` == `developer`, `same_person: true`, `next_station_prompt_allowed: true`):** Only suppresses redundant Jira self-`@mention` noise (`handoff_mode: "auto-consolidated"`). It **never** authorizes auto-chaining into `$team-dev`. Report the Station 1 approval summary concisely, ask one short question (`"下一站（Station 2 任務拆解與開發）同由您負責，是否要繼續執行？"`), then **STOP** and wait for explicit user authorization.
+- **Different person (`pm` != `developer`, `same_person: false`, `cross_person_clean_stop: true`):** Transitions the Jira Story to `In Progress`, reassigns it to the Developer, and posts an `@mention` comment on Jira. Enforce **Clean Stop**: report the approval & handoff target (`to_person` / `target_jira_status`) and **strictly forbid** prompting or suggesting that the current user invoke `$team-dev` (or `$team-qa`).
 
 ## Red Flags — STOP
 
@@ -110,3 +110,4 @@ python3 "<skill-dir>/scripts/jira_sync.py" --repo-root . sync-story \
 - Generating UI state tables for a backend-only change, or API schemas for a pure styling change.
 - Writing `docs/requirements/*.md` or `docs/design/*.md` files into the repository.
 - Marking `--status approved` before the user confirms the spec in chat.
+- Auto-chaining into `$team-dev` without explicit user authorization, or prompting `$team-dev` when `same_person == false` (`cross_person_clean_stop: true`).

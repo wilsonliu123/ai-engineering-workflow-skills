@@ -77,12 +77,17 @@ If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-
    ```
    *(For a standalone production Bug `issue_kind == "standalone_bug"`, `--task-id` defaults to `TASK-001` and also accepts `<BUG-KEY>` itself; `complete-task` posts the fix & regression-test comment on `<BUG-KEY>` without prematurely closing `<BUG-KEY>` before Code Review, QA, and Release.)*
 
-6. **Advance or Auto-Chain to `team-review`:**
-   - If `remaining_tasks` or `remaining_bugs` remain non-empty, continue to the next item.
-   - When `ready_for_review: true` (0 remaining tasks, 0 open bugs, and 0 open blocking review findings), announce that Station 2 is complete. If `developer` and `reviewer` map to the same person (`same_person: true`), proactively auto-chain into `$team-review` (Station 3a) or ask in one line whether to proceed immediately.
+6. **Station Completion & Human-in-the-Loop Boundary (`Stop & Yield on Fix`):**
+   - If `remaining_tasks` or `remaining_bugs` remain non-empty for the currently authorized dev work, continue to the next item.
+   - **`Stop & Yield on Fix` (Hard Boundary):** When fixing a bug, defect, or tweak reported by the user during manual verification or feedback, after updating code and running local tests you **MUST STOP** and report the fix + test results for user verification. Never autonomously invoke `handoff`, `record-qa`, or `close-story` in that turn.
+   - When `ready_for_review: true` (0 remaining tasks, 0 open bugs, and 0 open blocking review findings), announce that Station 2 is complete (`can_auto_chain_next_station` is ALWAYS `false`):
+     - **Same person (`developer` == `reviewer`, `same_person: true`, `next_station_prompt_allowed: true`):** Report the Station 2 summary concisely, ask one short question whether the user wants to proceed to `$team-review` (Station 3a), then **STOP** and wait for explicit user authorization. Never auto-chain into `$team-review`.
+     - **Different person (`developer` != `reviewer`, `same_person: false`, `cross_person_clean_stop: true`):** Enforce **Clean Stop** — report that Station 2 is complete and ready for `next_station_owner`, and **strictly forbid** prompting or suggesting that the developer run `/team-review` (or `/team-qa`).
 
 ## Red Flags — STOP
 
 - Claiming a task is done without running `jira_sync.py complete-task` with a real `--commit`, `--files`, and `--test-result`.
 - Creating `docs/dev-prep/` or `docs/dev-delivery/` markdown files in the repository.
 - Blocking `team-dev` (`plan` or `implement`) because QA has not run `team-qa` (`plan` mode) yet.
+- **`Stop & Yield on Fix` violation:** After fixing a user-reported bug or tweak, autonomously running `handoff`, `record-qa`, or `close-story` instead of stopping to let the user verify the fix.
+- Auto-chaining into `$team-review` without explicit user authorization, or prompting `$team-review` when `same_person == false`.

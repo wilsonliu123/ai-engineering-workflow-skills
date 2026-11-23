@@ -15,14 +15,18 @@ Uses the configured `qa` role identity and per-role Jira API token (`role_creden
 
 Read `references/common-workflow-governance.md` and `references/qa-method.md` before running.
 
-## Pre-Flight Gate: One-Time QA Backend Choice (`jira-comment` vs `qase`)
+## Pre-Flight Gate: Entry Identity Guardrail & One-Time QA Backend Choice (`jira-comment` vs `qase`)
 
-Before running `record-qa` (`plan` or `verify`), inspect the current QA backend configuration:
+Before running `record-qa` (`plan` or `verify`), inspect the current QA identity guardrail and backend configuration:
 
 ```bash
 python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "<JIRA-KEY>"]
 ```
 
+- **Entry Identity Guardrail (SoD Check — `qa_identity_guardrail`):**
+  - `record-qa --inspect` (and `status`) compares the current local Jira actor (`credentials.json` / `JIRA_EMAIL`) against explicitly configured `roles.qa` in `.ai-workflow/team-config.json`.
+  - **Solo / Same-Person Setups (`actor_matches_qa: true` / `identity_mismatch: false`):** Proceed normally with zero extra friction.
+  - **Identity Mismatch (`qa_identity_guardrail.identity_mismatch: true`, e.g., `roles.qa` is explicitly configured to another person or the current actor is the Story's `developer` while `roles.qa` is separate):** **STOP and warn the user clearly** (showing `current_actor` vs `configured_qa_owners` from `qa_identity_guardrail.warning`), and require **explicit user confirmation** before executing QA verification (`record-qa --mode verify`).
 - **If `requires_qa_backend_choice` is `true` (or if `qa_test_backend` is `"qase"` and `qase_has_token` is `false` in live mode):**
   **STOP and ask the user once** before executing `record-qa`:
   1. 請問專案的測試案例（Test Cases）與測試執行紀錄要放在 **Jira 評論（`jira-comment`）** 還是同步至 **Qase TestOps（`qase`）**？（確認後會記憶在 `.ai-workflow/team-config.json`，後續 `plan` 與 `verify` 自動沿用，不再重複詢問。）
@@ -50,7 +54,9 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
 ## Hard Boundaries
 
 - **No Per-Feature Markdown Files in Git:** Never create `docs/qa/` files or commit `.ai-workflow/evidence/` files. Test plans, verification tables, and Bug tickets live in Jira and `.ai-workflow/active/<JIRA-KEY>.json`.
-- **Strict Anti-False-Pass Guardrail:** Missing evidence is recorded as `not-executed`, never `pass`. In `jira_sync.py record-qa --mode verify`, `--all-pass` **ONLY** marks `execution_type == "automated"` test cases as `pass`; any `external` or `manual` test cases without explicit results stay `not-executed` (`qa_status: "incomplete"`), preventing false passes on tests that AI cannot run locally.
+- **Strict Anti-False-Pass & Human Authorization Guardrail:** Missing evidence is recorded as `not-executed`, never `pass`. In `jira_sync.py record-qa --mode verify`, `--all-pass` **ONLY** marks `execution_type == "automated"` test cases as `pass`; any `external` or `manual` test cases without explicit results stay `not-executed` (`qa_status: "incomplete"`), preventing false passes on tests that AI cannot run locally. Never pass `--all-pass` without actually running the automated test suite and confirming user authorization to run QA verification, and **never** mark `manual` / `external` test cases as `pass` without real verification evidence or explicit human confirmation.
+- **Never Invoke `close-story` from `team-qa`:** Station 3b ends at QA verification and handoff. Never invoke `jira_sync.py close-story` without explicit user authorization for `$team-release`.
+- **`Stop & Yield on Fix`:** If the user reports a bug or adjustment during manual verification and code is edited to fix it, after updating code and running local tests you **MUST STOP** and report the fix for user verification — strictly forbidden from autonomously running `handoff`, `record-qa`, or `close-story`.
 - **AI Pre-Fills, Human Confirms ("抓大放小"):** In `plan` mode, AI pre-fills the recommended `automated` / `external` / `manual` execution type for every `TC-*` in one summary table instead of interviewing the human case-by-case. The human can confirm the whole table in one step or override specific rows.
 
 ## Mode 1: `plan` — Parallel Test Case Checklist (`TC-001..N`)
@@ -117,9 +123,11 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
        [--attach "<path/to/screenshot.png>" --attach "<path/to/trace.webm>"] \
        [--commit "<tested-commit-sha>"]
      ```
-     `create-bug` validates attachment safety (`<= 32 MiB`, non-empty, rejects credential files), links the Bug to `<JIRA-KEY>`, uploads all media evidence to the **Jira `Bug` ticket's Attachments** (`POST /rest/api/3/issue/{bugKey}/attachments`), **and when `qa_test_backend == "qase"`, also syncs those media attachments to Qase** (`POST /v1/attachment/{code}` -> Qase Test Run Result & Qase Defect `POST /v1/defect/{code}`, deduplicating cached hashes). It then traces `tc_id -> ac_id -> TASK-###` to assign the `Bug` directly to the owning Developer, transitions the Story back to `In Progress`, and notifies that developer with `@mention` in Traditional Chinese so `$team-dev` (`implement` mode) can fix it.
+     `create-bug` validates attachment safety (`<= 32 MiB`, non-empty, rejects credential files), links the Bug to `<JIRA-KEY>`, uploads all media evidence to the **Jira `Bug` ticket's Attachments** (`POST /rest/api/3/issue/{bugKey}/attachments`), **and when `qa_test_backend == "qase"`, also syncs those media attachments to Qase** (`POST /v1/attachment/{code}` -> Qase Test Run Result & Qase Defect `POST /v1/defect/{code}`, deduplicating cached hashes). It then traces `tc_id -> ac_id -> TASK-###` to assign the `Bug` directly to the owning Developer, transitions the Story back to `In Progress`, and notifies that developer with `@mention` in Traditional Chinese so `$team-dev` (`implement` mode) can fix it. Enforce the same SoD handoff rule (`qa -> developer`): if `same_person: false` (`cross_person_clean_stop: true`), report the filed Bug and handoff target (`to_person` / `target_jira_status`) and perform **Clean Stop** without prompting `/team-dev`; if `same_person: true`, ask one short question whether to proceed to `$team-dev` and **STOP**.
    - **If All Tests Pass (`qa_status: "passed"` and 0 open Bugs):**
-     `record-qa --mode verify` automatically records the verification results (creating a Qase Test Run, submitting bulk results, completing the Run, and resolving any standalone-bug Qase Defect when `qa_test_backend == "qase"`, or posting the full AC/TC table when `qa_test_backend == "jira-comment"`) and executes a role-aware handoff to `release_manager` (`Ready for Release` + `@mention` if a different person; auto-consolidated if `same_person: true`, where AI can proactively auto-chain into `$team-release`).
+     `record-qa --mode verify` automatically records the verification results (creating a Qase Test Run, submitting bulk results, completing the Run, and resolving any standalone-bug Qase Defect when `qa_test_backend == "qase"`, or posting the full AC/TC table when `qa_test_backend == "jira-comment"`) and executes a role-aware handoff to `release_manager` (`can_auto_chain_next_station: false`, `requires_user_confirmation_for_next_station: true`):
+     - **Different person (`qa` != `release_manager`, `same_person: false`, `cross_person_clean_stop: true`, `next_station_prompt_allowed: false`):** Transitions to `Ready for Release` + `@mention`s `release_manager`. Enforce **Clean Stop** — report the QA pass summary and handoff target (`to_person` / `target_jira_status`) and **strictly forbid** prompting or suggesting `/team-release` or `close-story`.
+     - **Same person (`qa` == `release_manager`, `same_person: true`, `next_station_prompt_allowed: true`):** Only suppresses self-`@mention` noise (`handoff_mode: "auto-consolidated"`). Report the QA verification result concisely, ask **one short question** whether the user wants to proceed to `$team-release`, then **STOP** and wait for explicit user authorization (NEVER auto-chain into `$team-release` or `close-story`).
    - **Note on Standalone Production Bugs (`issue_kind == "standalone_bug"`):** If `verify` fails (`--result TC-001=fail:...`) on a standalone Bug `<BUG-KEY>`, `record-qa --mode verify` automatically uploads any `--tc-attach` failure media directly onto `<BUG-KEY>`, reopens `TASK-001`, and hands `<BUG-KEY>` back to `developer` (`In Progress`) **without** needing a separate nested `create-bug` call!
 
 ## Mode 3: `report` — Exploratory Story Defects & Standalone Production Bugs
@@ -141,7 +149,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
   --actual "<Actual observed behavior>" \
   [--attach "<path/to/screenshot.png>"]
 ```
-- Automatically appends `TC-EXP-001` (`TC-EXP-002`, ...) with `result: "fail"` (syncing the new case to the Story's Qase Suite if `qa_test_backend == "qase"`), creates the linked Jira `Bug` + Qase Defect + media attachments, and hands `<STORY-KEY>` back to `developer`. `<STORY-KEY>` cannot close until both the Bug is fixed and `TC-EXP-001` passes in `verify`!
+- Automatically appends `TC-EXP-001` (`TC-EXP-002`, ...) with `result: "fail"` (syncing the new case to the Story's Qase Suite if `qa_test_backend == "qase"`), creates the linked Jira `Bug` + Qase Defect + media attachments, and hands `<STORY-KEY>` back to `developer` (enforcing **Clean Stop** without prompting `/team-dev` when `same_person: false`, or asking one short question and stopping when `same_person: true`). `<STORY-KEY>` cannot close until both the Bug is fixed and `TC-EXP-001` passes in `verify`!
 
 ### Path B: Standalone Production / User-Reported Bug (No Parent Story)
 When a user, CS, or ops inspection reports a production bug outside any active Story, file a **new** standalone Jira `Bug` (or `--adopt` an **existing** Jira `Bug` ticket such as `AP-88` while keeping its original reporter description 100% intact):
@@ -165,12 +173,15 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
   --key "<EXISTING-BUG-KEY>" \
   [--attach "<path/to/extra-evidence.png>"]
 ```
-- Initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`), **skips `team-spec` and creates zero redundant Jira `Sub-task`s**, assigns `<BUG-KEY>` to `developer` (`In Progress`), and flows cleanly through **`team-dev (implement)` $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` $\rightarrow$ `team-release` (`close-story`)**!
+- Initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`), **skips `team-spec` and creates zero redundant Jira `Sub-task`s**, assigns `<BUG-KEY>` to `developer` (`In Progress`), and flows cleanly through **`team-dev (implement)` $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` $\rightarrow$ `team-release` (`close-story`)** (enforcing **Clean Stop** without prompting `/team-dev` when `same_person: false`, or asking one short question and stopping when `same_person: true`)!
 
 ## Red Flags — STOP
 
+- Running `record-qa` when `qa_identity_guardrail.identity_mismatch` is `true` without warning the user and receiving explicit confirmation first.
 - Running `record-qa` when `requires_qa_backend_choice` is `true` without asking the user to choose `jira-comment` vs `qase` first.
 - Writing `QASE_API_TOKEN` or `JIRA_API_TOKEN` into Git-tracked `.ai-workflow/team-config.json` (tokens belong exclusively in gitignored `.ai-workflow/credentials.json`).
-- Marking a test `pass` without an actual test run report or explicit human QA result.
+- Marking a test `pass` (or running `--all-pass`) without actual test execution evidence or explicit human QA confirmation.
+- Autonomously invoking `record-qa` or `close-story` immediately after fixing a user-reported bug/tweak (`Stop & Yield on Fix` violation), or auto-chaining into `$team-release` without explicit user authorization.
+- Prompting `/team-release` or `/team-dev` when `same_person == false` (`cross_person_clean_stop: true`).
 - Asking the human one message per test case just to choose `automated` vs. `manual`.
 - Recommending `team-release` while any `TC-*` is `fail`, `blocked`, `not-executed`, or while any `Bug` is `open`.

@@ -15,6 +15,7 @@ Read `references/common-workflow-governance.md` and `references/release-method.m
 
 - **No Per-Feature Process Markdown Files in Git:** Never create `docs/release/` files. Per-Story release records belong in the Jira `User Story`.
 - **HTML-Only Living Manual Layout:** Product/API manuals live exclusively under `docs/manuals/<manual-name>/<manual-name>.html` (with portable relative `./screenshots/` and `./diagrams/` inside that same `<manual-name>/` folder). Do not emit `.md`, `.pdf`, or `.docx` manual files unless the user explicitly asks, and never perform unsolicited Git branch/tag/push operations.
+- **Explicit Human Authorization Gate for `close-story`:** Never invoke `jira_sync.py close-story` without explicit user authorization to release/close the Story in the conversation. `same_person: true` from Station 3b NEVER authorizes auto-chaining into `team-release` or closing a Story, and fixing a user-reported bug/tweak must always stop and yield for user verification first.
 - **Strict Gate Enforcement:** Never close a Story or delete `.ai-workflow/active/<JIRA-KEY>.json` if any Sub-task is incomplete, Code Review or QA is unapproved/failed, open Bugs remain, or the candidate commit drifted after Review/QA.
 - **No Unsolicited Production Deployment:** Closing the Jira Story and recording the release summary does not execute external production deployment scripts unless the user explicitly requests deployment.
 
@@ -46,7 +47,7 @@ Evaluate the Story's user-facing impact (`change_surface`, `acceptance_criteria`
 - **Candidate Commit Anchor Preservation:** Keep `<candidate-commit-sha>` (`story.candidate_commit`) as the `--commit` anchor passed to `close-story` so Gate 3 (`reviewed_commit`) and Gate 4 (`tested_commit`) remain aligned even when `docs/manuals/<manual-name>/` is updated during Station 4. Record the manual action (`created` / `updated` / `skipped` + path) and diagram decision (`created` / `updated` / `unchanged`) in `--notes`.
 
 ### 3. Run `close-story` to finalize Jira & clean up active state
-Execute `jira_sync.py close-story` from the repository root (prefer `.ai-workflow/bin/jira_sync.py` or fall back to `<skill-dir>/scripts/jira_sync.py`; pass `--commit "<candidate-commit-sha>"` explicitly if a docs commit changed `HEAD` after QA, and `--version` defaults to `v1.0.0` when omitted):
+**Authorization Check:** Confirm the user has explicitly authorized closing/releasing `<JIRA-KEY>` (never run `close-story` silently or via auto-chaining from an earlier station). Then execute `jira_sync.py close-story` from the repository root (prefer `.ai-workflow/bin/jira_sync.py` or fall back to `<skill-dir>/scripts/jira_sync.py`; pass `--commit "<candidate-commit-sha>"` explicitly if a docs commit changed `HEAD` after QA, and `--version` defaults to `v1.0.0` when omitted):
 
 ```bash
 python3 .ai-workflow/bin/jira_sync.py --repo-root . close-story \
@@ -72,6 +73,7 @@ Summarize the completed release in Traditional Chinese (繁體中文):
 
 ## Red Flags — STOP
 
+- Invoking `jira_sync.py close-story` without explicit user authorization (e.g., auto-closing right after QA or after fixing a bug without the user explicitly requesting release/closure).
 - Manually deleting `.ai-workflow/active/<JIRA-KEY>.json` when `jira_sync.py close-story` reports `blocked: true`.
 - Releasing a feature code commit SHA that differs from `review.reviewed_commit` or `qa.tested_commit`.
 - Inventing a new manual folder name under `docs/manuals/` without asking the user for `<manual-name>`.

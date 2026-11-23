@@ -90,6 +90,7 @@ After the Sprint membership is decided:
 - Once its spec is approved, route to `team-dev` in `plan` mode.
 - Continue through `team-review`, `team-qa`, and `team-release` using the existing gates.
 - A Story may be specified before Sprint membership is committed when the Sprint is still being shaped; missing Sprint membership alone does not block Story work unless the project has explicitly adopted a sprint-required policy.
+- **No Unconfirmed Auto-Chaining:** Stop after presenting the preview or reporting the applied Sprint membership. Never auto-chain into `team-spec`, `team-dev`, or any mutating delivery station command without explicit user authorization (even when `pm` and `developer` are the same person).
 
 ## Output contract
 

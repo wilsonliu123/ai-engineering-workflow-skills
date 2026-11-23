@@ -15,8 +15,10 @@ Tests:
 """
 
 import hashlib
+import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -3393,6 +3395,477 @@ class WorkflowTestSuite(unittest.TestCase):
             jira_srv.server_close()
             qase_srv.shutdown()
             qase_srv.server_close()
+
+    def _load_jira_sync_module(self):
+        spec = importlib.util.spec_from_file_location("jira_sync_mod", str(JIRA_SYNC))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _assert_valid_adf_invariants(self, node, path="root"):
+        """Recursively verify Atlassian Document Format structural invariants:
+        - No empty text nodes (Jira rejects {"type": "text", "text": ""})
+        - `code` mark is NEVER combined with any other mark (e.g., `strong`)
+        - Block nodes with `content` never have an empty content list
+        """
+        if isinstance(node, list):
+            for idx, item in enumerate(node):
+                self._assert_valid_adf_invariants(item, f"{path}[{idx}]")
+            return
+        if not isinstance(node, dict):
+            return
+        ntype = node.get("type")
+        if ntype == "text":
+            txt = node.get("text")
+            self.assertIsInstance(txt, str, f"Non-string text at {path}")
+            self.assertGreater(len(txt), 0, f"Empty text node at {path}: {node}")
+            marks = node.get("marks") or []
+            mark_types = [m.get("type") for m in marks if isinstance(m, dict)]
+            if "code" in mark_types:
+                self.assertEqual(
+                    mark_types,
+                    ["code"],
+                    f"Illegal mark combination with `code` at {path}: {node}",
+                )
+        if "content" in node:
+            self.assertIsInstance(node["content"], list, f"Non-list content at {path}")
+            self.assertGreater(len(node["content"]), 0, f"Empty content list at {path}: {node}")
+            self._assert_valid_adf_invariants(node["content"], f"{path}.{ntype}")
+
+    def test_19_text_to_adf_inline_markdown_and_edge_cases(self):
+        mod = self._load_jira_sync_module()
+        JiraClient = mod.JiraClient
+
+        # 1. Basic bold & inline code in paragraph
+        adf_basic = JiraClient.text_to_adf("Hello **world** and `code`!")
+        self._assert_valid_adf_invariants(adf_basic)
+        self.assertEqual(
+            adf_basic["content"][0]["content"],
+            [
+                {"type": "text", "text": "Hello "},
+                {"type": "text", "text": "world", "marks": [{"type": "strong"}]},
+                {"type": "text", "text": " and "},
+                {"type": "text", "text": "code", "marks": [{"type": "code"}]},
+                {"type": "text", "text": "!"},
+            ],
+        )
+
+        # 2. Inline code precedence over bold: asterisks inside backticks stay literal inside `code`
+        adf_prec = JiraClient.text_to_adf("Check `a**b**c` and `x**y` plus `z**w` and **real bold**")
+        self._assert_valid_adf_invariants(adf_prec)
+        self.assertEqual(
+            adf_prec["content"][0]["content"],
+            [
+                {"type": "text", "text": "Check "},
+                {"type": "text", "text": "a**b**c", "marks": [{"type": "code"}]},
+                {"type": "text", "text": " and "},
+                {"type": "text", "text": "x**y", "marks": [{"type": "code"}]},
+                {"type": "text", "text": " plus "},
+                {"type": "text", "text": "z**w", "marks": [{"type": "code"}]},
+                {"type": "text", "text": " and "},
+                {"type": "text", "text": "real bold", "marks": [{"type": "strong"}]},
+            ],
+        )
+
+        # 3. Bold wrapping inline code MUST NEVER illegally combine `strong` + `code` marks
+        adf_nested = JiraClient.text_to_adf("**prefix `inner` suffix** and **`only_code`**")
+        self._assert_valid_adf_invariants(adf_nested)
+        self.assertEqual(
+            adf_nested["content"][0]["content"],
+            [
+                {"type": "text", "text": "prefix ", "marks": [{"type": "strong"}]},
+                {"type": "text", "text": "inner", "marks": [{"type": "code"}]},
+                {"type": "text", "text": " suffix", "marks": [{"type": "strong"}]},
+                {"type": "text", "text": " and "},
+                {"type": "text", "text": "only_code", "marks": [{"type": "code"}]},
+            ],
+        )
+
+        # 4. Unclosed delimiters and degenerate empty markers fall back safely to literal text
+        for raw, expected_nodes in [
+            ("**abc", [{"type": "text", "text": "**abc"}]),
+            ("`abc", [{"type": "text", "text": "`abc"}]),
+            ("****", [{"type": "text", "text": "****"}]),
+            ("``", [{"type": "text", "text": "``"}]),
+            ("a **** b `` c", [{"type": "text", "text": "a **** b `` c"}]),
+            (
+                "**unclosed `code**` tail",
+                [
+                    {"type": "text", "text": "**unclosed "},
+                    {"type": "text", "text": "code**", "marks": [{"type": "code"}]},
+                    {"type": "text", "text": " tail"},
+                ],
+            ),
+        ]:
+            adf_edge = JiraClient.text_to_adf(raw)
+            self._assert_valid_adf_invariants(adf_edge)
+            self.assertEqual(adf_edge["content"][0]["content"], expected_nodes, f"Failed for input: {raw!r}")
+
+        # 5. Headings, bulletList items, and tableHeader / tableCell (including empty cell)
+        md_doc = "\n".join([
+            "## 1. **範圍**與 `jira_sync.py`",
+            "- **納入範圍 (In-Scope)：** 支援 `medium` 風險等級",
+            "- **站點角色與負責人**：`reviewer` — **Alice** (alice@team.io)",
+            "",
+            "| **TC ID** | `AC` | Result | Empty |",
+            "|---|---|---|---|",
+            "| `TC-001` | AC-001 | **pass** | |",
+        ])
+        adf_doc = JiraClient.text_to_adf(md_doc)
+        self._assert_valid_adf_invariants(adf_doc)
+
+        # Heading
+        h_node = adf_doc["content"][0]
+        self.assertEqual(h_node["type"], "heading")
+        self.assertEqual(
+            h_node["content"],
+            [
+                {"type": "text", "text": "1. "},
+                {"type": "text", "text": "範圍", "marks": [{"type": "strong"}]},
+                {"type": "text", "text": "與 "},
+                {"type": "text", "text": "jira_sync.py", "marks": [{"type": "code"}]},
+            ],
+        )
+
+        # Bullet list
+        bl_node = adf_doc["content"][1]
+        self.assertEqual(bl_node["type"], "bulletList")
+        item0_content = bl_node["content"][0]["content"][0]["content"]
+        self.assertEqual(
+            item0_content,
+            [
+                {"type": "text", "text": "納入範圍 (In-Scope)：", "marks": [{"type": "strong"}]},
+                {"type": "text", "text": " 支援 "},
+                {"type": "text", "text": "medium", "marks": [{"type": "code"}]},
+                {"type": "text", "text": " 風險等級"},
+            ],
+        )
+
+        # Table header and cells
+        tbl_node = adf_doc["content"][2]
+        self.assertEqual(tbl_node["type"], "table")
+        hdr_cells = tbl_node["content"][0]["content"]
+        self.assertEqual(hdr_cells[0]["content"][0]["content"], [{"type": "text", "text": "TC ID", "marks": [{"type": "strong"}]}])
+        self.assertEqual(hdr_cells[1]["content"][0]["content"], [{"type": "text", "text": "AC", "marks": [{"type": "code"}]}])
+        body_cells = tbl_node["content"][1]["content"]
+        self.assertEqual(body_cells[0]["content"][0]["content"], [{"type": "text", "text": "TC-001", "marks": [{"type": "code"}]}])
+        self.assertEqual(body_cells[2]["content"][0]["content"], [{"type": "text", "text": "pass", "marks": [{"type": "strong"}]}])
+        self.assertEqual(body_cells[3]["content"][0]["content"], [{"type": "text", "text": " "}])
+
+        # 6. _adf_to_plain_text and last_synced_description_hash stability
+        sample_story = {
+            "jira_key": "PROJ-6",
+            "title": "Inline Markdown Test",
+            "scope_in": "Parse **bold** and `code`",
+            "scope_out": "N/A",
+            "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+            "risk_level": "medium",
+            "acceptance_criteria": [{"id": "AC-001", "description": "渲染 `code` 與 **粗體**"}],
+            "design": {"summary": "Use `_parse_inline_markdown` in `text_to_adf`."},
+        }
+        desc_md = mod.format_story_description(sample_story, {"language": "zh-TW"})
+        desc_adf = JiraClient.text_to_adf(desc_md)
+        self._assert_valid_adf_invariants(desc_adf)
+        plain = mod._adf_to_plain_text(desc_adf).strip()
+        self.assertIn("AC-001: 渲染 code 與 粗體", plain)
+        self.assertEqual(
+            mod._compute_description_hash(plain),
+            mod._compute_description_hash(mod._adf_to_plain_text(JiraClient.text_to_adf(desc_md)).strip()),
+        )
+
+    def test_20_sod_handoff_governance_fields_and_qa_identity_guardrail(self):
+        # Part A: Cross-person handoff (reviewer != qa)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            roles_cross = {
+                "pm": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "tech_lead": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "developer": {"name": "Bob", "email": "bob@team.io", "jira_account_id": "acc-bob"},
+                "reviewer": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "qa": {"name": "Carol", "email": "carol@team.io", "jira_account_id": "acc-carol"},
+                "release_manager": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+            }
+            self.assertEqual(
+                run_cli(root, "init", "--project-key", "SOD", "--roles-json", json.dumps(roles_cross)).returncode,
+                0,
+            )
+            s_out = json.loads(
+                run_cli(
+                    root, "sync-story", "--key", "SOD-1", "--title", "SoD Test",
+                    "--ac", "AC-001:Verify SoD Clean Stop", "--status", "approved",
+                ).stdout
+            )
+            # sync-story handoff (pm=Alice -> developer=Bob, cross-person)
+            self.assertFalse(s_out["handoff"]["same_person"])
+            self.assertFalse(s_out["handoff"]["can_auto_chain_next_station"])
+            self.assertTrue(s_out["handoff"]["requires_user_confirmation_for_next_station"])
+            self.assertTrue(s_out["handoff"]["cross_person_clean_stop"])
+            self.assertFalse(s_out["handoff"]["next_station_prompt_allowed"])
+            self.assertFalse(s_out["can_auto_chain_next_station"])
+            self.assertTrue(s_out["cross_person_clean_stop"])
+            self.assertFalse(s_out["next_station_prompt_allowed"])
+
+            ct_out = json.loads(
+                run_cli(
+                    root, "complete-task", "--key", "SOD-1", "--task-id", "TASK-001",
+                    "--commit", "aaa1111", "--files", "a.py", "--test-result", "ok",
+                ).stdout
+            )
+            self.assertTrue(ct_out["ready_for_review"])
+            self.assertFalse(ct_out["can_auto_chain_next_station"])
+            self.assertTrue(ct_out["requires_user_confirmation_for_next_station"])
+            self.assertTrue(ct_out["cross_person_clean_stop"])
+            self.assertFalse(ct_out["next_station_prompt_allowed"])
+
+            # handoff (reviewer=Alice -> qa=Carol, cross-person -> Clean Stop!)
+            h_res = run_cli(root, "handoff", "--key", "SOD-1", "--review-status", "approved", "--commit", "aaa1111")
+            self.assertEqual(h_res.returncode, 0, h_res.stderr)
+            h_out = json.loads(h_res.stdout)
+            for container in (h_out, h_out["handoff"]):
+                self.assertFalse(container["same_person"])
+                self.assertFalse(container["can_auto_chain_next_station"])
+                self.assertTrue(container["requires_user_confirmation_for_next_station"])
+                self.assertTrue(container["cross_person_clean_stop"])
+                self.assertFalse(container["next_station_prompt_allowed"])
+                self.assertEqual(container["next_station_owner"], "Carol")
+
+            # Identity guardrail: Bob (developer) runs record-qa --inspect & status -> mismatch warning!
+            bob_env = {"JIRA_EMAIL": "bob@team.io"}
+            insp_bob = json.loads(run_cli(root, "record-qa", "--inspect", "--key", "SOD-1", env_override=bob_env).stdout)
+            guard_bob = insp_bob["qa_identity_guardrail"]
+            self.assertTrue(guard_bob["qa_role_claimed"])
+            self.assertFalse(guard_bob["actor_matches_qa"])
+            self.assertTrue(guard_bob["identity_mismatch"])
+            self.assertTrue(guard_bob["requires_explicit_confirmation"])
+            self.assertTrue(guard_bob["actor_is_story_developer"])
+            self.assertIn("Carol", guard_bob["warning"])
+
+            st_bob = json.loads(run_cli(root, "status", "--key", "SOD-1", env_override=bob_env).stdout)
+            self.assertEqual(st_bob["recommended_skill"], "team-qa")
+            self.assertTrue(st_bob["qa_identity_guardrail"]["identity_mismatch"])
+
+            # Identity guardrail: Carol (configured QA) runs record-qa --inspect -> NO mismatch!
+            carol_env = {"JIRA_EMAIL": "carol@team.io"}
+            insp_carol = json.loads(run_cli(root, "record-qa", "--inspect", "--key", "SOD-1", env_override=carol_env).stdout)
+            guard_carol = insp_carol["qa_identity_guardrail"]
+            self.assertTrue(guard_carol["qa_role_claimed"])
+            self.assertTrue(guard_carol["actor_matches_qa"])
+            self.assertFalse(guard_carol["identity_mismatch"])
+            self.assertFalse(guard_carol["requires_explicit_confirmation"])
+            self.assertEqual(guard_carol["warning"], "")
+
+            # record-qa verify (qa=Carol -> release_manager=Alice, cross-person)
+            qa_out = json.loads(
+                run_cli(
+                    root, "record-qa", "--key", "SOD-1", "--mode", "verify",
+                    "--qa-backend", "jira-comment", "--commit", "aaa1111", "--all-pass",
+                    env_override=carol_env,
+                ).stdout
+            )
+            self.assertFalse(qa_out["handoff"]["same_person"])
+            self.assertFalse(qa_out["handoff"]["can_auto_chain_next_station"])
+            self.assertTrue(qa_out["handoff"]["requires_user_confirmation_for_next_station"])
+            self.assertTrue(qa_out["handoff"]["cross_person_clean_stop"])
+            self.assertFalse(qa_out["handoff"]["next_station_prompt_allowed"])
+            self.assertFalse(qa_out["qa_identity_guardrail"]["identity_mismatch"])
+
+            # P1-1 regression: when qa_test_backend is already remembered AND identity_mismatch is True,
+            # agent_instruction must NOT say "Proceed using" and MUST instruct STOP.
+            insp_bob_after_backend = json.loads(
+                run_cli(root, "record-qa", "--inspect", "--key", "SOD-1", env_override=bob_env).stdout
+            )
+            self.assertTrue(insp_bob_after_backend["qa_backend_configured"])
+            self.assertTrue(insp_bob_after_backend["qa_identity_guardrail"]["identity_mismatch"])
+            self.assertNotIn("Proceed using", insp_bob_after_backend["agent_instruction"])
+            self.assertIn("STOP", insp_bob_after_backend["agent_instruction"])
+
+            # P1-2 regression: stale story.role_owners.qa (Bob) must NOT widen authoritative team-config roles.qa (Carol)
+            sod1_path = root / ".ai-workflow" / "active" / "SOD-1.json"
+            sod1_data = json.loads(sod1_path.read_text(encoding="utf-8"))
+            sod1_data.setdefault("role_owners", {})["qa"] = {
+                "name": "Bob",
+                "email": "bob@team.io",
+                "jira_account_id": "acc-bob",
+            }
+            sod1_path.write_text(json.dumps(sod1_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            insp_bob_stale_ro = json.loads(
+                run_cli(root, "record-qa", "--inspect", "--key", "SOD-1", env_override=bob_env).stdout
+            )
+            self.assertTrue(insp_bob_stale_ro["qa_identity_guardrail"]["identity_mismatch"])
+            self.assertFalse(insp_bob_stale_ro["qa_identity_guardrail"]["actor_matches_qa"])
+
+            # P1-4 regression: completing REV-001 while REV-002 (major, open) remains must report ready_for_review=False
+            # without prematurely emitting next-station governance flags; completing REV-002 sets ready_for_review=True.
+            findings_two = [
+                {"id": "REV-001", "severity": "major", "axis": "code", "location": "a.py", "observation": "Fix 1", "status": "open"},
+                {"id": "REV-002", "severity": "major", "axis": "security", "location": "a.py", "observation": "Fix 2", "status": "open"},
+            ]
+            ho_chg = run_cli(
+                root, "handoff", "--key", "SOD-1",
+                "--review-status", "changes-requested", "--commit", "aaa1111",
+                "--summary", "Two major issues",
+                "--findings-json", json.dumps(findings_two),
+            )
+            self.assertEqual(ho_chg.returncode, 0, ho_chg.stderr)
+
+            ct_rev1 = json.loads(
+                run_cli(
+                    root, "complete-task", "--key", "SOD-1", "--task-id", "REV-001",
+                    "--commit", "aaa2222", "--files", "a.py", "--test-result", "ok",
+                ).stdout
+            )
+            self.assertFalse(ct_rev1["ready_for_review"])
+            self.assertEqual(ct_rev1["remaining_review_findings"], ["REV-002"])
+            self.assertNotIn("same_person", ct_rev1)
+            self.assertNotIn("cross_person_clean_stop", ct_rev1)
+            self.assertNotIn("next_station_prompt_allowed", ct_rev1)
+
+            ct_rev2 = json.loads(
+                run_cli(
+                    root, "complete-task", "--key", "SOD-1", "--task-id", "REV-002",
+                    "--commit", "aaa3333", "--files", "a.py", "--test-result", "ok",
+                ).stdout
+            )
+            self.assertTrue(ct_rev2["ready_for_review"])
+            self.assertEqual(ct_rev2["remaining_review_findings"], [])
+            self.assertFalse(ct_rev2["same_person"])
+            self.assertFalse(ct_rev2["can_auto_chain_next_station"])
+            self.assertTrue(ct_rev2["requires_user_confirmation_for_next_station"])
+            self.assertTrue(ct_rev2["cross_person_clean_stop"])
+            self.assertFalse(ct_rev2["next_station_prompt_allowed"])
+            self.assertEqual(ct_rev2["next_station_owner"], "Alice")
+
+        # Part B: Same-person / Solo team (reviewer == qa == developer == Alice)
+        with tempfile.TemporaryDirectory() as tmp2:
+            root2 = Path(tmp2)
+            roles_solo = {
+                r: {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"}
+                for r in ("pm", "tech_lead", "developer", "reviewer", "qa", "release_manager")
+            }
+            self.assertEqual(
+                run_cli(root2, "init", "--project-key", "SOLO", "--roles-json", json.dumps(roles_solo)).returncode,
+                0,
+            )
+            run_cli(
+                root2, "sync-story", "--key", "SOLO-1", "--title", "Solo Story",
+                "--ac", "AC-001:Solo flow", "--status", "approved",
+            )
+            run_cli(
+                root2, "complete-task", "--key", "SOLO-1", "--task-id", "TASK-001",
+                "--commit", "bbb2222", "--files", "b.py", "--test-result", "ok",
+            )
+            h_solo = json.loads(
+                run_cli(root2, "handoff", "--key", "SOLO-1", "--review-status", "approved", "--commit", "bbb2222").stdout
+            )
+            for container in (h_solo, h_solo["handoff"]):
+                self.assertTrue(container["same_person"])
+                self.assertFalse(container["can_auto_chain_next_station"])
+                self.assertTrue(container["requires_user_confirmation_for_next_station"])
+                self.assertFalse(container["cross_person_clean_stop"])
+                self.assertTrue(container["next_station_prompt_allowed"])
+                self.assertEqual(container["next_station_owner"], "Alice")
+
+            # Solo QA identity guardrail must NOT disrupt Alice!
+            alice_env = {"JIRA_EMAIL": "alice@team.io"}
+            insp_alice = json.loads(run_cli(root2, "record-qa", "--inspect", "--key", "SOLO-1", env_override=alice_env).stdout)
+            guard_alice = insp_alice["qa_identity_guardrail"]
+            self.assertTrue(guard_alice["qa_role_claimed"])
+            self.assertTrue(guard_alice["actor_matches_qa"])
+            self.assertFalse(guard_alice["identity_mismatch"])
+            self.assertFalse(guard_alice["requires_explicit_confirmation"])
+
+        # Part C: Unclaimed QA role -> no false identity mismatch
+        with tempfile.TemporaryDirectory() as tmp3:
+            root3 = Path(tmp3)
+            self.assertEqual(
+                run_cli(
+                    root3, "init", "--project-key", "PART",
+                    "--role", "pm,developer", "--name", "Alice", "--jira-email", "alice@team.io",
+                ).returncode,
+                0,
+            )
+            insp_unclaimed = json.loads(
+                run_cli(root3, "record-qa", "--inspect", env_override={"JIRA_EMAIL": "alice@team.io"}).stdout
+            )
+            guard_u = insp_unclaimed["qa_identity_guardrail"]
+            self.assertFalse(guard_u["qa_role_claimed"])
+            self.assertFalse(guard_u["identity_mismatch"])
+
+        # Part D (P1-3 regression): accountId-only roles.qa without email
+        with tempfile.TemporaryDirectory() as tmp4:
+            root4 = Path(tmp4)
+            roles_acct_only_qa = {
+                "pm": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "tech_lead": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "developer": {"name": "Bob", "email": "bob@team.io", "jira_account_id": "acc-bob"},
+                "reviewer": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "qa": {"name": "Carol", "email": "", "jira_account_id": "acc-carol"},
+                "release_manager": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+            }
+            self.assertEqual(
+                run_cli(root4, "init", "--project-key", "ACCT", "--roles-json", json.dumps(roles_acct_only_qa)).returncode,
+                0,
+            )
+            # Carol has email-only local credentials and holds no other configured role -> uncomparable offline
+            insp_carol_uncomp = json.loads(
+                run_cli(root4, "record-qa", "--inspect", env_override={"JIRA_EMAIL": "carol@team.io"}).stdout
+            )
+            guard_c_uncomp = insp_carol_uncomp["qa_identity_guardrail"]
+            self.assertTrue(guard_c_uncomp["qa_role_claimed"])
+            self.assertIsNone(guard_c_uncomp["actor_matches_qa"])
+            self.assertFalse(guard_c_uncomp["identity_mismatch"])
+            self.assertFalse(guard_c_uncomp["requires_explicit_confirmation"])
+            self.assertIsNone(guard_c_uncomp["warning"])
+
+            # Bob matches roles.developer with acc-bob -> comparable via accountId -> confirmed mismatch!
+            insp_bob_comp = json.loads(
+                run_cli(root4, "record-qa", "--inspect", env_override={"JIRA_EMAIL": "bob@team.io"}).stdout
+            )
+            guard_b_comp = insp_bob_comp["qa_identity_guardrail"]
+            self.assertTrue(guard_b_comp["qa_role_claimed"])
+            self.assertFalse(guard_b_comp["actor_matches_qa"])
+            self.assertTrue(guard_b_comp["identity_mismatch"])
+            self.assertTrue(guard_b_comp["requires_explicit_confirmation"])
+
+    def test_21_governance_docs_no_auto_chain_and_sod_boundaries(self):
+        forbidden_re = re.compile(
+            r"proactively\s+(?:auto-?)?chain|auto-chaining\s+is\s+authorized|same-person\s+chaining|自動連貫推進|自動銜接|主動銜接",
+            re.IGNORECASE,
+        )
+        files_to_scan = [REPO_ROOT / "README.md"]
+        for s in EXPECTED_SKILLS:
+            files_to_scan.append(SKILLS_DIR / s / "SKILL.md")
+            files_to_scan.extend((SKILLS_DIR / s / "references").glob("*.md"))
+            openai_yaml = SKILLS_DIR / s / "agents" / "openai.yaml"
+            if openai_yaml.exists():
+                files_to_scan.append(openai_yaml)
+
+        for path in files_to_scan:
+            text = path.read_text(encoding="utf-8")
+            m = forbidden_re.search(text)
+            self.assertIsNone(m, f"Forbidden auto-chaining wording found in {path}: {m.group(0) if m else ''}")
+
+        gov_text = (SKILLS_DIR / "team-init" / "references" / "common-workflow-governance.md").read_text(encoding="utf-8")
+        self.assertIn("Stop & Yield on Fix", gov_text)
+        self.assertIn("Clean Stop", gov_text)
+        self.assertIn("can_auto_chain_next_station", gov_text)
+
+        review_md = (SKILLS_DIR / "team-review" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Clean Stop", review_md)
+        self.assertIn("Stop & Yield on Fix", review_md)
+        self.assertIn("cross_person_clean_stop", review_md)
+
+        dev_md = (SKILLS_DIR / "team-dev" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Stop & Yield on Fix", dev_md)
+
+        qa_md = (SKILLS_DIR / "team-qa" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Entry Identity Guardrail", qa_md)
+        self.assertIn("qa_identity_guardrail", qa_md)
+        self.assertIn("Stop & Yield on Fix", qa_md)
+        self.assertIn("close-story", qa_md)
+
+        release_md = (SKILLS_DIR / "team-release" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("explicit user authorization", release_md.lower())
 
 
 if __name__ == "__main__":
