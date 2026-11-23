@@ -135,7 +135,7 @@ What `jira_sync.py init` enforces automatically:
 1. Verify that `docs/shared/engineering-standards.md` reflects the repository's actual stack, test commands, and security boundaries. Refine the extracted markdown if needed.
 2. Present a concise initialization summary in Traditional Chinese (繁體中文):
    - **專案連線與憑證狀態**：確認 `project_key`、`jira_base_url`、`jira_mode`（`live` 或 `offline`）、連線驗證結果（`jira_verification`）以及憑證已受 `.gitignore` 保護（`.ai-workflow/credentials.json`）。
-   - **角色定義與交接整併表 (`role_consolidation`)**：列出各角色負責人、帳號與哪些相鄰站點為同一人自動整併（`auto-consolidated`）、哪些跨人交接會觸發 Jira `@mention` + 指派 + 狀態流轉。
+   - **角色定義與交接整併表 (`role_consolidation`)**：列出各角色負責人、帳號與哪些相鄰站點為同一人（`auto-consolidated` 僅抑制重複 `@mention` 通知，跨站推進仍需使用者明確授權）、哪些跨人交接會觸發 Jira `@mention` + 指派 + 狀態流轉並執行 Clean Stop。
    - **工程規範收斂結果**：`docs/shared/engineering-standards.md` 與 `AGENTS.md` 去重狀態。
    - **下一步指引**：提示使用者後續只需輸入 `$team-next-step`（或 `$team-spec`）即可啟動第一個 Jira Story。
 
