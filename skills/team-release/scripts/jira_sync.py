@@ -510,50 +510,57 @@ def _parse_strict_bool(val, default: bool = False) -> bool:
     return default
 
 
+_GIT_REF_ALLOWLIST_RE = re.compile(r"^[A-Za-z0-9._/+@-]+$")
+
+
 def _sanitize_git_ref(val) -> str:
-    """Sanitize a git branch/ref name; reject non-string or unsafe/whitespace-containing refs to ''."""
+    """Sanitize a git branch/ref name with strict allowlist and git-check-ref-format rules; reject unsafe refs to ''."""
     if not isinstance(val, str):
         return ""
     s = val.strip()
-    if not s:
+    if not s or s == "@":
         return ""
-    if any(ord(c) < 0x20 or ord(c) == 0x7F or c.isspace() for c in s):
+    if not _GIT_REF_ALLOWLIST_RE.match(s):
         return ""
     if (
         s.startswith("-")
         or s.startswith("/")
         or s.endswith("/")
-        or s.startswith(".")
         or s.endswith(".")
         or ".." in s
         or "//" in s
         or "@{" in s
-        or s.endswith(".lock")
-        or any(ch in s for ch in ("~", "^", ":", "?", "*", "[", "\\"))
     ):
         return ""
+    for seg in s.split("/"):
+        if not seg or seg.startswith(".") or seg.endswith(".lock"):
+            return ""
     return s
 
 
 def _sanitize_tag_prefix(val) -> str:
-    """Sanitize a git tag prefix (e.g. 'qa-', 'uat-', 'v'); reject non-string or unsafe refs to ''."""
+    """Sanitize a git tag prefix (e.g. 'qa-', 'qa/', 'qa_', 'v'); reject unsafe chars/segments to ''."""
     if not isinstance(val, str):
         return ""
     s = val.strip()
-    if not s:
+    if not s or s == "@":
         return ""
-    if any(ord(c) < 0x20 or ord(c) == 0x7F or c.isspace() for c in s):
+    if not _GIT_REF_ALLOWLIST_RE.match(s):
         return ""
     if (
         s.startswith("-")
         or s.startswith("/")
-        or s.startswith(".")
         or ".." in s
         or "//" in s
         or "@{" in s
-        or any(ch in s for ch in ("~", "^", ":", "?", "*", "[", "\\"))
     ):
         return ""
+    check_body = s[:-1] if s.endswith("/") else s
+    if not check_body:
+        return ""
+    for seg in check_body.split("/"):
+        if not seg or seg.startswith(".") or seg.endswith(".lock"):
+            return ""
     return s
 
 
@@ -668,29 +675,70 @@ def _extract_ci_check_command(raw_line: str) -> str:
     return ""
 
 
+def _strip_yaml_comment(line: str) -> str:
+    """Strip full-line or trailing YAML '#' comments outside single/double quotes."""
+    if not isinstance(line, str) or "#" not in line:
+        return line if isinstance(line, str) else ""
+    in_single = False
+    in_double = False
+    n = len(line)
+    i = 0
+    while i < n:
+        ch = line[i]
+        if in_single:
+            if ch == "'":
+                if i + 1 < n and line[i + 1] == "'":
+                    i += 2
+                    continue
+                in_single = False
+        elif in_double:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                in_double = False
+        else:
+            if ch == "'":
+                in_single = True
+            elif ch == '"':
+                in_double = True
+            elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+                return line[:i].rstrip()
+        i += 1
+    return line
+
+
+def _has_env_token(text: str, *tokens: str) -> bool:
+    """Match environment/deploy tokens strictly on identifier boundaries (no substring false positives)."""
+    if not text or not tokens:
+        return False
+    pat = r"(?:^|[-_.:/\s])(?:" + "|".join(re.escape(t) for t in tokens) + r")(?:$|[-_.:/\s])"
+    return bool(re.search(pat, text.lower()))
+
+
 def _extract_yaml_environment_names(lines: list) -> list:
     """Indentation-aware extraction of YAML `environment:` values (inline or nested `name:`)."""
     found = []
     n = len(lines)
     i = 0
     while i < n:
-        ln = lines[i]
+        ln = _strip_yaml_comment(lines[i])
         stripped = ln.strip()
-        if not stripped or stripped.startswith("#"):
+        if not stripped:
             i += 1
             continue
         m_env = re.match(r"^environment\s*:\s*(.*)$", stripped)
         if m_env:
             env_indent = len(ln) - len(ln.lstrip(" "))
-            rest = re.sub(r"\s+#.*$", "", m_env.group(1)).strip().strip("'").strip('"')
+            rest = m_env.group(1).strip().strip("'").strip('"')
             if rest and not rest.startswith("{"):
                 found.append(rest.lower())
             else:
                 j = i + 1
                 while j < n:
-                    sub = lines[j]
+                    sub = _strip_yaml_comment(lines[j])
                     sub_s = sub.strip()
-                    if not sub_s or sub_s.startswith("#"):
+                    if not sub_s:
                         j += 1
                         continue
                     sub_indent = len(sub) - len(sub.lstrip(" "))
@@ -759,10 +807,11 @@ def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
     if gitlab_text is not None:
         detected_sources.append(".gitlab-ci.yml")
         lines = gitlab_text.splitlines()
-        if re.search(r"(?m)^\s*deployment_tier\s*:", gitlab_text):
+        clean_gitlab_lines = [_strip_yaml_comment(ln) for ln in lines]
+        if re.search(r"(?m)^\s*deployment_tier\s*:", "\n".join(clean_gitlab_lines)):
             jira_deployment_sync = True
 
-        # Split into top-level blocks
+        # Split into top-level blocks (supports colon-separated and quoted job names like 'testflight:qa:', '"deploy qa":')
         non_job_keys = {
             "stages", "variables", "default", "workflow", "include",
             "cache", "services", "image", "before_script", "after_script",
@@ -770,17 +819,21 @@ def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
         blocks = []
         cur_name = None
         cur_lines = []
-        for ln in lines:
-            if not ln.strip() or ln.lstrip().startswith("#"):
+        for ln in clean_gitlab_lines:
+            if not ln.strip():
                 if cur_name is not None:
-                    cur_lines.append(ln)
+                    cur_lines.append("")
                 continue
             if not ln[0].isspace():
-                m_top = re.match(r"^([A-Za-z0-9_.-]+)\s*:", ln)
+                m_top = (
+                    re.match(r'^"([^"]+)"\s*:(?:\s|$)', ln)
+                    or re.match(r"^'([^']+)'\s*:(?:\s|$)", ln)
+                    or re.match(r"^([A-Za-z0-9_./:-]+)\s*:(?:\s|$)", ln)
+                )
                 if cur_name is not None:
                     blocks.append((cur_name, cur_lines))
                 if m_top:
-                    cur_name = m_top.group(1)
+                    cur_name = m_top.group(1).strip()
                     cur_lines = [ln]
                 else:
                     cur_name = None
@@ -800,7 +853,7 @@ def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
             script_indent = 0
             for ln in j_lines[1:]:
                 stripped = ln.strip()
-                if not stripped or stripped.startswith("#"):
+                if not stripped:
                     continue
                 indent = len(ln) - len(ln.lstrip(" "))
                 if re.match(r"^(?:script|before_script)\s*:", stripped):
@@ -830,7 +883,7 @@ def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
             job_env_names = _extract_yaml_environment_names(j_lines[1:])
             env_name = job_env_names[0] if job_env_names else ""
 
-            # Extract branch / tag rules
+            # Extract branch / tag rules (comments already stripped line-by-line)
             branch_ref = ""
             tag_prefix = ""
             m_br = re.search(
@@ -858,24 +911,34 @@ def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
                             if not branch_ref:
                                 branch_ref = _sanitize_git_ref(item_val)
 
-            # Determine environment key
+            # Require explicit deployment signal + token-boundary matching (prevents false positives on evaluate_model/noqa_check)
             jl = job_name.lower()
+            m_stage = re.search(r"(?mi)^\s*stage\s*:\s*['\"]?([A-Za-z0-9._/-]+)['\"]?", j_text)
+            stage_val = m_stage.group(1).lower() if m_stage else ""
+            has_deploy_signal = bool(
+                tier
+                or env_name
+                or tag_prefix
+                or _has_env_token(jl, "deploy", "deployment", "release", "testflight", "publish", "promote", "ship", "distribute")
+                or _has_env_token(stage_val, "deploy", "deployment", "release", "publish", "distribute")
+            )
             env_key = ""
-            if tier == "testing" or env_name in ("qa", "testing") or "qa" in jl or tag_prefix.lower().startswith("qa"):
-                env_key = "qa"
-                tier = tier or "testing"
-            elif env_name == "uat" or "uat" in jl or tag_prefix.lower().startswith("uat"):
-                env_key = "uat"
-                tier = tier or "staging"
-            elif tier == "staging" or env_name == "staging":
-                env_key = "uat" if ("uat" in jl or "uat" in env_name) else "staging"
-                tier = tier or "staging"
-            elif tier == "development" or env_name in ("dev", "development"):
-                env_key = "dev"
-                tier = tier or "development"
-            elif tier == "production" or env_name in ("prod", "production"):
-                env_key = "prod"
-                tier = tier or "production"
+            if has_deploy_signal:
+                if tier == "testing" or _has_env_token(env_name, "qa", "testing") or _has_env_token(jl, "qa") or tag_prefix.lower().startswith("qa"):
+                    env_key = "qa"
+                    tier = tier or "testing"
+                elif _has_env_token(env_name, "uat") or _has_env_token(jl, "uat") or tag_prefix.lower().startswith("uat"):
+                    env_key = "uat"
+                    tier = tier or "staging"
+                elif tier == "staging" or _has_env_token(env_name, "staging") or _has_env_token(jl, "staging"):
+                    env_key = "staging"
+                    tier = tier or "staging"
+                elif tier == "development" or _has_env_token(env_name, "dev", "development") or _has_env_token(jl, "dev", "development"):
+                    env_key = "dev"
+                    tier = tier or "development"
+                elif tier == "production" or _has_env_token(env_name, "prod", "production") or _has_env_token(jl, "prod", "production"):
+                    env_key = "prod"
+                    tier = tier or "production"
 
             if env_key:
                 if tag_prefix:
@@ -905,11 +968,12 @@ def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
             if wf_text is None:
                 continue
             detected_sources.append(f".github/workflows/{wf_path.name}")
-            if re.search(r"(?m)^\s*deployment_tier\s*:", wf_text):
+            wf_lines = wf_text.splitlines()
+            clean_wf_lines = [_strip_yaml_comment(ln) for ln in wf_lines]
+            if re.search(r"(?m)^\s*deployment_tier\s*:", "\n".join(clean_wf_lines)):
                 jira_deployment_sync = True
 
             # Extract run: commands for lint/test checks
-            wf_lines = wf_text.splitlines()
             idx_l = 0
             while idx_l < len(wf_lines):
                 ln = wf_lines[idx_l]
@@ -935,16 +999,16 @@ def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
                         _add_check(rest)
                 idx_l += 1
 
-            # Extract push branches and tags from workflow header
+            # Extract push branches and tags from workflow header (comment-stripped)
             push_branches = []
             push_tags = []
             in_push = False
             push_indent = -1
             in_list_kind = ""  # 'branches' or 'tags'
             list_indent = -1
-            for ln in wf_lines:
+            for ln in clean_wf_lines:
                 stripped = ln.strip()
-                if not stripped or stripped.startswith("#"):
+                if not stripped:
                     continue
                 indent = len(ln) - len(ln.lstrip(" "))
                 if indent == 0 and re.match(r"^jobs\s*:", stripped):
@@ -996,7 +1060,7 @@ def _detect_ci_delivery_pipeline(repo_root: Path) -> dict:
                                 push_tags.append(val)
 
             # Extract job environment names (indentation-aware)
-            wf_envs = _extract_yaml_environment_names(wf_lines)
+            wf_envs = _extract_yaml_environment_names(clean_wf_lines)
 
             # Map tags to qa/uat environments
             for t_pat in push_tags:
@@ -1117,11 +1181,18 @@ def _build_qa_deploy_hint(config: dict, jira_key: str) -> str:
     """Build natural-language QA deploy guidance when delivery_pipeline configures a QA environment (never auto-tags)."""
     dp = _sanitize_delivery_pipeline((config or {}).get("delivery_pipeline"))
     envs = dp.get("environments") or {}
-    qa_env = envs.get("qa")
-    if not isinstance(qa_env, dict) or not qa_env.get("trigger"):
-        qa_env = None
+
+    def _has_valid_target(ev) -> bool:
+        if not isinstance(ev, dict):
+            return False
+        return (ev.get("trigger") == "tag" and bool(ev.get("prefix"))) or (
+            ev.get("trigger") == "branch" and bool(ev.get("ref"))
+        )
+
+    qa_env = envs.get("qa") if _has_valid_target(envs.get("qa")) else None
+    if not qa_env:
         for ev in envs.values():
-            if isinstance(ev, dict) and ev.get("deployment_tier") == "testing" and ev.get("trigger"):
+            if isinstance(ev, dict) and ev.get("deployment_tier") == "testing" and _has_valid_target(ev):
                 qa_env = ev
                 break
     if not qa_env:
@@ -1132,7 +1203,9 @@ def _build_qa_deploy_hint(config: dict, jira_key: str) -> str:
     trig = qa_env.get("trigger")
 
     if trig == "tag":
-        prefix = qa_env.get("prefix") or "qa-"
+        prefix = qa_env.get("prefix") or ""
+        if not prefix:
+            return ""
         merge_clause = f"merge into `{int_branch}` and " if int_branch else ""
         sync_clause = (
             "wait for Jira `deployment_tier: testing` auto-reconciliation (`status`/`pull`) or "
@@ -1145,7 +1218,9 @@ def _build_qa_deploy_hint(config: dict, jira_key: str) -> str:
             f"run `jira_sync.py promote-qa --key {jira_key} --deploy-ref \"<{prefix}...>\"`."
         )
     if trig == "branch":
-        ref = qa_env.get("ref") or "qa"
+        ref = qa_env.get("ref") or ""
+        if not ref:
+            return ""
         return (
             f"After human confirmation, promote/merge into the `{ref}` branch to trigger QA deployment "
             f"(AI will never auto-merge), then sync Jira `in_qa` or run "
@@ -1189,13 +1264,14 @@ def _build_release_checklist_reminders(config: dict) -> list:
                 "Reminder (non-blocking): Confirm UAT / staging verification has human sign-off before closing the Story."
             )
 
-    if prod_branch and prod_branch != int_branch:
+    if prod_branch:
         if int_branch:
-            reminders.append(
-                f"Reminder (non-blocking): Confirm `{int_branch}` has been merged into production branch "
-                f"`{prod_branch}` with human approval before/alongside closing the Story (AI will not auto-merge)."
-            )
-        else:
+            if prod_branch != int_branch:
+                reminders.append(
+                    f"Reminder (non-blocking): Confirm `{int_branch}` has been merged into production branch "
+                    f"`{prod_branch}` with human approval before/alongside closing the Story (AI will not auto-merge)."
+                )
+        elif prod_branch not in ("main", "master"):
             reminders.append(
                 f"Reminder (non-blocking): Confirm changes are merged into production branch `{prod_branch}` "
                 f"with human approval before/alongside closing the Story (AI will not auto-merge)."
@@ -6141,7 +6217,7 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
         qa_deploy_hint = _build_qa_deploy_hint(config, jira_key)
         base_done_when = (
             f"Deploy to QA environment so CI/CD transitions Jira to '{in_qa_status_name}' (sync via `jira_sync.py status`/`pull`), "
-            f"or run `jira_sync.py promote-qa --key {jira_key} [--tag <QA-TAG>]` to notify QA and unblock `team-qa (verify)`."
+            f"or run `jira_sync.py promote-qa --key {jira_key} [--deploy-ref <QA-TAG-OR-BUILD>]` to notify QA and unblock `team-qa (verify)`."
         )
         awaiting_rec = {
             "jira_key": jira_key,
@@ -8636,11 +8712,16 @@ def cmd_promote_qa(args) -> int:
         updated_gate = dict(existing_gate)
         if "deploy_ref" not in updated_gate:
             updated_gate["deploy_ref"] = _clean_single_line_text(updated_gate.get("tag"))
+        if "tag" not in updated_gate:
+            updated_gate["tag"] = ""
         if "environment" not in updated_gate:
             updated_gate["environment"] = ""
         metadata_updated = False
-        if raw_deploy_ref and raw_deploy_ref != updated_gate.get("deploy_ref", ""):
-            updated_gate["deploy_ref"] = raw_deploy_ref
+        if deploy_ref and deploy_ref != updated_gate.get("deploy_ref", ""):
+            updated_gate["deploy_ref"] = deploy_ref
+            metadata_updated = True
+        if tag and tag != updated_gate.get("tag", ""):
+            updated_gate["tag"] = tag
             metadata_updated = True
         if environment and environment != updated_gate.get("environment", ""):
             updated_gate["environment"] = environment
@@ -9270,10 +9351,13 @@ def cmd_record_qa(args) -> int:
 
     explicit_deploy_ref = _clean_single_line_text(getattr(args, "deploy_ref", None))
     gate_obj = story.get("qa_deploy_gate") if isinstance(story.get("qa_deploy_gate"), dict) else {}
-    gate_matches_commit = (
-        not gate_obj.get("commit")
-        or not tested_commit
-        or gate_obj.get("commit") == tested_commit
+    gate_commit = _clean_single_line_text(gate_obj.get("commit"))
+    gate_matches_commit = bool(
+        gate_commit
+        and gate_commit != "unknown"
+        and tested_commit
+        and tested_commit != "unknown"
+        and gate_commit == tested_commit
     )
     gate_deploy_ref = (
         _clean_single_line_text(gate_obj.get("deploy_ref") or gate_obj.get("tag"))

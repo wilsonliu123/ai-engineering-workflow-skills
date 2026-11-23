@@ -14,7 +14,7 @@
   - Added `qa_deploy_hint` in `evaluate_story_next_step` when `awaiting_qa_deploy` with configured `delivery_pipeline.environments.qa` (tag or branch trigger), strictly upholding `can_auto_chain_next_station: false`, `requires_user_confirmation_for_next_station: true`, and zero AI auto-tagging/auto-merging.
 - **Lightweight Non-Blocking Multi-Stage Release Reminders (`team-release`, `close-story`, `status`):**
   - Emitted strictly non-blocking `release_checklist_reminders` in `evaluate_story_next_step` (Station 4) and `close-story` whenever `delivery_pipeline` configures a `uat`/`staging` environment or a `production_branch` distinct from `integration_branch` (`[]` when unconfigured; never blocks `close-story` and introduces no UAT state machine).
-- **Verification & Backward Compatibility:** 100% backward compatible for projects without `delivery_pipeline`; expanded `tools/test_workflow.py` to 37 tests across 8 byte-identical skill bundles (`./tools/check_shared.sh` 8/8 OK).
+- **Verification & Backward Compatibility:** 100% backward compatible for projects without `delivery_pipeline`; expanded `tools/test_workflow.py` to 38 tests across 8 byte-identical skill bundles (`./tools/check_shared.sh` 8/8 OK).
 
 ## v1.5.0 — 2026-11-23 — Existing-Story Spec Backfill & Platform-Neutral Epic Decomposition
 

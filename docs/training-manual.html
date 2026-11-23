@@ -275,7 +275,7 @@
 <blockquote><p></p></blockquote>
 <blockquote><p>- <strong>目前版本：</strong> <code class="inline-code">v1.6.0</code></p></blockquote>
 <blockquote><p>- <strong>更新日期：</strong> 2026-11-23</p></blockquote>
-<blockquote><p>- <strong>本次變更：</strong> 新增 <code class="inline-code">v1.6.0</code> Phase A CI/CD 交付流水線對齊——選填 <code class="inline-code">delivery_pipeline</code> 設定與純標準庫 CI 自動偵測（<code class="inline-code">.gitlab-ci.yml</code> / <code class="inline-code">.github/workflows/*.yml</code>、<code class="inline-code">detected_ci_checks</code>、<code class="inline-code">suggested_qa_handoff_mode</code>）、<code class="inline-code">integration_branch</code> 基準分支解析、<code class="inline-code">promote-qa</code> / <code class="inline-code">record-qa --mode verify</code> 的 <code class="inline-code">--deploy-ref</code> 與 <code class="inline-code">--environment</code> 溯源（含新 Commit 舊參照防洩漏與 <code class="inline-code">qa_deploy_hint</code>），以及多環境 <code class="inline-code">team-release</code> 非阻塞式 <code class="inline-code">release_checklist_reminders</code>（嚴守人工確認紅線，不自動打 Tag、不自動合併、不引入 UAT 狀態機），對齊 8 個工作流技能、16 個 CLI 子命令與 37 項驗證測試。</p></blockquote>
+<blockquote><p>- <strong>本次變更：</strong> 新增 <code class="inline-code">v1.6.0</code> Phase A CI/CD 交付流水線對齊——選填 <code class="inline-code">delivery_pipeline</code> 設定與純標準庫 CI 自動偵測（<code class="inline-code">.gitlab-ci.yml</code> / <code class="inline-code">.github/workflows/*.yml</code>、<code class="inline-code">detected_ci_checks</code>、<code class="inline-code">suggested_qa_handoff_mode</code>）、<code class="inline-code">integration_branch</code> 基準分支解析、<code class="inline-code">promote-qa</code> / <code class="inline-code">record-qa --mode verify</code> 的 <code class="inline-code">--deploy-ref</code> 與 <code class="inline-code">--environment</code> 溯源（含新 Commit 舊參照防洩漏與 <code class="inline-code">qa_deploy_hint</code>），以及多環境 <code class="inline-code">team-release</code> 非阻塞式 <code class="inline-code">release_checklist_reminders</code>（嚴守人工確認紅線，不自動打 Tag、不自動合併、不引入 UAT 狀態機），對齊 8 個工作流技能、16 個 CLI 子命令與 38 項驗證測試。</p></blockquote>
 <blockquote><p>- <strong>完整變更：</strong> 請參閱根目錄的 <code class="inline-code">CHANGELOG.md</code>。</p></blockquote>
 <p>本手冊為 <code class="inline-code">ai-engineering-workflow-skills</code>（v1.6 規劃層 + 四站八技能 Jira 核心工程工作流，另附動態多代理系統編排技能 <code class="inline-code">run-workflow</code>）之完整教育訓練教材與實戰操作指南。全書採用<strong>真實使用情境驅動（Scenario-Driven Training）</strong>編排，結合視覺化架構圖、終端機與 Jira 雙視窗實況對照圖、CLI 參數規格表與標準操作步驟，協助工程團隊從零完成專案導入、協作者認領、Epic 拆解與 Sprint 規劃、規格定義與回補、任務拆解、AI 編碼與提交門禁、同儕審查、多環境部署交接、三層混合測試、缺陷分診／報修閉環與正式發佈結案。</p>
 <hr>
@@ -655,8 +655,8 @@
 </tr>
 <tr>
 <td><strong>L3</strong> <code class="inline-code">scripts/jira_sync.py</code> + <code class="inline-code">system/run-workflow</code> + <code class="inline-code">tools/*</code></td>
-<td>同步引擎、多代理編排與 37 項測試套件</td>
-<td>Jira REST API v3（含行內 Markdown ADF 與 <code class="inline-code">ai_workflow_state</code>）、Qase API v1、純標準庫 CI 偵測、<code class="inline-code">run-workflow</code>、<code class="inline-code">check_shared.sh</code>（8 份一致）、<code class="inline-code">test_workflow.py</code>（37 項測試）</td>
+<td>同步引擎、多代理編排與 38 項測試套件</td>
+<td>Jira REST API v3（含行內 Markdown ADF 與 <code class="inline-code">ai_workflow_state</code>）、Qase API v1、純標準庫 CI 偵測、<code class="inline-code">run-workflow</code>、<code class="inline-code">check_shared.sh</code>（8 份一致）、<code class="inline-code">test_workflow.py</code>（38 項測試）</td>
 <td>維運 / 全體角色</td>
 <td>第 11 - 13 章 情境 8（圖 10-1）</td>
 </tr>
@@ -2326,7 +2326,7 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><strong>測試套件</strong></td>
 <td><code class="inline-code">tools/test_workflow.py</code></td>
 <td><code class="inline-code">python3 tools/test_workflow.py</code></td>
-<td>執行 <strong>37 項</strong>端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試</td>
+<td>執行 <strong>38 項</strong>端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試</td>
 <td>涵蓋初始化、CI 流水線偵測與 <code class="inline-code">delivery_pipeline</code>、漸進認領、多人角色池、行內 ADF、HITL/SoD、<code class="inline-code">commit_policy</code>、雙向對帳、<code class="inline-code">gated_by_deploy</code>/<code class="inline-code">promote-qa --deploy-ref</code>、Bug Triage、<code class="inline-code">--root-cause</code>/<code class="inline-code">--solution</code>、Spec Backfill、Epic 拆解與進度彙總全流程</td>
 </tr>
 </tbody>

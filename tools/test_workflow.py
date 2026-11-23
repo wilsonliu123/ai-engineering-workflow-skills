@@ -7242,6 +7242,243 @@ class WorkflowTestSuite(unittest.TestCase):
         self.assertIn("release_checklist_reminders", (SKILLS_DIR / "team-release" / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("delivery_pipeline", (SKILLS_DIR / "team-init" / "references" / "common-workflow-governance.md").read_text(encoding="utf-8"))
 
+    def test_38_v160_round1_review_regressions(self):
+        """
+        Round 1 adversarial review regressions (5 P1 + 4 P2):
+        - P1-1: YAML comment stripping in GitLab CI & GitHub Actions auto-detector.
+        - P1-2: Token-boundary & explicit deploy-signal guard (evaluate_model / noqa_check must not false-positive).
+        - P1-3: Strict allowlist & git-check-ref-format hardening on _sanitize_git_ref / _sanitize_tag_prefix.
+        - P1-4: _build_release_checklist_reminders skips default main/master when integration_branch is empty.
+        - P1-5: Idempotent promote-qa --tag <NEW_TAG> updates both tag and deploy_ref without Jira comment/transition.
+        - P2-1: _build_qa_deploy_hint returns '' when QA prefix/ref is empty (no fabricated 'qa-*'/'qa').
+        - P2-2: evaluate_story_next_step base_done_when references --deploy-ref (not legacy --tag).
+        - P2-3: GitLab colon-separated & quoted top-level job names (testflight:qa:, testflight:uat:, testflight:production:, "deploy qa":).
+        - P2-4: Strict non-empty commit match for qa_deploy_gate deploy_ref inheritance in record-qa --mode verify.
+        """
+        mod = self._load_jira_sync_module()
+
+        # P1-3: Hardened _sanitize_git_ref and _sanitize_tag_prefix
+        for bad_ref in (
+            "", " ", None, 123, "@", "-lead", "/lead", "trail/", "trail.",
+            "a..b", "a//b", "a@{0}", "a/.b", ".hidden", "a.lock/b", "foo.lock",
+            "main;rm", "main$(id)", "main`id`", "main|cat", "main&bg",
+            "main(1)", "main<in", "main>out", "main'q", 'main"q', "a b", "a\nb",
+        ):
+            self.assertEqual(mod._sanitize_git_ref(bad_ref), "", f"Expected _sanitize_git_ref({bad_ref!r}) == ''")
+        for good_ref in ("main", "release", "feat/v1.6.0", "release-2026_11", "v1+build"):
+            self.assertEqual(mod._sanitize_git_ref(good_ref), good_ref)
+
+        for bad_pfx in (
+            "", " ", None, "@", "-qa", "/qa-", "a..b", "a//b", "a@{0}",
+            "a/.b", "qa/.", ".hidden-", "a.lock/b", "a.lock/", "foo.lock",
+            "qa-;rm", "qa-$(id)", "qa-`id`", "qa-|cat", "qa-&bg",
+            "qa-(1)", "qa-<x", "qa->x", "qa-'q", 'qa-"q', "qa -",
+        ):
+            self.assertEqual(mod._sanitize_tag_prefix(bad_pfx), "", f"Expected _sanitize_tag_prefix({bad_pfx!r}) == ''")
+        for good_pfx in ("qa-", "qa/", "qa_", "uat-", "release/qa-", "v1."):
+            self.assertEqual(mod._sanitize_tag_prefix(good_pfx), good_pfx)
+
+        # P1-1 & P1-2: Commented GitLab rules + evaluate_model/noqa_check non-deploy jobs -> zero false positives
+        with tempfile.TemporaryDirectory() as tmp_gl_fp:
+            gl_fp = Path(tmp_gl_fp)
+            (gl_fp / ".gitlab-ci.yml").write_text(
+                "\n".join([
+                    "stages: [lint, test]",
+                    "evaluate_model:",
+                    "  stage: test",
+                    "  # environment:",
+                    "  #   name: uat",
+                    "  #   deployment_tier: staging",
+                    "  rules:",
+                    "    # - if: '$CI_COMMIT_TAG =~ /^qa-/'",
+                    "    - if: '$CI_COMMIT_BRANCH == \"main\"' # run on main",
+                    "  script:",
+                    "    - pytest # unit tests",
+                    "noqa_check:",
+                    "  stage: lint",
+                    "  rules:",
+                    "    - if: '$CI_COMMIT_BRANCH == \"release\"'",
+                    "  script:",
+                    "    - ruff check .",
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            det_fp = mod._detect_ci_delivery_pipeline(gl_fp)
+            self.assertEqual(det_fp["delivery_pipeline"]["environments"], {})
+            self.assertEqual(det_fp["delivery_pipeline"]["integration_branch"], "")
+            self.assertEqual(det_fp["delivery_pipeline"]["production_branch"], "")
+            self.assertIs(det_fp["delivery_pipeline"]["jira_deployment_sync"], False)
+            self.assertEqual(det_fp["suggested_qa_handoff_mode"], "immediate")
+            self.assertEqual(det_fp["detected_ci_checks"], ["pytest", "ruff check ."])
+
+        # P2-3: GitLab colon-separated & quoted top-level job names (testflight:qa:, testflight:uat:, testflight:production:, "deploy dev":)
+        with tempfile.TemporaryDirectory() as tmp_gl_col:
+            gl_col = Path(tmp_gl_col)
+            (gl_col / ".gitlab-ci.yml").write_text(
+                "\n".join([
+                    '"deploy dev": # dev integration deploy',
+                    "  rules:",
+                    "    - if: '$CI_COMMIT_BRANCH == \"release\"' # integration branch",
+                    "  script:",
+                    "    - swiftlint",
+                    "testflight:qa:",
+                    "  rules:",
+                    "    - if: '$CI_COMMIT_TAG =~ /^qa-/' # QA tag",
+                    "  script:",
+                    "    - fastlane test",
+                    "testflight:uat:",
+                    "  rules:",
+                    "    - if: '$CI_COMMIT_TAG =~ /^uat-/'",
+                    "  script:",
+                    "    - echo uat",
+                    "testflight:production:",
+                    "  rules:",
+                    "    - if: '$CI_COMMIT_BRANCH == \"main\"'",
+                    "  script:",
+                    "    - echo prod",
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            det_col = mod._detect_ci_delivery_pipeline(gl_col)
+            dp_col = det_col["delivery_pipeline"]
+            self.assertEqual(det_col["suggested_qa_handoff_mode"], "gated_by_deploy")
+            self.assertEqual(dp_col["integration_branch"], "release")
+            self.assertEqual(dp_col["production_branch"], "main")
+            self.assertEqual(dp_col["environments"]["qa"]["trigger"], "tag")
+            self.assertEqual(dp_col["environments"]["qa"]["prefix"], "qa-")
+            self.assertEqual(dp_col["environments"]["uat"]["trigger"], "tag")
+            self.assertEqual(dp_col["environments"]["uat"]["prefix"], "uat-")
+            self.assertEqual(dp_col["environments"]["prod"]["ref"], "main")
+            self.assertEqual(det_col["detected_ci_checks"], ["swiftlint", "fastlane test"])
+
+        # P1-1: GitHub Actions trailing comments on branches:/tags: headers & list items
+        with tempfile.TemporaryDirectory() as tmp_gh_cmt:
+            gh_cmt = Path(tmp_gh_cmt)
+            wf_dir = gh_cmt / ".github" / "workflows"
+            wf_dir.mkdir(parents=True)
+            (wf_dir / "deploy.yml").write_text(
+                "\n".join([
+                    "name: Deploy with Comments",
+                    "on:",
+                    "  push: # push trigger",
+                    "    branches: # integration branch list",
+                    "      - release # dev integration",
+                    "    tags: # deploy tag list",
+                    '      - "qa-*" # QA deploy trigger',
+                    "      - 'uat-*' # UAT deploy trigger",
+                    "jobs:",
+                    "  deploy:",
+                    "    environment: development # env comment",
+                    "    steps:",
+                    "      - run: npm test # run tests",
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            det_gh_cmt = mod._detect_ci_delivery_pipeline(gh_cmt)
+            self.assertEqual(det_gh_cmt["suggested_qa_handoff_mode"], "gated_by_deploy")
+            self.assertEqual(det_gh_cmt["delivery_pipeline"]["integration_branch"], "release")
+            self.assertEqual(det_gh_cmt["delivery_pipeline"]["environments"]["qa"]["prefix"], "qa-")
+            self.assertEqual(det_gh_cmt["delivery_pipeline"]["environments"]["uat"]["prefix"], "uat-")
+            self.assertEqual(det_gh_cmt["detected_ci_checks"], ["npm test"])
+
+        # P1-4: _build_release_checklist_reminders skips default main/master when integration_branch is empty
+        self.assertEqual(
+            mod._build_release_checklist_reminders({"delivery_pipeline": {"integration_branch": "", "production_branch": "main", "environments": {}}}),
+            [],
+        )
+        self.assertEqual(
+            mod._build_release_checklist_reminders({"delivery_pipeline": {"integration_branch": "", "production_branch": "master", "environments": {}}}),
+            [],
+        )
+        rem_custom_prod = mod._build_release_checklist_reminders(
+            {"delivery_pipeline": {"integration_branch": "", "production_branch": "production", "environments": {}}}
+        )
+        self.assertEqual(len(rem_custom_prod), 1)
+        self.assertIn("production", rem_custom_prod[0])
+        rem_distinct = mod._build_release_checklist_reminders(
+            {"delivery_pipeline": {"integration_branch": "release", "production_branch": "main", "environments": {}}}
+        )
+        self.assertEqual(len(rem_distinct), 1)
+        self.assertIn("release", rem_distinct[0])
+        self.assertIn("main", rem_distinct[0])
+
+        # P2-1: _build_qa_deploy_hint returns '' when sanitized prefix/ref is empty (no fabricated 'qa-*' or 'qa')
+        self.assertEqual(
+            mod._build_qa_deploy_hint(
+                {"delivery_pipeline": {"environments": {"qa": {"trigger": "tag", "prefix": "", "ref": "", "deployment_tier": "testing"}}}},
+                "PROJ-1",
+            ),
+            "",
+        )
+        self.assertEqual(
+            mod._build_qa_deploy_hint(
+                {"delivery_pipeline": {"environments": {"qa": {"trigger": "tag", "prefix": "bad;prefix", "ref": "", "deployment_tier": "testing"}}}},
+                "PROJ-1",
+            ),
+            "",
+        )
+        self.assertEqual(
+            mod._build_qa_deploy_hint(
+                {"delivery_pipeline": {"environments": {"qa": {"trigger": "branch", "prefix": "", "ref": "", "deployment_tier": "testing"}}}},
+                "PROJ-1",
+            ),
+            "",
+        )
+        self.assertEqual(
+            mod._build_qa_deploy_hint(
+                {"delivery_pipeline": {"environments": {"qa": {"trigger": "branch", "prefix": "", "ref": "a/.b", "deployment_tier": "testing"}}}},
+                "PROJ-1",
+            ),
+            "",
+        )
+
+        # P2-2, P1-5, P2-4: End-to-end offline workflow checks
+        with tempfile.TemporaryDirectory() as tmp_e2e:
+            e2e_root = Path(tmp_e2e)
+            self.assertEqual(
+                run_cli(
+                    e2e_root, "init",
+                    "--project-key", "R16",
+                    "--qa-handoff-mode", "gated_by_deploy",
+                    "--status-dev-done", "Dev Completed",
+                ).returncode,
+                0,
+            )
+            self.assertEqual(run_cli(e2e_root, "sync-story", "--key", "R16-1", "--title", "R16", "--ac", "AC-001:Ok", "--status", "approved").returncode, 0)
+            self.assertEqual(run_cli(e2e_root, "complete-task", "--key", "R16-1", "--task-id", "TASK-001", "--commit", "c1", "--files", "a.py", "--test-result", "ok").returncode, 0)
+            self.assertEqual(run_cli(e2e_root, "handoff", "--key", "R16-1", "--review-status", "approved", "--commit", "c1").returncode, 0)
+            self.assertEqual(run_cli(e2e_root, "record-qa", "--key", "R16-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Ok").returncode, 0)
+
+            # P2-2: base_done_when uses --deploy-ref (not legacy --tag)
+            st_r16 = json.loads(run_cli(e2e_root, "status", "--key", "R16-1").stdout)
+            self.assertIn("--deploy-ref", st_r16["done_when"])
+            self.assertNotIn("--tag <QA-TAG>", st_r16["done_when"])
+
+            # P1-5: Idempotent promote-qa --tag <NEW_TAG> updates both tag and deploy_ref; re-run without flags preserves both
+            p1 = json.loads(run_cli(e2e_root, "promote-qa", "--key", "R16-1", "--tag", "qa-1").stdout)
+            self.assertEqual(p1["deploy_ref"], "qa-1")
+            self.assertEqual(p1["qa_deploy_gate"]["tag"], "qa-1")
+            p2 = json.loads(run_cli(e2e_root, "promote-qa", "--key", "R16-1", "--tag", "qa-2").stdout)
+            self.assertTrue(p2["already_deployed"])
+            self.assertEqual(p2["deploy_ref"], "qa-2")
+            self.assertEqual(p2["qa_deploy_gate"]["tag"], "qa-2")
+            self.assertEqual(p2["qa_deploy_gate"]["deploy_ref"], "qa-2")
+            p3 = json.loads(run_cli(e2e_root, "promote-qa", "--key", "R16-1").stdout)
+            self.assertEqual(p3["deploy_ref"], "qa-2")
+            self.assertEqual(p3["qa_deploy_gate"]["tag"], "qa-2")
+
+            # P2-4: Empty gate commit MUST NOT be inherited by record-qa --mode verify on tested_commit='c1'
+            st_file = e2e_root / ".ai-workflow" / "active" / "R16-1.json"
+            st_data = json.loads(st_file.read_text(encoding="utf-8"))
+            st_data["qa_deploy_gate"]["commit"] = ""
+            st_data["qa_deploy_gate"]["deploy_ref"] = "qa-orphan"
+            st_file.write_text(json.dumps(st_data, indent=2), encoding="utf-8")
+
+            ver_no_inh = json.loads(run_cli(e2e_root, "record-qa", "--key", "R16-1", "--mode", "verify", "--commit", "c1", "--all-pass").stdout)
+            self.assertEqual(ver_no_inh["verified_deploy_ref"], "")
+            st_after = json.loads(st_file.read_text(encoding="utf-8"))
+            self.assertNotIn("verified_deploy_ref", st_after["qa"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

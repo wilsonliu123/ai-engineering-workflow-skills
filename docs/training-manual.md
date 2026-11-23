@@ -4,7 +4,7 @@
 >
 > - **目前版本：** `v1.6.0`
 > - **更新日期：** 2026-11-23
-> - **本次變更：** 新增 `v1.6.0` Phase A CI/CD 交付流水線對齊——選填 `delivery_pipeline` 設定與純標準庫 CI 自動偵測（`.gitlab-ci.yml` / `.github/workflows/*.yml`、`detected_ci_checks`、`suggested_qa_handoff_mode`）、`integration_branch` 基準分支解析、`promote-qa` / `record-qa --mode verify` 的 `--deploy-ref` 與 `--environment` 溯源（含新 Commit 舊參照防洩漏與 `qa_deploy_hint`），以及多環境 `team-release` 非阻塞式 `release_checklist_reminders`（嚴守人工確認紅線，不自動打 Tag、不自動合併、不引入 UAT 狀態機），對齊 8 個工作流技能、16 個 CLI 子命令與 37 項驗證測試。
+> - **本次變更：** 新增 `v1.6.0` Phase A CI/CD 交付流水線對齊——選填 `delivery_pipeline` 設定與純標準庫 CI 自動偵測（`.gitlab-ci.yml` / `.github/workflows/*.yml`、`detected_ci_checks`、`suggested_qa_handoff_mode`）、`integration_branch` 基準分支解析、`promote-qa` / `record-qa --mode verify` 的 `--deploy-ref` 與 `--environment` 溯源（含新 Commit 舊參照防洩漏與 `qa_deploy_hint`），以及多環境 `team-release` 非阻塞式 `release_checklist_reminders`（嚴守人工確認紅線，不自動打 Tag、不自動合併、不引入 UAT 狀態機），對齊 8 個工作流技能、16 個 CLI 子命令與 38 項驗證測試。
 > - **完整變更：** 請參閱根目錄的 `CHANGELOG.md`。
 
 
@@ -125,7 +125,7 @@
 | **L1/L2** `skills/team-qa/SKILL.md` (`report`) + `team-dev` | 探索缺陷、獨立線上 Bug 與修復閉環 | `jira_sync.py create-bug`、探索缺陷 `TC-EXP-###`、獨立報修 `--standalone`/`--adopt`、Jira/Qase 附件、`--root-cause`/`--solution` 與重審重驗 | `qa` / `developer` / `reviewer` | 7.3 情境 4C、第 8 章 情境 5（圖 8-1：`10-scenario5-bug-loop.png`） |
 | **L1/L2** `skills/team-release/SKILL.md` | 發佈閘門對帳、HTML 手冊與清除 (`team-release`) | `jira_sync.py close-story`、五大發佈閘門（含經稽核豁免 TC 與風險揭露）、按規模同步 `docs/manuals/<name>/<name>.html`、同 Epic 下游依賴解除、刪除本地 Active JSON | `release_manager` | 第 9 章 情境 6（圖 9-1：`11-scenario6-team-release.png`） |
 | **L1/L2** `skills/team-next-step/SKILL.md` | 導航員、Epic 進度與雙向對帳 (`team-next-step`) | `jira_sync.py status [--epic]` / `pull`、遠端 JQL 探索、Jira 網頁人工變更雙向對帳、`awaiting_qa_deploy` 與 `triage_closed` 路由、協作者 `auth` 攔截提示 | 全體角色 | 第 10 章 情境 7（圖 10-1：`12-scenario7-and-8-router-and-modes.png`） |
-| **L3** `scripts/jira_sync.py` + `system/run-workflow` + `tools/*` | 同步引擎、多代理編排與 37 項測試套件 | Jira REST API v3（含行內 Markdown ADF 與 `ai_workflow_state`）、Qase API v1、純標準庫 CI 偵測、`run-workflow`、`check_shared.sh`（8 份一致）、`test_workflow.py`（37 項測試） | 維運 / 全體角色 | 第 11 - 13 章 情境 8（圖 10-1） |
+| **L3** `scripts/jira_sync.py` + `system/run-workflow` + `tools/*` | 同步引擎、多代理編排與 38 項測試套件 | Jira REST API v3（含行內 Markdown ADF 與 `ai_workflow_state`）、Qase API v1、純標準庫 CI 偵測、`run-workflow`、`check_shared.sh`（8 份一致）、`test_workflow.py`（38 項測試） | 維運 / 全體角色 | 第 11 - 13 章 情境 8（圖 10-1） |
 
 ---
 
@@ -963,7 +963,7 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 | **Jira API** | `/rest/api/3/issueLink` & `/issue/{key}/attachments` | `POST` | `create-bug` 建立 `Blocks` 關聯，並以 `multipart/form-data`（`X-Atlassian-Token: no-check`）上傳截圖/錄影/日誌附件 | 內建檔案存在、大小與路徑檢查 |
 | **Qase API** | `https://api.qase.io/v1/*` (`suite`, `case`, `run`, `result`, `attachment`, `defect`) | `GET` / `POST` / `PATCH` | 當 `qa_test_backend == "qase"` 時，自動同步測試套件、案例、執行輪次、附件與 Qase Defect（`complete-task` 時自動結案） | `Token` Header 認證（`qase_api_token` 僅存於 `credentials.json`） |
 | **自檢工具** | `tools/check_shared.sh` | `bash tools/check_shared.sh` | 驗證全部 8 個工作流技能目錄下的 `scripts/jira_sync.py` 與 `references/common-workflow-governance.md` 是否 100% SHA256 一致 | 任何一個技能副本發生漂移（Drift）立即回傳 exit code 1 |
-| **測試套件** | `tools/test_workflow.py` | `python3 tools/test_workflow.py` | 執行 **37 項**端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試 | 涵蓋初始化、CI 流水線偵測與 `delivery_pipeline`、漸進認領、多人角色池、行內 ADF、HITL/SoD、`commit_policy`、雙向對帳、`gated_by_deploy`/`promote-qa --deploy-ref`、Bug Triage、`--root-cause`/`--solution`、Spec Backfill、Epic 拆解與進度彙總全流程 |
+| **測試套件** | `tools/test_workflow.py` | `python3 tools/test_workflow.py` | 執行 **38 項**端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試 | 涵蓋初始化、CI 流水線偵測與 `delivery_pipeline`、漸進認領、多人角色池、行內 ADF、HITL/SoD、`commit_policy`、雙向對帳、`gated_by_deploy`/`promote-qa --deploy-ref`、Bug Triage、`--root-cause`/`--solution`、Spec Backfill、Epic 拆解與進度彙總全流程 |
 
 ---
 

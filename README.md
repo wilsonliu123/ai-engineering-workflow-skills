@@ -53,5 +53,5 @@ Eight Jira-centered engineering workflow skills — plus a dynamic multi-agent o
 
 - `scripts/jira_sync.py` (dependency-free Python 3 stdlib CLI with **16 subcommands**: `init`, `auth`, `sprint-plan`, `sprint-status`, `epic-decompose`, `status`, `pull`, `sync-story`, `create-subtasks`, `complete-task`, `handoff`, `promote-qa`, `record-qa`, `create-bug`, `triage-bug`, `close-story` — supporting live Jira REST API v3, Jira Agile Sprint endpoints, Qase TestOps API v1, and offline mode) and `references/common-workflow-governance.md` are intentionally duplicated across all 8 `team-*` skills so each packaged skill `.zip` is self-contained.
 - Run `./tools/check_shared.sh` to verify all 8 copies remain byte-identical.
-- Run `python3 tools/test_workflow.py` to execute the **37-test** end-to-end lifecycle and mock Jira/Qase REST API suite.
+- Run `python3 tools/test_workflow.py` to execute the **38-test** end-to-end lifecycle and mock Jira/Qase REST API suite.
 - Routing and QA evaluation scenarios live in `skills/team-next-step/evals/evals.json`, `skills/team-plan/evals/evals.json`, and `skills/team-qa/evals/evals.json`.
