@@ -37,7 +37,7 @@
   - Enforced mandatory cross-person SoD Clean Stop (`same_person: false`) forbidding prompts for the next role's slash command, emitted explicit governance flags (`can_auto_chain_next_station: false`, `requires_user_confirmation_for_next_station: true`, `cross_person_clean_stop`, `next_station_prompt_allowed`, `next_station_owner`), added `team-qa` entry identity guardrail (`qa_identity_guardrail`), and enforced the `Stop & Yield on Fix` hard boundary across all 8 skills.
   - *(Note: Issue #10 was closed as `wontfix` to uphold the Jira-only First-Principles Asset Boundary.)*
 
-# v1.3.0 — 2026-11-13 — Epic/Sprint Planning Layer
+## v1.3.0 — 2026-11-13 — Epic/Sprint Planning Layer
 
 - Added `team-plan` for Epic context, Future/Active Sprint planning, preview-before-apply membership changes, and read-only Sprint status.
 - Added `sprint-plan` and `sprint-status` to the shared stdlib-only Jira CLI, including board resolution, JQL/explicit issue selection, and 50-issue move batching.

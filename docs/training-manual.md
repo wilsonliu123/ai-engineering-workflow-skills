@@ -149,12 +149,12 @@
 python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-status \
   --board-id "42"
 
-# 2. 預覽既有 Epic 拆解為波次化子 Story（預設 dry_run: true，零寫入）
+# 2. 預覽既有 Epic 拆解為波次子 Story（預設 dry_run，零寫入）
 python3 .ai-workflow/bin/jira_sync.py --repo-root . epic-decompose \
   --epic "PROJ-EPIC-12" \
   --stories-json '@stories.json'
 
-# 確認波次、依賴與重複警示後，才套用建單（自動依波次解析上游 Jira Key）
+# 確認波次、依賴與重複警示後再套用（自動解析上游 Jira Key）
 python3 .ai-workflow/bin/jira_sync.py --repo-root . epic-decompose \
   --epic "PROJ-EPIC-12" \
   --stories-json '@stories.json' \
@@ -338,7 +338,7 @@ python3 skills/team-spec/scripts/jira_sync.py \
    - 若 `pm` 與 `developer` 為同一人（例如 Alice 兼任），系統記錄 `handoff_mode: "auto-consolidated"`、`can_auto_chain_next_station: false` 並抑制自我 `@mention`，接著僅以一句簡短確認詢問是否繼續進入 `$team-dev` 並停下等待授權。
    - 若 `pm`（Alice）與 `developer`（Bob）為不同人，系統自動將 `PROJ-101` 轉為 `In Progress`、指派給 Bob 並發佈 `@Bob` 評論通知，接著強制執行 **Clean Stop**（不建議當前使用者執行屬於其他角色的 `/team-dev` 或 `/team-qa`）。
 
-> **既有 Story 無損規格回補模式（`--backfill` / `--preserve-owner`）**：若要替已存在、進行中或已交付之 Jira Story 補齊規格文件，可使用 `sync-story --key <EXISTING-KEY> --backfill`（隱含 `--preserve-owner`）。此模式**拒絕 `--status approved` 與 `--create`**、不改動 `current_owner_role`／Jira Assignee／Jira 狀態，也不會重置既有的 `tasks`、`review`、`qa`、`bugs`、`qa_deploy_gate` 或 `triage_closed`。僅當傳入 `--risks` 或 `--open-questions-json` 時才會額外渲染 `風險與待確認問題` 區塊（簡單 Story 保持精簡）；同時嚴格遵守五類證據分離（原始需求、程式碼實況、AI 建議、`Q-###` 待確認問題、實測證據）、三態回報（`material_backfilled` / `spec_pending_confirmation` / `approved`），且絕不在 Story 描述加入驗證場景表（歸屬 `team-qa`）或於 Git 建立 `analysis.md`。
+> **既有 Story 無損規格回補模式（`--backfill` / `--preserve-owner`）**：若要替已存在、進行中或已交付之 Jira Story 補齊規格文件，可使用 `sync-story --key <EXISTING-KEY> --backfill`（隱含 `--preserve-owner`）。此模式**拒絕 `--status approved` 與 `--create`**、不改動 `current_owner_role`／Jira Assignee／Jira 狀態，也不會重置既有的 `tasks`、`review`、`qa`、`bugs`、`qa_deploy_gate` 或 `triage_closed`。僅當傳入 `--risks` 或 `--open-questions-json` 時才會額外渲染 **風險與待確認問題** 區塊（簡單 Story 保持精簡）；同時嚴格遵守五類證據分離（原始需求、程式碼實況、AI 建議、`Q-###` 待確認問題、實測證據）、三態回報（`material_backfilled` / `spec_pending_confirmation` / `approved`），且絕不在 Story 描述加入驗證場景表（歸屬 `team-qa`）或於 Git 建立 `analysis.md`。
 
 ### 4.3 `jira_sync.py sync-story` 參數與防呆規格表
 
@@ -356,7 +356,7 @@ python3 skills/team-spec/scripts/jira_sync.py \
 | `--ui-spec` / `--api-spec` | 選填（字串） | 條件式 UI 狀態規格與 API 介面契約 | 僅在對應之 `--has-ui` / `--has-api` 為真時儲存與渲染 |
 | `--auto-decision` | 可重複指定 | 「放小」：AI 依專案慣例自動決定的常規技術或 UX 細節 | 彙整於 Jira 描述第 4 節 **AI 預設細節清單**（跨輪次自動去重累加） |
 | `--material-decision` | 可重複指定 | 「抓大」：經人類確認之關鍵架構或業務決策 | **大小需求雙軌防呆**：全新 Story 單趟直接 `approved` 上限 3 筆；多輪 `draft` 或 Station 2 Spec-Gap 補齊時每輪上限 5 筆且跨輪次自動無損累加 |
-| `--risks` / `--open-questions-json` | 選填（字串 / JSON） | 選填風險與待確認問題陣列（支援 `id`、`question`、`owner`、`proposed_default`、`impacted_acs`、`blocking`；拒絕重複 `Q-###` 與非布林 `blocking`） | 僅非空時以嚴格 ADF 渲染 `風險與待確認問題` 區塊，簡單 Story 自動省略 |
+| `--risks` / `--open-questions-json` | 選填（字串 / JSON） | 選填風險與待確認問題陣列（支援 `id`、`question`、`owner`、`proposed_default`、`impacted_acs`、`blocking`；拒絕重複 `Q-###` 與非布林 `blocking`） | 僅非空時以嚴格 ADF 渲染 **風險與待確認問題** 區塊，簡單 Story 自動省略 |
 | `--backfill` / `--preserve-owner` | 選填（布林旗標） | 既有 Story 規格回補模式與保留原負責人旗標（`--backfill` 自動啟用 `--preserve-owner`） | **保護既有生命週期**：拒絕 `--backfill --status approved`、`--backfill --create` 與 404 自動建單回退；保留 Owner／Assignee／狀態與 `tasks`/`review`/`qa`/`bugs` |
 | `--spec-json` | 選填（JSON 字串或檔案） | 以整包 JSON 載入規格欄位 | 可與個別 CLI 旗標搭配使用（個別旗標優先覆寫） |
 | `--status` / `--to-assignee` | 選填（`draft` / `approved`） | 規格狀態與選用之目標開發負責人信箱/專長 | `draft` 自動指派 `pm`（除非 `--preserve-owner`）；`approved` 禁止無 `AC-*`，核准後自動指派並交接予 `developer` |
@@ -370,7 +370,7 @@ python3 skills/team-spec/scripts/jira_sync.py \
 
 **Station 2（`team-dev`）** 負責將已核准的 Story 規格轉化為高品質程式碼與自動化測試。為了兼顧規劃清晰度與編碼專注度，`team-dev` 分為兩個明確模式：
 - **模式一：`plan`（任務拆解、專長自動指派與 Jira Sub-task 建立）**
-- **模式二：`implement`（極簡上下文編碼、掛載專業領域技能、四項准出把關與 `complete-task` 完工打卡）**
+- **模式二：`implement`（極簡上下文編碼、掛載專業領域技能、五項准出把關、提交確認門禁與 `complete-task` 完工打卡）**
 
 ### 5.1 情境 2A（`team-dev` `plan` 模式）：垂直切片任務拆解與依賴檢查
 
@@ -734,7 +734,7 @@ python3 skills/team-qa/scripts/jira_sync.py \
 
    - 此指令會自動：(1) 在 Jira 建立 `Bug` 單（如 `PROJ-101-BUG-1`）、建立 `Blocks` 連結指向 `PROJ-101`，並將 `--attach`（或先前 `record-qa --tc-attach` 綁定）的截圖／錄影／Log 自動上傳掛載至 **Jira Bug 單附件區**（若 `qa_test_backend == "qase"`，亦同步上傳至 **Qase Test Run 結果與 Qase Defect**）；(2) 將 `TC-002` 標為 `fail` 且 `qa.status` 標為 `failed`；(3) 依 `TC-002 -> AC-002 -> TASK-###` 追蹤原實作開發者，將 Bug 單與 `PROJ-101` 指派給對應 `developer`（Bob）、狀態退回 `In Progress` 並發送繁體中文 `@Bob` 評論通知。
 2. **步驟二（導航確認）：`team-next-step` 自動以最高優先級派工修 Bug**
-   - 此時若執行 `jira_sync.py status --key PROJ-101`，導航員會因偵測到 Open Bug（Priority 2）而明確阻斷發佈，並指派 `team-dev`（`implement` 模式）優先修復 `PROJ-101-BUG-1`。
+   - 此時若執行 `jira_sync.py status --key PROJ-101`，導航員會因偵測到 Open Bug（Priority 3）而明確阻斷發佈，並指派 `team-dev`（`implement` 模式）優先修復 `PROJ-101-BUG-1`。
 3. **步驟三（開發修復打卡）：在 `team-dev` (`implement`) 修復缺陷並執行 `complete-task`**
    - 開發者 Bob 補上路由權限檢查與回歸測試，提交新 Commit `999beef`，並對 Bug 單號打卡：
 
@@ -747,7 +747,7 @@ python3 skills/team-dev/scripts/jira_sync.py \
   --files "src/api/orders.py,tests/test_api.py" \
   --test-result "pytest tests/test_api.py (6 passed in 0.21s)" \
   --root-cause "匯出路由遺漏 report:export 權限檢查裝飾器" \
-  --solution "於 ExportController 補上 AuthZ 裝飾器並新增 403 回歸測試"
+  --solution "於 ExportController 補上 AuthZ 並新增 403 回歸測試"
 ```
 
    - 此動作會將 `PROJ-101-BUG-1` 標為 `completed`（在 Jira 轉為 `Done`），把 `--root-cause` 與 `--solution` 寫入本地 JSON 並渲染於 Jira 完工評論（保留原報修描述），同時將 `PROJ-101` 的 `candidate_commit` 更新為 `999beef`。
@@ -829,20 +829,20 @@ python3 skills/team-qa/scripts/jira_sync.py \
 python3 skills/team-release/scripts/jira_sync.py \
   --repo-root . close-story \
   --key "PROJ-101" \
-  --version "v1.3.0" \
+  --version "v1.5.0" \
   --commit "999beef" \
   --notes "完成 CSV 匯出並同步更新 docs/manuals/order-guide/"
 ```
 
 4. **步驟四：產出最終交付報告**
-   - 向團隊回報 Jira Story `PROJ-101` 已轉為 `Done`、發佈版本號 `v1.3.0`、驗證通過之 Commit SHA `999beef`、累計驗證之 AC / Sub-task / TC 數量、HTML 手冊同步狀態（`docs/manuals/<manual-name>/<manual-name>.html` 新建／增量更新／略過），並確認 `.ai-workflow/active/PROJ-101.json` 已自動清除。
+   - 向團隊回報 Jira Story `PROJ-101` 已轉為 `Done`、發佈版本號 `v1.5.0`、驗證通過之 Commit SHA `999beef`、累計驗證之 AC / Sub-task / TC 數量、HTML 手冊同步狀態（`docs/manuals/<manual-name>/<manual-name>.html` 新建／增量更新／略過），並確認 `.ai-workflow/active/PROJ-101.json` 已自動清除。
 
 ### 9.3 `jira_sync.py close-story` 參數與五大發佈閘門規格表
 
 | 類別 | 參數或閘門名稱 | 必填 / 驗證規則 | 失敗阻斷行為與狀態影響 |
 | :--- | :--- | :--- | :--- |
 | **CLI 旗標** | `--key` | **必填**（字串） | 目標 Jira Story 代號（如 `PROJ-101`） |
-| **CLI 旗標** | `--version` | 選填（預設 `v1.0.0`） | 發佈版本號或 Git Tag（如 `v1.3.0`；未傳時自動預設為 `v1.0.0`） |
+| **CLI 旗標** | `--version` | 選填（預設 `v1.0.0`） | 發佈版本號或 Git Tag（如 `v1.5.0`；未傳時自動預設為 `v1.0.0`） |
 | **CLI 旗標** | `--commit` | 選填（自動讀取 `candidate_commit` 或 Git `HEAD`） | 預計發佈之候選 Git Commit SHA（如 `999beef`） |
 | **CLI 旗標** | `--notes` | 選填（字串） | 發佈摘要說明（包含交付範圍、遷移/回滾說明與殘餘風險） |
 | **Gate 1** | **規格核准閘門** | `story.spec_status == "approved"` | 若未核准，列入 `unmet_gates` 並拒絕結案（exit code 1） |
@@ -864,10 +864,10 @@ python3 skills/team-release/scripts/jira_sync.py \
 
 此時只需呼叫導航員 **`$team-next-step`**（底層執行 `jira_sync.py status`，或搭配 `jira_sync.py pull` 主動融合網頁端變更），即可自動完成遠端 JQL 探索與雙向對帳，獲得精確的下一步指令與負責人員建議。
 
-### 10.2 11 級路由決策樹與雙模式架構實況詳解
+### 10.2 優先序路由決策樹與雙模式架構實況詳解
 
-![情境 7 & 8：導航員（team-next-step）11 級路由決策與離線/連線雙模式架構](./screenshots/12-scenario7-and-8-router-and-modes.png)
-*圖 10-1：情境 7 導航員（`team-next-step` / `jira_sync.py status`）11 級優先序路由表、五段式回覆結構與情境 8 連線/離線雙模式架構圖。用途：說明 `team-next-step` 如何依 11 級嚴格優先序判斷唯一具體下一步，以及 `jira_sync.py` 如何在 Live Jira REST API v3 模式與 Offline 離線模式間運作。視覺焦點：請依序查看標註序號 ① 左側 P0 至 P10 共 11 級優先序路由決策表與多 Story 歧義防猜測機制；② 中間導航員固定輸出的五段式中文結構與 `status --fetch-remote` 指令；③ 右側 Live 連線模式與 Offline 離線模式對照表及安全防護機制。狀態變化：`status` 預設自動執行遠端 JQL 探索與唯讀/對帳檢查，絕不擅自推進工作站狀態。*
+![情境 7 & 8：導航員（team-next-step）優先序路由決策與離線/連線雙模式架構](./screenshots/12-scenario7-and-8-router-and-modes.png)
+*圖 10-1：情境 7 導航員（`team-next-step` / `jira_sync.py status`）優先序路由表（圖示呈現核心 P0 至 P10 流程；完整 14 項含 `0b`、`1`、`8b`、`11` 優先序請見第 10.3 節）、五段式回覆結構與情境 8 連線/離線雙模式架構圖。用途：說明 `team-next-step` 如何依嚴格優先序判斷唯一具體下一步，以及 `jira_sync.py` 如何在 Live Jira REST API v3 模式與 Offline 離線模式間運作。視覺焦點：請依序查看標註序號 ① 左側核心 P0 至 P10 優先序路由決策表與多 Story 歧義防猜測機制；② 中間導航員固定輸出的五段式中文結構與 `status --fetch-remote` 指令；③ 右側 Live 連線模式與 Offline 離線模式對照表及安全防護機制。狀態變化：`status` 預設自動執行遠端 JQL 探索與唯讀/對帳檢查，絕不擅自推進工作站狀態。*
 
 導航員（`team-next-step`）的操作步驟如下：
 
@@ -893,7 +893,7 @@ python3 .ai-workflow/bin/jira_sync.py \
 2. **步驟二：檢視導航員固定輸出的五段式中文報告**
    - **1. 目前狀態 (Current State)**：Story（或獨立 `Bug`）代號、目前所在工作站、協作者憑證狀態（`requires_member_auth`）與進度/阻斷原因。
    - **2. 判斷依據 (Evidence)**：引用 `spec_status`、`tasks`、`review.status`、`qa.status`、`bugs`、Jira 網頁端對帳結果與 Commit SHA 對齊證據。
-   - **3. 下一步行動 (Next Action)**：推薦之技能名稱、模式與負責角色/人員（並標註屬於同人自動整併或跨人通知）。
+   - **3. 下一步行動 (Next Action)**：推薦之技能名稱、模式與負責角色/人員（並標註屬於同人通知整併或跨人通知）。
    - **4. 執行指令 / Prompt (Ready-to-Use Input)**：可直接複製貼上的提示詞或 CLI 指令。
    - **5. 完成條件 (Done When)**：完成該步驟後在 Jira 與本地 JSON 的可觀測變化。
 

@@ -45,8 +45,8 @@ Eight Jira-centered engineering workflow skills — plus a dynamic multi-agent o
 
 ## Training & Onboarding Materials (`docs/`)
 
-- **Scenario-Driven Training Manual:** `docs/training-manual.md` (canonical v1.5 Markdown source), plus previously exported `docs/training-manual.html`, `docs/training-manual.pdf`, `docs/training-manual.docx` (with annotated dual-pane terminal + Jira illustrations in `docs/screenshots/`).
-- **Training Slide Deck:** 16-slide scenario presentation in `docs/training-manual.pptx` (`docs/ppt-assets/`).
+- **Scenario-Driven Training Manual (`v1.5.0`):** `docs/training-manual.md` (canonical Markdown source) along with synced `v1.5.0` exports `docs/training-manual.html`, `docs/training-manual.pdf`, and `docs/training-manual.docx` (with annotated dual-pane terminal + Jira illustrations in `docs/screenshots/`).
+- **Training Slide Deck (`v1.3.0` baseline):** 16-slide scenario presentation in `docs/training-manual.pptx` (`docs/ppt-assets/`), kept at the `v1.3.0` baseline pending owner decision on whether to rebuild the slide deck.
 
 ## Shared Files & Verification
 
