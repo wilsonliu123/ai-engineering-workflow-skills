@@ -80,10 +80,13 @@ If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-
      --key "<JIRA-KEY-OR-STANDALONE-BUG-KEY>" \
      --task-id "<TASK-001 | BUG-KEY | REV-001,REV-002>" \
      --test-result "<executed test command and pass summary>" \
+     [--root-cause "<bug root cause analysis — REQUIRED for standalone_bug / BUG-* fixes>"] \
+     [--solution "<bug fix strategy / solution — REQUIRED for standalone_bug / BUG-* fixes>"] \
      [--commit "<git-commit-sha>"] \
      [--files "<comma-separated-changed-files>"]
    ```
-   *(For a standalone production Bug `issue_kind == "standalone_bug"`, `--task-id` defaults to `TASK-001` and also accepts `<BUG-KEY>` itself; `complete-task` posts the fix & regression-test comment on `<BUG-KEY>` without prematurely closing `<BUG-KEY>` before Code Review, QA, and Release.)*
+   - **Bug Fix Root Cause & Solution Backfill (`standalone_bug` / `BUG-*`):** Whenever completing a `standalone_bug` or a Story-linked `BUG-*` fix, extract and pass concrete `--root-cause` (why the defect happened) and `--solution` (what code strategy fixed it) so `jira_sync.py` persists them in `.ai-workflow/active/<JIRA-KEY>.json` (`bug_report` / `bug_fix_summary` / bug entry) and renders `**問題原因 (Root Cause)**` and `**解決辦法 (Solution)**` into the structured Jira completion comment for Station 3a (`team-review`), Station 3b (`team-qa`), and Station 4 (`team-release`). Omitting either flag on a bug fix emits a non-blocking reminder in `bug_fix_warnings`. Never rewrite the original Jira Bug Description placeholders — keep reporter descriptions intact and record Root Cause & Solution via structured comments + local JSON.
+   *(For a standalone production Bug `issue_kind == "standalone_bug"`, `--task-id` defaults to `TASK-001` and also accepts `<BUG-KEY>` itself; `complete-task` posts the fix, root cause, solution & regression-test comment on `<BUG-KEY>` without prematurely closing `<BUG-KEY>` before Code Review, QA, and Release.)*
 
 7. **Station Completion & Human-in-the-Loop Boundary (`Stop & Yield on Fix`):**
    - If `remaining_tasks` or `remaining_bugs` remain non-empty for the currently authorized dev work, continue to the next item (respecting `commit_policy` on each task).

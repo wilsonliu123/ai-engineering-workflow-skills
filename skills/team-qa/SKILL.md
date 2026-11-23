@@ -1,13 +1,13 @@
 ---
 name: team-qa
-description: Use when planning QA test cases (TC-001..N) mapped to acceptance criteria (plan mode), verifying test execution results and filing linked Jira Bug tickets on failure (verify mode), or reporting exploratory ad-hoc Story defects and standalone production/user-reported Bug tickets (report mode).
+description: Use when planning QA test cases (TC-001..N) mapped to acceptance criteria (plan mode), verifying test execution results and filing linked Jira Bug tickets on failure (verify mode), reporting exploratory ad-hoc Story defects and standalone production/user-reported Bug tickets (report mode), or triaging Story/standalone Bugs as Not a Bug / Won't Fix / Duplicate / Cannot Reproduce / Fixed with human decision audit (triage mode).
 ---
 
 # Team QA (Station 3b — Streamlined QA Plan, Verify & Defect Report)
 
 ## Overview
 
-Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), final QA assessment, and **exploratory / production bug intake** into three streamlined modes: `plan`, `verify`, and `report`. Supports **two remembered QA backends** (`qa_test_backend` in `.ai-workflow/team-config.json`):
+Station 3b of the 4-station Jira-centered workflow. Merges test planning, execution type assignment, evidence intake (`team-qa-evidence`), final QA assessment, **exploratory / production bug intake**, and **human-authorized Bug Triage** into four streamlined modes: `plan`, `verify`, `report`, and `triage`. Supports **two remembered QA backends** (`qa_test_backend` in `.ai-workflow/team-config.json`):
 - **`jira-comment`:** Stores the full Test Plan and AC/TC Verification tables directly in Jira Story comments.
 - **`qase`:** Synchronizes Test Suites, Test Cases (`TC-001..N`), Test Runs, bulk execution results, and Jira External Issue links directly to **Qase TestOps** (`https://api.qase.io/v1`), while posting a concise 3-line summary and Qase Suite/Run link on the Jira Story.
 
@@ -38,9 +38,10 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
 
 | Mode | When to Run | Key Action |
 |---|---|---|
-| **`plan`** | Anytime after `team-spec` is `approved` (**can run in parallel with `team-dev`**) | Generate `TC-001..N` mapped to `AC-*` with AI pre-filled **3-tier execution types (`automated` / `external` / `manual`)** for 1-step human confirmation; sync via `jira_sync.py record-qa --mode plan` |
-| **`verify`** | After `team-review` approves the candidate commit (for either a Story or a standalone Bug) | Verify `automated` tests locally (`--all-pass` or `--junit-xml`), ingest `external` tool reports (`--junit-xml` / `--results-json` / `--result`), and record `manual` human check results (`--result TC-ID=pass\|fail`); file linked Jira `Bug` tickets on Story failure via `jira_sync.py create-bug` (or reopen a standalone Bug directly on failed retest) |
-| **`report`** | **(A)** During QA exploratory testing when an unscripted defect NOT in `TC-001..N` is found on an active Story, OR **(B)** when filing / adopting a standalone production / CS / user-reported Bug | **(A) Story Exploratory Bug:** Run `create-bug --key <STORY-KEY>` **without `--tc-id`** — leaves passing `TC-001..N` untouched, appends `TC-EXP-001` (`fail`), and files linked Jira `Bug` + Qase Defect.<br>**(B) Standalone Production Bug:** Run `create-bug --standalone` (or `--standalone --adopt --key <BUG-KEY>` for an existing CS Jira Bug) — skips `team-spec` & extra Sub-tasks and enters the lightweight `team-dev -> team-review -> team-qa (verify) -> team-release` track! |
+| **`plan`** | Anytime after `team-spec` is `approved` (**can run in parallel with `team-dev` and during `awaiting_qa_deploy`**) | Generate `TC-001..N` mapped to `AC-*` with AI pre-filled **3-tier execution types (`automated` / `external` / `manual`)** for 1-step human confirmation; sync via `jira_sync.py record-qa --mode plan` |
+| **`verify`** | After `team-review` approves the candidate commit (and in `gated_by_deploy` mode, **only after** QA deploy unblocks via CI/CD `in_qa` sync or `jira_sync.py promote-qa`) | Verify `automated` tests locally (`--all-pass` or `--junit-xml`), ingest `external` tool reports (`--junit-xml` / `--results-json` / `--result`), and record `manual` human check results (`--result TC-ID=pass\|fail`); file linked Jira `Bug` tickets on Story failure via `jira_sync.py create-bug` (or reopen a standalone Bug directly on failed retest) |
+| **`report`** | **(A)** During QA exploratory testing when an unscripted defect NOT in `TC-001..N` is found on an active Story, OR **(B)** when filing / adopting a standalone production / CS / user-reported Bug | **(A) Story Exploratory Bug:** Run `create-bug --key <STORY-KEY>` **without `--tc-id`** — leaves passing `TC-001..N` untouched, appends `TC-EXP-001` (`fail`), and files linked Jira `Bug` + Qase Defect.<br>**(B) Standalone Production Bug:** Run `create-bug --standalone` (or `--standalone --adopt --key <BUG-KEY>` for an existing CS Jira Bug) — skips `team-spec` & extra Sub-tasks and enters the lightweight `team-dev -> team-review -> team-qa (verify) -> team-release` track (or direct `triage` if no code fix is warranted)! |
+| **`triage`** | When a Story-linked Bug or a standalone (`--standalone --adopt`) Bug does **not** warrant a code fix (`Not a Bug`, `Won't Fix`, `Duplicate`, `Cannot Reproduce`) or needs an explicit triage decision (`Fixed`) | After explicit human / PO authorization (`--decided-by`), run `jira_sync.py triage-bug` to record Resolution + Reason + Decided By, close non-code-fix Bugs cleanly (without forcing `team-dev implement`), and optionally mark linked TCs as audited `waived` or `not-applicable` (**NEVER `pass`**) |
 | **QA Fast-Track** | In `verify` mode when `qa.test_cases` is empty | `record-qa --mode verify` automatically derives `TC-001..N` (`automated`) 1:1 from Story `AC-001..N` without requiring a separate `--mode plan` pass first |
 
 ### The 3-Tier Hybrid QA Execution Types
@@ -173,10 +174,45 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
   --key "<EXISTING-BUG-KEY>" \
   [--attach "<path/to/extra-evidence.png>"]
 ```
-- Initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`), **skips `team-spec` and creates zero redundant Jira `Sub-task`s**, assigns `<BUG-KEY>` to `developer` (`In Progress`), and flows cleanly through **`team-dev (implement)` $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` $\rightarrow$ `team-release` (`close-story`)** (enforcing **Clean Stop** without prompting `/team-dev` when `same_person: false`, or asking one short question and stopping when `same_person: true`)!
+- Initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`), **skips `team-spec` and creates zero redundant Jira `Sub-task`s**, assigns `<BUG-KEY>` to `developer` (`In Progress`), and flows cleanly through **`team-dev (implement)` $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` $\rightarrow$ `team-release` (`close-story`)** (or directly to **Mode 4: `triage`** when no code fix is required; enforce **Clean Stop** without prompting `/team-dev` when `same_person: false`, or asking one short question and stopping when `same_person: true`)!
+
+## Mode 4: `triage` — Bug Triage (`Not a Bug` / `Won't Fix` / `Duplicate` / `Cannot Reproduce` / `Fixed`)
+
+Use `triage` mode when QA, Dev, and PO evaluate whether a Story-linked Bug or a standalone (`--standalone --adopt`) Bug actually requires code modification:
+
+1. **AI Analysis & Human Decision Gate (Mandatory HITL):**
+   - AI may inspect the spec, code behavior, logs, and related Jira issues to propose a triage recommendation.
+   - **STOP and obtain explicit human / PO / responsible owner confirmation** (`--decided-by`) before running `jira_sync.py triage-bug`! AI **MUST NEVER** autonomously decide `Won't Fix`, `Not a Bug`, `Duplicate`, or `Cannot Reproduce`, and **MUST NEVER** waive a failing TC without explicit human authorization.
+2. **Execute Deterministic Bug Triage (`jira_sync.py triage-bug`):**
+
+   ```bash
+   # Story-linked Bug triage (optional controlled TC waiver/not-applicable — NEVER marks 'pass')
+   python3 .ai-workflow/bin/jira_sync.py --repo-root . triage-bug \
+     --key "<STORY-KEY>" \
+     --bug-id "<BUG-KEY>" \
+     --resolution "<not-a-bug|wont-fix|duplicate|cannot-reproduce|fixed>" \
+     --reason "<Spec reference, business rationale, or reproduction evidence>" \
+     --decided-by "<Human / PO / Dev / QA decision maker>" \
+     [--duplicate-of "<EXISTING-JIRA-KEY>"] \
+     [--waive-tcs "<TC-001,TC-002>"] \
+     [--tc-disposition "<waived|not-applicable>"]
+
+   # Standalone / adopted Bug direct triage closure (no team-dev implement forced!)
+   python3 .ai-workflow/bin/jira_sync.py --repo-root . triage-bug \
+     --key "<STANDALONE-BUG-KEY>" \
+     --resolution "<not-a-bug|wont-fix|duplicate|cannot-reproduce|fixed>" \
+     --reason "<Spec reference or rationale>" \
+     --decided-by "<Human / PO decision maker>" \
+     [--duplicate-of "<EXISTING-JIRA-KEY>"]
+   ```
+
+   - **Non-code-fix resolutions (`not-a-bug`, `wont-fix`, `duplicate`, `cannot-reproduce`):** Posts structured Jira comment (Resolution, Reason, Decided By, Duplicate Of, TC Disposition), transitions the Bug to `status_mapping.done` (with graceful retry if Jira rejects `fields.resolution` on the transition screen), closes the Bug locally, and — when `--waive-tcs` is provided — records auditable `waived` or `not-applicable` disposition (`waived_bug_id`, `triage_resolution`, `waived_by`, `waived_reason`, `waived_at`) so Station 4 (`close-story`) can release with explicit **Bug Triage & Risk Acceptance Disclosure** instead of deadlocking or falsifying `pass`.
+   - **`fixed` resolution:** Records the triage note without closing the Bug prematurely and directs to standard `team-dev (implement)` (`complete-task` with `--root-cause` and `--solution`) $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)`.
 
 ## Red Flags — STOP
 
+- Running `record-qa --mode verify` when `qa_handoff_mode == "gated_by_deploy"` and `awaiting_qa_deploy` is `true` (verify is gated until QA deploy completes via CI/CD `in_qa` sync or `promote-qa`; parallel `plan` mode is still allowed).
+- **Bug Triage HITL Red Flag:** Autonomously deciding `Won't Fix`, `Not a Bug`, `Duplicate`, or `Cannot Reproduce`, or waiving any TC without explicit human / PO approval (`--decided-by`), or EVER marking a failed/waived TC as `pass` instead of audited `waived` / `not-applicable`.
 - Running `record-qa` when `qa_identity_guardrail.identity_mismatch` is `true` without warning the user and receiving explicit confirmation first.
 - Running `record-qa` when `requires_qa_backend_choice` is `true` without asking the user to choose `jira-comment` vs `qase` first.
 - Writing `QASE_API_TOKEN` or `JIRA_API_TOKEN` into Git-tracked `.ai-workflow/team-config.json` (tokens belong exclusively in gitignored `.ai-workflow/credentials.json`).
@@ -184,4 +220,4 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
 - Autonomously invoking `record-qa` or `close-story` immediately after fixing a user-reported bug/tweak (`Stop & Yield on Fix` violation), or auto-chaining into `$team-release` without explicit user authorization.
 - Prompting `/team-release` or `/team-dev` when `same_person == false` (`cross_person_clean_stop: true`).
 - Asking the human one message per test case just to choose `automated` vs. `manual`.
-- Recommending `team-release` while any `TC-*` is `fail`, `blocked`, `not-executed`, or while any `Bug` is `open`.
+- Recommending `team-release` while any `TC-*` is `fail`, `blocked`, `not-executed`, or un-audited `waived`/`not-applicable`, or while any `Bug` is `open`.
