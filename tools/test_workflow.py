@@ -88,6 +88,9 @@ class MockJiraHandler(BaseHTTPRequestHandler):
     reject_subtask_types = set()
     reject_attachment_keys = set()
     reject_resolution_transition_keys = set()
+    reject_parent_on_create_epics = set()
+    reject_parent_jql_epics = set()
+    fail_create_story_titles = set()
 
     def log_message(self, format, *args):
         pass
@@ -251,6 +254,33 @@ class MockJiraHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/rest/api/3/search/jql":
             jql = data.get("jql") or ""
+            m_parent = re.search(r'parent\s*=\s*"([^"]+)"', jql, re.IGNORECASE)
+            m_epic_link = re.search(r'"Epic Link"\s*=\s*"([^"]+)"', jql, re.IGNORECASE)
+            if m_parent:
+                p_key = m_parent.group(1).strip().upper()
+                if p_key in self.reject_parent_jql_epics:
+                    self._send_json(400, {"errorMessages": [f"Field 'parent' not supported for Epic {p_key}"]})
+                    return
+                issues = [
+                    iss for iss in self.stored_issues.values()
+                    if str(((iss.get("fields") or {}).get("parent") or {}).get("key") or "").strip().upper() == p_key
+                ]
+                self._send_json(200, {"issues": issues})
+                return
+            if m_epic_link:
+                el_key = m_epic_link.group(1).strip().upper()
+                issues = []
+                for iss in self.stored_issues.values():
+                    flds = iss.get("fields") or {}
+                    p_match = str(((flds.get("parent") or {}).get("key") or "")).strip().upper() == el_key
+                    cf_match = any(
+                        k.startswith("customfield_") and str(v or "").strip().upper() == el_key
+                        for k, v in flds.items()
+                    )
+                    if p_match or cf_match:
+                        issues.append(iss)
+                self._send_json(200, {"issues": issues})
+                return
             issues = []
             for k, iss in self.stored_issues.items():
                 st_name = (((iss.get("fields") or {}).get("status") or {}).get("name") or "").lower()
@@ -309,20 +339,46 @@ class MockJiraHandler(BaseHTTPRequestHandler):
                 }
                 self._send_json(201, {"key": bug_key})
             else:
-                if "404" in (fields.get("summary") or ""):
+                summary_text = fields.get("summary") or ""
+                if summary_text in self.fail_create_story_titles:
+                    self._send_json(500, {"errorMessages": [f"Simulated failure creating '{summary_text}'"]})
+                    return
+                parent_obj = fields.get("parent") if isinstance(fields.get("parent"), dict) else {}
+                parent_key = str(parent_obj.get("key") or "").strip().upper()
+                if parent_key and parent_key in self.reject_parent_on_create_epics:
+                    self._send_json(400, {"errors": {"parent": "Field 'parent' cannot be set on create screen."}})
+                    return
+
+                if "404" in summary_text:
                     key = f"{proj_key}-404"
                 elif proj_key != "PROJ":
-                    key = f"{proj_key}-1"
+                    seq = 1
+                    while f"{proj_key}-{seq}" in self.stored_issues:
+                        seq += 1
+                    key = f"{proj_key}-{seq}"
                 else:
-                    key = "PROJ-101"
+                    seq = 101
+                    while f"PROJ-{seq}" in self.stored_issues:
+                        seq += 1
+                    key = f"PROJ-{seq}"
+
+                has_epic_field = bool(parent_key) or any(k.startswith("customfield_") for k in fields)
+                stored_fields = {
+                    "summary": summary_text or key,
+                    "description": fields.get("description"),
+                    "issuetype": {"name": itype or "Story", "subtask": False},
+                    "status": {"name": "To Do" if has_epic_field else "In Progress"},
+                }
+                if parent_obj:
+                    stored_fields["parent"] = parent_obj
+                if fields.get("priority"):
+                    stored_fields["priority"] = fields["priority"]
+                for fk, fv in fields.items():
+                    if fk.startswith("customfield_"):
+                        stored_fields[fk] = fv
                 self.stored_issues[key] = {
                     "key": key,
-                    "fields": {
-                        "summary": fields.get("summary") or key,
-                        "description": fields.get("description"),
-                        "issuetype": {"name": itype or "Story", "subtask": False},
-                        "status": {"name": "In Progress"},
-                    },
+                    "fields": stored_fields,
                 }
                 self._send_json(201, {"key": key})
         elif self.path == "/rest/api/3/issueLink":
@@ -5541,6 +5597,708 @@ class WorkflowTestSuite(unittest.TestCase):
         finally:
             jira_srv.shutdown()
             jira_srv.server_close()
+
+    def test_32_team_spec_backfill_preserve_owner_risks_and_open_questions(self):
+        mod = self._load_jira_sync_module()
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+        MockJiraHandler.reject_parent_on_create_epics.clear()
+        MockJiraHandler.reject_parent_jql_epics.clear()
+        MockJiraHandler.fail_create_story_titles.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                roles = {
+                    "pm": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice", "api_token": "tok-a"},
+                    "developer": {"name": "Bob Lin", "email": "bob@team.io", "jira_account_id": "acc-bob", "api_token": "tok-b"},
+                    "reviewer": {"name": "Carol Wu", "email": "carol@team.io", "jira_account_id": "acc-carol", "api_token": "tok-c"},
+                    "qa": {"name": "Carol Wu", "email": "carol@team.io", "jira_account_id": "acc-carol"},
+                    "release_manager": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                }
+                self.assertEqual(
+                    run_cli(root, "init", "--project-key", "BF", "--jira-url", f"http://127.0.0.1:{jira_port}", "--roles-json", json.dumps(roles)).returncode,
+                    0,
+                )
+
+                # 1. Tracked Story already in progress under Developer Bob with tasks/review/qa/bugs
+                self.assertEqual(
+                    run_cli(
+                        root, "sync-story",
+                        "--key", "BF-1",
+                        "--title", "Tracked Order Export",
+                        "--scope-in", "Initial export",
+                        "--ac", "AC-001:Export orders to CSV",
+                        "--status", "approved",
+                        "--create",
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root, "create-subtasks", "--key", "BF-1", "--task", "TASK-001:Implement exporter:AC-001:pytest").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root, "complete-task", "--key", "BF-1", "--task-id", "TASK-001", "--commit", "bf111", "--files", "exp.py", "--test-result", "pytest ok").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root, "handoff", "--key", "BF-1", "--review-status", "approved", "--commit", "bf111").returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(root, "record-qa", "--key", "BF-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Check CSV").returncode,
+                    0,
+                )
+                before_disk = json.loads((root / ".ai-workflow" / "active" / "BF-1.json").read_text(encoding="utf-8"))
+                self.assertEqual(before_disk["current_owner_role"], "qa")
+                self.assertEqual(before_disk["jira_status"], "In QA")
+
+                # 2. Reject --backfill + --status approved with exit 1 and ZERO Jira writes
+                MockJiraHandler.requests_log.clear()
+                bad_bf = run_cli(root, "sync-story", "--key", "BF-1", "--backfill", "--status", "approved")
+                self.assertNotEqual(bad_bf.returncode, 0)
+                self.assertIn("--backfill", bad_bf.stderr)
+                self.assertEqual(MockJiraHandler.requests_log, [])
+
+                # 3. Reject malformed / non-list --open-questions-json
+                bad_oq1 = run_cli(root, "sync-story", "--key", "BF-1", "--backfill", "--open-questions-json", "{malformed")
+                self.assertNotEqual(bad_oq1.returncode, 0)
+                self.assertIn("open-questions-json", bad_oq1.stderr.lower())
+
+                bad_oq2 = run_cli(root, "sync-story", "--key", "BF-1", "--backfill", "--open-questions-json", '{"id":"Q-001"}')
+                self.assertNotEqual(bad_oq2.returncode, 0)
+
+                # 4. --backfill with --risks & --open-questions-json (@file) preserves owner/status/tasks/review/qa/bugs
+                oq_file = root / "oqs.json"
+                oq_file.write_text(json.dumps([
+                    None,
+                    "   ",
+                    {"id": "Q-005", "question": "Confirm tenant isolation rule", "owner": "pm", "proposed_default": "Scope by tenant_id", "impacted_acs": ["AC-001", ""], "blocking": True},
+                    "Clarify CSV row cap above 10k",
+                ]), encoding="utf-8")
+
+                MockJiraHandler.requests_log.clear()
+                bf_res = run_cli(
+                    root, "sync-story",
+                    "--key", "BF-1",
+                    "--backfill",
+                    "--scope-in", "Initial export + tenant boundary check",
+                    "--ac", "AC-002:Reject cross-tenant query with 403",
+                    "--design-summary", "Observed code currently filters by user_id; tenant_id filter not yet verified.",
+                    "--risks", "Line 1: Tenant boundary gap\n- Line 2: Rate limiting missing",
+                    "--open-questions-json", f"@{oq_file}",
+                    "--spec-json", json.dumps({"current_owner_role": "pm", "jira_status": "To Do", "tasks": [], "qa": {}}),
+                )
+                self.assertEqual(bf_res.returncode, 0, bf_res.stderr)
+                bf_out = json.loads(bf_res.stdout)
+                self.assertTrue(bf_out["ok"])
+                self.assertTrue(bf_out["backfill_mode"])
+                self.assertTrue(bf_out["owner_preserved"])
+                self.assertTrue(bf_out["status_preserved"])
+                self.assertEqual(bf_out["spec_status"], "approved")  # no status rollback on already-approved tracked story
+                self.assertEqual(bf_out["open_blocking_questions"], ["Q-005"])
+                self.assertEqual(bf_out["backfill_stage"], "spec_pending_confirmation")
+                self.assertTrue(bf_out["description_verified"])
+                self.assertFalse(bf_out["can_auto_chain_next_station"])
+                self.assertTrue(bf_out["requires_user_confirmation_for_next_station"])
+                self.assertIsNone(bf_out["handoff"])
+
+                # Zero assignee/transition/comment calls during backfill
+                mutating_ops = [
+                    r for r in MockJiraHandler.requests_log
+                    if r[1].endswith("/assignee") or r[1].endswith("/transitions") or r[1].endswith("/comment")
+                ]
+                self.assertEqual(mutating_ops, [])
+
+                # Active JSON preserved owner/status/tasks/review/qa and stored normalized Q-### (Q-005 + auto Q-001)
+                after_disk = json.loads((root / ".ai-workflow" / "active" / "BF-1.json").read_text(encoding="utf-8"))
+                self.assertEqual(after_disk["current_owner_role"], "qa")
+                self.assertEqual(after_disk["jira_status"], "In QA")
+                self.assertEqual(len(after_disk["tasks"]), 1)
+                self.assertEqual(after_disk["review"]["status"], "approved")
+                self.assertEqual(len(after_disk["qa"]["test_cases"]), 1)
+                self.assertEqual([a["id"] for a in after_disk["acceptance_criteria"]], ["AC-001", "AC-002"])
+                oqs_saved = after_disk["spec"]["open_questions"]
+                self.assertEqual([q["id"] for q in oqs_saved], ["Q-005", "Q-001"])
+                self.assertTrue(oqs_saved[0]["blocking"])
+                self.assertFalse(oqs_saved[1]["blocking"])
+
+                # Description includes Risks & Open Questions, zero Verification Scenarios table, valid ADF invariants, and no analysis.md
+                desc_adf = MockJiraHandler.stored_issues["BF-1"]["fields"]["description"]
+                self._assert_valid_adf_invariants(desc_adf)
+                desc_plain = mod._adf_to_plain_text(desc_adf)
+                self.assertIn("風險與待確認問題", desc_plain)
+                self.assertIn("Q-005", desc_plain)
+                self.assertIn("Q-001", desc_plain)
+                self.assertNotIn("驗證場景", desc_plain)
+                self.assertNotIn("Verification Scenarios", desc_plain)
+                self.assertFalse((root / "analysis.md").exists())
+
+                # Resolving blocking Qs -> backfill_stage becomes "material_backfilled"; empty/whitespace risks omitted cleanly
+                bf_clear = run_cli(
+                    root, "sync-story",
+                    "--key", "BF-1",
+                    "--backfill",
+                    "--risks", "   ",
+                    "--open-questions-json", "[]",
+                )
+                self.assertEqual(bf_clear.returncode, 0, bf_clear.stderr)
+                bf_clear_out = json.loads(bf_clear.stdout)
+                self.assertEqual(bf_clear_out["open_blocking_questions"], [])
+                self.assertEqual(bf_clear_out["backfill_stage"], "material_backfilled")
+                desc_after_clear = mod._adf_to_plain_text(MockJiraHandler.stored_issues["BF-1"]["fields"]["description"])
+                self.assertNotIn("Risks & Open Questions", desc_after_clear)
+                self.assertNotIn("風險與待確認問題", desc_after_clear)
+
+                # 5. Adopting an UNTRACKED existing Jira Story via --key <EXISTING-KEY> --backfill
+                MockJiraHandler.stored_issues["BF-99"] = {
+                    "key": "BF-99",
+                    "fields": {
+                        "summary": "Legacy Payment Refund Flow",
+                        "description": {
+                            "type": "doc",
+                            "version": 1,
+                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "- AC-001: Issue full refund within 5 minutes"}]}],
+                        },
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "In Review"},
+                        "assignee": {"accountId": "acc-bob", "displayName": "Bob Lin", "emailAddress": "bob@team.io"},
+                        "subtasks": [
+                            {
+                                "key": "BF-100",
+                                "fields": {
+                                    "summary": "TASK-001: Implement refund service",
+                                    "issuetype": {"name": "Sub-task", "subtask": True},
+                                    "status": {"name": "Done"},
+                                    "assignee": {"accountId": "acc-bob", "displayName": "Bob Lin"},
+                                },
+                            }
+                        ],
+                    },
+                }
+                MockJiraHandler.requests_log.clear()
+                adopt_res = run_cli(
+                    root, "sync-story",
+                    "--key", "BF-99",
+                    "--backfill",
+                    "--ac", "AC-002:Prevent duplicate refund on retry",
+                    "--risks", "Idempotency key enforcement inferred from controller only",
+                    "--open-questions-json", json.dumps([{"question": "Verify refund webhook retry TTL", "blocking": True}]),
+                )
+                self.assertEqual(adopt_res.returncode, 0, adopt_res.stderr)
+                adopt_out = json.loads(adopt_res.stdout)
+                self.assertEqual(adopt_out["spec_status"], "draft")  # NEVER auto-approves adopted raw Jira Story!
+                self.assertEqual(adopt_out["backfill_stage"], "spec_pending_confirmation")
+                self.assertEqual(adopt_out["open_blocking_questions"], ["Q-001"])
+                self.assertTrue(adopt_out["description_verified"])
+                self.assertEqual(MockJiraHandler.stored_issues["BF-99"]["fields"]["status"]["name"], "In Review")
+                self.assertEqual(MockJiraHandler.stored_issues["BF-99"]["fields"]["assignee"]["accountId"], "acc-bob")
+                adopted_disk = json.loads((root / ".ai-workflow" / "active" / "BF-99.json").read_text(encoding="utf-8"))
+                self.assertEqual([a["id"] for a in adopted_disk["acceptance_criteria"]], ["AC-001", "AC-002"])
+                self.assertEqual(len(adopted_disk["tasks"]), 1)
+                self.assertTrue(adopted_disk.get("last_synced_description_hash"))
+
+                # Description Drift Guard blocks subsequent backfill if Jira description was edited in Web UI
+                MockJiraHandler.stored_issues["BF-99"]["fields"]["description"] = {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Human edited in Jira Web UI\n- AC-003: Manual AC"}]}],
+                }
+                drift_blocked = run_cli(root, "sync-story", "--key", "BF-99", "--backfill", "--risks", "Updated risk")
+                self.assertNotEqual(drift_blocked.returncode, 0)
+                self.assertIn("description", drift_blocked.stderr.lower())
+
+                drift_ok = run_cli(root, "sync-story", "--key", "BF-99", "--backfill", "--accept-remote-description", "--risks", "Updated risk")
+                self.assertEqual(drift_ok.returncode, 0, drift_ok.stderr)
+
+                # 6. --preserve-owner standalone with English labels and no None string leakage
+                self.assertEqual(run_cli(root, "init", "--project-key", "BF", "--language", "en").returncode, 0)
+                en_md = mod.format_story_description({
+                    "jira_key": "BF-EN",
+                    "title": "English Backfill",
+                    "scope_in": "Scope",
+                    "scope_out": "None",
+                    "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+                    "acceptance_criteria": [{"id": "AC-001", "description": "Works"}],
+                    "spec": {
+                        "risks": "Missing index",
+                        "open_questions": [{"id": "Q-001", "question": "Confirm SLA", "owner": "pm", "blocking": True}],
+                    },
+                }, {"language": "en"})
+                self.assertIn("### Risks & Open Questions", en_md)
+                self.assertIn("[Blocking]", en_md)
+                self.assertNotIn("風險與待確認問題", en_md)
+                self._assert_valid_adf_invariants(mod.JiraClient.text_to_adf(en_md))
+
+                # Simple story without risks/open_questions keeps 5-section format unchanged
+                simple_md = mod.format_story_description({
+                    "jira_key": "BF-SIMPLE",
+                    "title": "Simple Story",
+                    "scope_in": "Simple",
+                    "scope_out": "N/A",
+                    "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+                    "acceptance_criteria": [{"id": "AC-001", "description": "Done"}],
+                }, {"language": "en"})
+                self.assertNotIn("Risks & Open Questions", simple_md)
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+
+    def test_33_epic_decompose_validation_preview_apply_fallbacks_and_partial_failure(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+        MockJiraHandler.reject_parent_on_create_epics.clear()
+        MockJiraHandler.reject_parent_jql_epics.clear()
+        MockJiraHandler.fail_create_story_titles.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+
+        try:
+            # Part A: Live mode validation, preview, apply, duplicate skip, fallbacks, partial failure
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.assertEqual(
+                    run_cli(
+                        root, "init",
+                        "--project-key", "EP",
+                        "--jira-url", f"http://127.0.0.1:{jira_port}",
+                        "--jira-email", "alice@team.io",
+                        "--jira-token", "tok-a",
+                    ).returncode,
+                    0,
+                )
+                MockJiraHandler.stored_issues["EP-10"] = {
+                    "key": "EP-10",
+                    "fields": {"summary": "Multi-tenant Auth Epic", "issuetype": {"name": "Epic"}, "status": {"name": "To Do"}},
+                }
+
+                # 1. Input & Graph validation failures (exit 1, zero Jira writes)
+                invalid_cases = [
+                    "[]",
+                    "{}",
+                    "{bad-json",
+                    json.dumps([{"id": "S1"}]),
+                    json.dumps([{"id": "S1", "title": None}]),
+                    json.dumps([{"id": "S1", "title": "   "}]),
+                    json.dumps([{"id": "S1", "title": "A"}, {"id": "S1", "title": "B"}]),
+                    json.dumps([{"id": "S1", "title": "Self", "depends_on": ["S1"]}]),
+                    json.dumps([{"id": "S1", "title": "Unknown", "depends_on": ["NOPE"]}]),
+                    json.dumps([
+                        {"id": "S1", "title": "A", "depends_on": ["S3"]},
+                        {"id": "S2", "title": "B", "depends_on": ["S1"]},
+                        {"id": "S3", "title": "C", "depends_on": ["S2"]},
+                    ]),
+                ]
+                MockJiraHandler.requests_log.clear()
+                for bad_json in invalid_cases:
+                    res_bad = run_cli(root, "epic-decompose", "--epic", "EP-10", "--stories-json", bad_json)
+                    self.assertNotEqual(res_bad.returncode, 0, f"Expected failure for {bad_json}")
+                self.assertEqual(MockJiraHandler.requests_log, [])
+
+                # 2. Preview mode (default dry_run=True, @file input, title duplicate warning, waves, ZERO writes)
+                MockJiraHandler.stored_issues["EP-50"] = {
+                    "key": "EP-50",
+                    "fields": {
+                        "summary": "Core Auth Schema",
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "In Progress"},
+                        "parent": {"key": "EP-10"},
+                    },
+                }
+                stories_file = root / "epic_stories.json"
+                stories_payload = [
+                    {
+                        "id": "S2",
+                        "title": "Login & JWT Endpoint",
+                        "scope": "POST /login issuing JWT",
+                        "acceptance_criteria": ["AC-001:Valid login returns JWT", "AC-002:Invalid credentials return 401"],
+                        "depends_on": ["S1"],
+                        "shared_contracts": ["AuthUser schema", "JWT token payload"],
+                        "priority": "High",
+                        "story_points": 5,
+                    },
+                    {
+                        "id": "S1",
+                        "title": "Core Auth Schema",
+                        "summary": "User and tenant tables",
+                        "acceptance_criteria": ["AC-001:Users table exists"],
+                        "depends_on": [],
+                        "shared_contracts": ["AuthUser schema"],
+                        "story_points": 3,
+                    },
+                    {
+                        "id": "S3",
+                        "title": "RBAC Middleware",
+                        "acceptance_criteria": ["AC-001:Enforces role permissions"],
+                        "depends_on": ["S2"],
+                        "shared_contracts": ["JWT token payload"],
+                    },
+                ]
+                stories_file.write_text(json.dumps(stories_payload), encoding="utf-8")
+
+                MockJiraHandler.requests_log.clear()
+                prev = run_cli(root, "epic-decompose", "--epic", "EP-10", "--stories-json", f"@{stories_file}")
+                self.assertEqual(prev.returncode, 0, prev.stderr)
+                prev_out = json.loads(prev.stdout)
+                self.assertEqual(prev_out["mode"], "preview")
+                self.assertTrue(prev_out["dry_run"])
+                self.assertFalse(prev_out["applied"])
+                self.assertEqual(prev_out["epic_summary"], "Multi-tenant Auth Epic")
+                self.assertEqual(prev_out["total_to_create"], 3)
+                self.assertEqual(
+                    prev_out["execution_waves"],
+                    [
+                        {"wave": 1, "label": "Wave 1", "story_ids": ["S1"]},
+                        {"wave": 2, "label": "Wave 2", "story_ids": ["S2"]},
+                        {"wave": 3, "label": "Wave 3", "story_ids": ["S3"]},
+                    ],
+                )
+                self.assertEqual(prev_out["shared_contracts_summary"], ["AuthUser schema", "JWT token payload"])
+                self.assertEqual(len(prev_out["duplicate_warnings"]), 1)
+                self.assertEqual(prev_out["duplicate_warnings"][0]["existing_key"], "EP-50")
+                self.assertTrue(prev_out["requires_user_confirmation"])
+                self.assertFalse(prev_out["can_auto_chain_next_station"])
+                # Zero POST /issue writes and zero local active files created in preview mode
+                self.assertFalse(any(m == "POST" and p == "/rest/api/3/issue" for m, p, _, _ in MockJiraHandler.requests_log))
+                self.assertEqual(list((root / ".ai-workflow" / "active").glob("*.json")) if (root / ".ai-workflow" / "active").exists() else [], [])
+
+                # 3. Apply mode (--apply): creates Stories in Wave order with real upstream depends_on_keys!
+                MockJiraHandler.requests_log.clear()
+                MockJiraHandler.stored_issues.pop("EP-50", None)
+                app_res = run_cli(root, "epic-decompose", "--epic", "EP-10", "--stories-json", f"@{stories_file}", "--apply")
+                self.assertEqual(app_res.returncode, 0, app_res.stderr)
+                app_out = json.loads(app_res.stdout)
+                self.assertTrue(app_out["ok"])
+                self.assertTrue(app_out["applied"])
+                self.assertFalse(app_out["dry_run"])
+                self.assertEqual(app_out["total_created"], 3)
+                created = app_out["created_stories"]
+                self.assertEqual([c["id"] for c in created], ["S1", "S2", "S3"])
+                k1, k2, k3 = created[0]["jira_key"], created[1]["jira_key"], created[2]["jira_key"]
+                self.assertEqual(created[1]["depends_on_keys"], [k1])
+                self.assertEqual(created[2]["depends_on_keys"], [k2])
+
+                for c_item in created:
+                    st_disk = json.loads((root / c_item["active_file"]).read_text(encoding="utf-8"))
+                    self.assertEqual(st_disk["epic_key"], "EP-10")
+                    self.assertEqual(st_disk["epic_decompose_id"], c_item["id"])
+                    self.assertEqual(st_disk["wave"], c_item["wave"])
+                    self.assertEqual(st_disk["depends_on_keys"], c_item["depends_on_keys"])
+                    self.assertEqual(st_disk["shared_contracts"], c_item["shared_contracts"])
+                    self.assertEqual(st_disk["spec_status"], "draft")
+                    self.assertEqual(MockJiraHandler.stored_issues[c_item["jira_key"]]["fields"]["parent"]["key"], "EP-10")
+
+                # 4. Re-running --apply with same epic_decompose_ids skips existing without creating duplicates
+                MockJiraHandler.requests_log.clear()
+                reapp = run_cli(root, "epic-decompose", "--epic", "EP-10", "--stories-json", f"@{stories_file}", "--apply")
+                self.assertEqual(reapp.returncode, 0, reapp.stderr)
+                reapp_out = json.loads(reapp.stdout)
+                self.assertEqual(reapp_out["total_created"], 0)
+                self.assertEqual(len(reapp_out["skipped_stories"]), 3)
+                self.assertFalse(any(m == "POST" and p == "/rest/api/3/issue" for m, p, _, _ in MockJiraHandler.requests_log))
+
+                # 5. Live Epic linking HTTP 400 fallback: unconfigured epic_link_field -> unlinked + warning;
+                #    configured epic_link_field -> customfield_10014!
+                MockJiraHandler.stored_issues["EP-20"] = {
+                    "key": "EP-20",
+                    "fields": {"summary": "Fallback Epic", "issuetype": {"name": "Epic"}, "status": {"name": "To Do"}},
+                }
+                MockJiraHandler.reject_parent_on_create_epics.add("EP-20")
+                fb1 = run_cli(
+                    root, "epic-decompose", "--epic", "EP-20",
+                    "--stories-json", json.dumps([{"id": "FB1", "title": "Unlinked Fallback Story"}]),
+                    "--apply",
+                )
+                self.assertEqual(fb1.returncode, 0, fb1.stderr)
+                fb1_out = json.loads(fb1.stdout)
+                self.assertEqual(fb1_out["created_stories"][0]["epic_link_mode"], "unlinked")
+                self.assertTrue(any("HTTP 400" in w for w in fb1_out["warnings"]))
+
+                cfg_p = root / ".ai-workflow" / "team-config.json"
+                cfg_d = json.loads(cfg_p.read_text(encoding="utf-8"))
+                cfg_d["epic_link_field"] = "customfield_10014"
+                cfg_p.write_text(json.dumps(cfg_d, indent=2) + "\n", encoding="utf-8")
+
+                fb2 = run_cli(
+                    root, "epic-decompose", "--epic", "EP-20",
+                    "--stories-json", json.dumps([{"id": "FB2", "title": "Custom Field Linked Story"}]),
+                    "--apply",
+                )
+                self.assertEqual(fb2.returncode, 0, fb2.stderr)
+                fb2_out = json.loads(fb2.stdout)
+                self.assertEqual(fb2_out["created_stories"][0]["epic_link_mode"], "epic_link_field")
+                fb2_key = fb2_out["created_stories"][0]["jira_key"]
+                self.assertEqual(MockJiraHandler.stored_issues[fb2_key]["fields"]["customfield_10014"], "EP-20")
+
+                # 6. Partial failure mid-batch preserves created Wave 1 story, skips dependent Wave 2, exits 1
+                MockJiraHandler.fail_create_story_titles.add("Failing Story")
+                part_stories = [
+                    {"id": "P1", "title": "Good Wave 1 Story"},
+                    {"id": "P2", "title": "Failing Story"},
+                    {"id": "P3", "title": "Dependent Wave 2 Story", "depends_on": ["P2"]},
+                ]
+                MockJiraHandler.stored_issues["EP-30"] = {
+                    "key": "EP-30",
+                    "fields": {"summary": "Partial Fail Epic", "issuetype": {"name": "Epic"}, "status": {"name": "To Do"}},
+                }
+                part_res = run_cli(root, "epic-decompose", "--epic", "EP-30", "--stories-json", json.dumps(part_stories), "--apply")
+                self.assertNotEqual(part_res.returncode, 0)
+                part_out = json.loads(part_res.stdout)
+                self.assertTrue(part_out["partial_failure"])
+                self.assertEqual(len(part_out["created_stories"]), 1)
+                self.assertEqual(part_out["created_stories"][0]["id"], "P1")
+                self.assertEqual([f["id"] for f in part_out["failed_stories"]], ["P2", "P3"])
+                self.assertTrue((root / part_out["created_stories"][0]["active_file"]).exists())
+
+            # Part B: Offline deterministic local keys avoiding collisions
+            with tempfile.TemporaryDirectory() as tmp_off:
+                root_off = Path(tmp_off)
+                self.assertEqual(run_cli(root_off, "init", "--project-key", "OFF").returncode, 0)
+                # Pre-existing collision file OFF-99-S1.json
+                active_off = root_off / ".ai-workflow" / "active"
+                active_off.mkdir(parents=True, exist_ok=True)
+                (active_off / "OFF-99-S1.json").write_text(json.dumps({"jira_key": "OFF-99-S1"}), encoding="utf-8")
+
+                off_stories = [
+                    {"title": "Offline Base"},
+                    {"title": "Offline Followup", "depends_on": ["S-1"]},
+                ]
+                off_res = run_cli(root_off, "epic-decompose", "--epic", "OFF-99", "--stories-json", json.dumps(off_stories), "--apply")
+                self.assertEqual(off_res.returncode, 0, off_res.stderr)
+                off_out = json.loads(off_res.stdout)
+                self.assertEqual([c["jira_key"] for c in off_out["created_stories"]], ["OFF-99-S2", "OFF-99-S3"])
+                self.assertEqual(off_out["created_stories"][1]["depends_on_keys"], ["OFF-99-S2"])
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+
+    def test_34_status_epic_progress_aggregation_live_and_offline(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+        MockJiraHandler.reject_parent_on_create_epics.clear()
+        MockJiraHandler.reject_parent_jql_epics.clear()
+        MockJiraHandler.fail_create_story_titles.clear()
+
+        # Part A: Offline mode rollup & empty Epic safety
+        with tempfile.TemporaryDirectory() as tmp_off:
+            root_off = Path(tmp_off)
+            self.assertEqual(run_cli(root_off, "init", "--project-key", "OE").returncode, 0)
+
+            # Mutually exclusive --key + --epic -> exit 1
+            both = run_cli(root_off, "status", "--key", "OE-1", "--epic", "OE-10")
+            self.assertNotEqual(both.returncode, 0)
+
+            # Empty / missing Epic returns total_stories=0, progress_pct=0.0 without ZeroDivisionError
+            empty_ep = run_cli(root_off, "status", "--epic", "OE-999")
+            self.assertEqual(empty_ep.returncode, 0, empty_ep.stderr)
+            empty_out = json.loads(empty_ep.stdout)
+            self.assertEqual(empty_out["total_stories"], 0)
+            self.assertEqual(empty_out["progress_pct"], 0.0)
+            self.assertIsNone(empty_out["next_recommended_story"])
+
+            active_dir = root_off / ".ai-workflow" / "active"
+            active_dir.mkdir(parents=True, exist_ok=True)
+            # Story 1: Done
+            (active_dir / "OE-10-S1.json").write_text(json.dumps({
+                "jira_key": "OE-10-S1",
+                "epic_key": "OE-10",
+                "wave": 1,
+                "title": "Done Wave 1 Story",
+                "jira_status": "Done",
+                "spec_status": "approved",
+                "tasks": [{"id": "TASK-001", "status": "completed"}],
+                "bugs": [],
+            }), encoding="utf-8")
+            # Story 2: In Progress (Station 2: Dev Implement), Wave 1
+            (active_dir / "OE-10-S2.json").write_text(json.dumps({
+                "jira_key": "OE-10-S2",
+                "epic_key": "OE-10",
+                "wave": 1,
+                "title": "In Progress Wave 1 Story",
+                "jira_status": "In Progress",
+                "spec_status": "approved",
+                "tasks": [{"id": "TASK-001", "status": "pending"}],
+                "bugs": [],
+            }), encoding="utf-8")
+            # Story 3: Blocked by dependency on OE-10-S2, Wave 2
+            (active_dir / "OE-10-S3.json").write_text(json.dumps({
+                "jira_key": "OE-10-S3",
+                "epic_key": "OE-10",
+                "wave": 2,
+                "title": "Blocked Wave 2 Story",
+                "jira_status": "To Do",
+                "spec_status": "draft",
+                "depends_on_keys": ["OE-10-S2"],
+                "tasks": [],
+                "bugs": [],
+            }), encoding="utf-8")
+            # Story 4: Ready to start (draft, To Do, unblocked), Wave 2
+            (active_dir / "OE-10-S4.json").write_text(json.dumps({
+                "jira_key": "OE-10-S4",
+                "epic_key": "OE-10",
+                "wave": 2,
+                "title": "Ready Wave 2 Story",
+                "jira_status": "To Do",
+                "spec_status": "draft",
+                "depends_on_keys": ["OE-10-S1"],
+                "tasks": [],
+                "bugs": [],
+            }), encoding="utf-8")
+
+            ep_off = run_cli(root_off, "status", "--epic", "OE-10")
+            self.assertEqual(ep_off.returncode, 0, ep_off.stderr)
+            ep_out = json.loads(ep_off.stdout)
+            self.assertEqual(ep_out["total_stories"], 4)
+            self.assertEqual(ep_out["completed_stories"], 1)
+            self.assertEqual(ep_out["in_progress_stories"], 1)
+            self.assertEqual(ep_out["blocked_stories"], 1)
+            self.assertEqual(ep_out["ready_to_start_stories"], 1)
+            self.assertEqual(ep_out["progress_pct"], 25.0)
+            self.assertEqual(ep_out["station_breakdown"]["Done"], 1)
+            self.assertEqual(ep_out["station_breakdown"]["Station 2: Dev Implement"], 1)
+            self.assertEqual(ep_out["next_recommended_story"]["key"], "OE-10-S2")
+            self.assertFalse(ep_out["can_auto_chain_next_station"])
+            self.assertTrue(ep_out["requires_user_confirmation"])
+            by_k = {row["key"]: row for row in ep_out["stories"]}
+            self.assertEqual(by_k["OE-10-S3"]["blocked_by_dependencies"], ["OE-10-S2"])
+            self.assertEqual(by_k["OE-10-S4"]["blocked_by_dependencies"], [])
+
+        # Part B: Live mode merging remote Done & remote active Stories + parent->Epic Link JQL fallback
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp_live:
+                root_l = Path(tmp_live)
+                self.assertEqual(
+                    run_cli(
+                        root_l, "init",
+                        "--project-key", "LE",
+                        "--jira-url", f"http://127.0.0.1:{jira_port}",
+                        "--jira-email", "alice@team.io",
+                        "--jira-token", "tok-a",
+                    ).returncode,
+                    0,
+                )
+                MockJiraHandler.stored_issues["LE-10"] = {
+                    "key": "LE-10",
+                    "fields": {"summary": "Live Reporting Epic", "issuetype": {"name": "Epic"}, "status": {"name": "In Progress"}},
+                }
+                # Remote closed Story (deleted from local active dir)
+                MockJiraHandler.stored_issues["LE-101"] = {
+                    "key": "LE-101",
+                    "fields": {
+                        "summary": "Remote Done Story",
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "Done"},
+                        "parent": {"key": "LE-10"},
+                    },
+                }
+                # Remote active Story created in Jira Web UI (not in local active dir)
+                MockJiraHandler.stored_issues["LE-102"] = {
+                    "key": "LE-102",
+                    "fields": {
+                        "summary": "Remote Web UI Story",
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "To Do"},
+                        "customfield_10014": "LE-10",
+                    },
+                }
+                # Local active Story linked to LE-10
+                MockJiraHandler.stored_issues["LE-103"] = {
+                    "key": "LE-103",
+                    "fields": {
+                        "summary": "Local Active Story",
+                        "issuetype": {"name": "Story", "subtask": False},
+                        "status": {"name": "In Progress"},
+                        "parent": {"key": "LE-10"},
+                    },
+                }
+                active_l = root_l / ".ai-workflow" / "active"
+                active_l.mkdir(parents=True, exist_ok=True)
+                (active_l / "LE-103.json").write_text(json.dumps({
+                    "jira_key": "LE-103",
+                    "epic_key": "LE-10",
+                    "wave": 2,
+                    "title": "Local Active Story",
+                    "jira_status": "In Progress",
+                    "spec_status": "approved",
+                    "depends_on_keys": ["LE-101"],
+                    "tasks": [],
+                    "bugs": [],
+                }), encoding="utf-8")
+
+                # 1) Normal parent JQL returns LE-101 & LE-103; Done LE-101 is NOT recreated on disk!
+                st_live1 = run_cli(root_l, "status", "--epic", "LE-10")
+                self.assertEqual(st_live1.returncode, 0, st_live1.stderr)
+                l1_out = json.loads(st_live1.stdout)
+                self.assertEqual(l1_out["epic_summary"], "Live Reporting Epic")
+                self.assertEqual(l1_out["total_stories"], 2)
+                self.assertEqual(l1_out["completed_stories"], 1)
+                self.assertEqual(l1_out["progress_pct"], 50.0)
+                self.assertFalse((active_l / "LE-101.json").exists())
+
+                # 2) Simulate Jira rejecting `parent = "LE-10"` (HTTP 400) -> falls back to `"Epic Link" = "LE-10"` discovering LE-102 as well!
+                MockJiraHandler.reject_parent_jql_epics.add("LE-10")
+                st_live2 = run_cli(root_l, "status", "--epic", "LE-10")
+                self.assertEqual(st_live2.returncode, 0, st_live2.stderr)
+                l2_out = json.loads(st_live2.stdout)
+                self.assertEqual(l2_out["query_mode"], "epic_link")
+                self.assertEqual(l2_out["total_stories"], 3)
+                self.assertEqual({s["key"] for s in l2_out["stories"]}, {"LE-101", "LE-102", "LE-103"})
+                self.assertFalse((active_l / "LE-101.json").exists())
+                self.assertFalse((active_l / "LE-102.json").exists())
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+
+    def test_35_v150_spec_backfill_and_epic_decompose_doc_consistency(self):
+        # 1. team-config-template.json includes epic_link_field
+        cfg_tmpl = json.loads((SKILLS_DIR / "team-init" / "references" / "team-config-template.json").read_text(encoding="utf-8"))
+        self.assertIn("epic_link_field", cfg_tmpl)
+
+        # 2. team-spec SKILL.md & spec-method.md cover has_data clarification, Backfill Mode, Q-###, evidence discipline, and doc boundaries
+        spec_skill = (SKILLS_DIR / "team-spec" / "SKILL.md").read_text(encoding="utf-8")
+        spec_method = (SKILLS_DIR / "team-spec" / "references" / "spec-method.md").read_text(encoding="utf-8")
+        for name, txt in (("team-spec/SKILL.md", spec_skill), ("team-spec/references/spec-method.md", spec_method)):
+            self.assertIn("--backfill", txt, f"{name} missing --backfill")
+            self.assertIn("--preserve-owner", txt, f"{name} missing --preserve-owner")
+            self.assertIn("Q-###", txt, f"{name} missing Q-###")
+            self.assertIn("material_backfilled", txt, f"{name} missing material_backfilled")
+            self.assertIn("spec_pending_confirmation", txt, f"{name} missing spec_pending_confirmation")
+            self.assertIn("analysis.md", txt, f"{name} missing analysis.md boundary")
+            self.assertIn("persistence", txt.lower(), f"{name} missing has_data persistence API clarification")
+
+        # 3. team-plan SKILL.md covers epic-decompose preview -> confirm -> apply and keeps Phase 1 platform-neutral
+        plan_skill = (SKILLS_DIR / "team-plan" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("epic-decompose", plan_skill)
+        self.assertIn("dry_run", plan_skill)
+        self.assertIn("--apply", plan_skill)
+        self.assertIn("run-workflow", plan_skill)
+
+        # 4. team-next-step SKILL.md documents status --epic
+        next_skill = (SKILLS_DIR / "team-next-step" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("status --epic", next_skill)
+        self.assertIn("blocked_by_dependencies", next_skill)
+
+        # 5. common-workflow-governance.md references epic-decompose, status --epic, and backfill
+        gov_md = (SKILLS_DIR / "team-init" / "references" / "common-workflow-governance.md").read_text(encoding="utf-8")
+        self.assertIn("epic-decompose", gov_md)
+        self.assertIn("status [--epic", gov_md)
+        self.assertIn("--backfill", gov_md)
 
 
 if __name__ == "__main__":

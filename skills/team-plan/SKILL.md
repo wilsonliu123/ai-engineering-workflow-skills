@@ -21,12 +21,13 @@ Choose the smallest mode that matches the request:
 
 | Mode | Use | Result |
 |---|---|---|
-| `epic` | Adopt or create the Epic context | Epic key, goal, scope, and candidate Story boundary |
+| `epic` | Adopt or inspect an Epic context | Epic key, goal, scope, and candidate Story boundary |
+| `decompose` | Analyze Epic + codebase into wave-ordered Stories (`epic-decompose`) | Preview (`dry_run: true`) -> explicit human confirmation -> created Stories under Epic + local active state |
 | `sprint` | Create or inspect a Future/Active Sprint | Sprint payload and candidate membership |
 | `commit` | Put selected issues into an existing or newly created Sprint | Applied issue keys and Jira Sprint id |
-| `status` | Read current board/Sprint state | Sprint state, issue counts, and exclusions |
+| `status` | Read current board/Sprint or Epic progress state | Sprint state or Epic progress rollup (`status --epic`) |
 
-If an Epic already exists in Jira, adopt its key. Do not create a duplicate Epic. The current repository does not provide a separate Epic-create command; keep Epic creation in Jira or add it to this planning layer only when explicitly requested.
+If an Epic already exists in Jira, adopt its key. Do not create a duplicate Epic. The current repository does not provide a separate Epic-create command; keep Epic creation in Jira, and use `epic-decompose` to break an existing Epic down into child User Stories.
 
 ## Workflow
 
@@ -81,6 +82,20 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
 ```
 
 When creating a new Sprint, omit `--sprint-id`; the CLI creates a Future Sprint first, then moves selected issues in batches of at most 50. When `--sprint-id` is present, provided name/goal/date fields update that Sprint before membership changes. If the user has not confirmed, leave `dry_run: true` and make no external write.
+
+### 3b. Epic Decomposition (`epic-decompose` — Phase 1 Platform-Neutral)
+
+When breaking an existing Epic (`<EPIC-KEY>`) into multiple User Stories with cross-Story dependencies and shared contracts:
+
+1. **Mandatory Preview First (`dry_run: true`):** Run `jira_sync.py epic-decompose` **without** `--apply`. The CLI validates `--stories-json` (rejects missing/blank titles, duplicate local IDs, unknown `depends_on`, self-dependencies, and dependency cycles), detects potential duplicates against existing Jira children and `.ai-workflow/active/*.json`, computes topological `execution_waves` (`Wave 1`, `Wave 2`, ...), and returns `requires_user_confirmation: true` and `can_auto_chain_next_station: false` with zero mutations:
+   ```bash
+   python3 .ai-workflow/bin/jira_sync.py --repo-root . epic-decompose \
+     --epic "<EPIC-KEY>" \
+     --stories-json '@stories.json'
+   ```
+2. **STOP for Explicit Human Confirmation:** Present the `execution_waves`, `stories_to_create`, `shared_contracts_summary`, and any `duplicate_warnings`. Do **NOT** pass `--apply` until the user explicitly confirms.
+3. **Apply in Topological Wave Order (`--apply`):** After confirmation, rerun with `--apply`. Stories are created wave-by-wave so downstream `depends_on_keys` resolve to real upstream Jira keys, Epic linking uses `parent` with graceful fallback to configured `epic_link_field` (or unlinked warning on HTTP 400), and each created Story persists `.ai-workflow/active/<NEW-KEY>.json` (`spec_status: "draft"`) for `team-spec` and `status --epic <EPIC-KEY>`.
+4. **Platform-Neutral Boundary (Phase 1):** Keep `epic-decompose` strictly platform-neutral — do **NOT** couple `skills/system/run-workflow` or multi-Story Sub-agent parallel execution into `team-plan` or other core `team-*` skills so every client (Codex CLI, Claude Code, Antigravity, etc.) runs the identical workflow.
 
 ### 4. Route each Story into delivery
 

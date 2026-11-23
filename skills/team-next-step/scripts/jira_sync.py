@@ -9,8 +9,9 @@ Supports both:
 
 Subcommands:
   init            Initialize .ai-workflow/team-config.json, .gitignore, and extract engineering-standards.md
-  status          Inspect active workflow state and recommend the exact next station/role
-  sync-story      Create/update Story spec (Scope, AC-*, conditional UI/API design, 抓大放小 decisions)
+  status          Inspect active workflow state (or --epic <KEY> rollup) and recommend the exact next station/role
+  epic-decompose  Preview (dry_run) or apply platform-neutral Epic-to-Story decomposition with wave ordering
+  sync-story      Create/update/backfill Story spec (Scope, AC-*, conditional UI/API design, 抓大放小 decisions, optional risks/Q-###)
   create-subtasks Create development tasks (TASK-001..N) and Jira Sub-tasks
   complete-task   Mark a task or Bug completed with commit SHA, changed files, test evidence, and optional root-cause/solution
   handoff         Record review/station handoff with multi-role awareness (auto-consolidate vs @mention vs gated_by_deploy)
@@ -156,6 +157,7 @@ DEFAULT_TEAM_CONFIG = {
     "version": "1.0",
     "project_key": "PROJ",
     "jira_board_id": "",
+    "epic_link_field": "",
     "jira_base_url": "",
     "language": "zh-TW",
     "sync_mode": "auto",
@@ -242,13 +244,26 @@ def now_iso() -> str:
 
 
 def load_json_arg(val: str):
-    """Load JSON either from a file path (if it exists) or from a raw JSON string."""
-    if not val:
+    """Load JSON from an @file path, an existing file path, or a raw JSON string."""
+    if val is None or not str(val).strip():
         return None
-    p = Path(val)
-    if p.exists() and p.is_file():
+    s = str(val).strip()
+    if s.startswith("@"):
+        file_path = s[1:].strip()
+        if not file_path:
+            raise ValueError("Empty JSON file path after '@'.")
+        p = Path(file_path)
+        if not p.exists() or not p.is_file():
+            raise ValueError(f"JSON file not found: {file_path}")
         return json.loads(p.read_text(encoding="utf-8"))
-    return json.loads(val)
+    p = Path(s)
+    try:
+        is_file = p.exists() and p.is_file()
+    except OSError:
+        is_file = False
+    if is_file:
+        return json.loads(p.read_text(encoding="utf-8"))
+    return json.loads(s)
 
 
 def get_workflow_dir(repo_root: Path) -> Path:
@@ -585,6 +600,8 @@ def load_team_config(repo_root: Path) -> dict:
         merged["qa_handoff_mode"] = get_effective_qa_handoff_mode(merged)
         raw_pat = merged.get("commit_message_pattern")
         merged["commit_message_pattern"] = "" if raw_pat is None else raw_pat
+        raw_elf = merged.get("epic_link_field")
+        merged["epic_link_field"] = raw_elf.strip() if isinstance(raw_elf, str) else ""
         merged["roles"] = {**DEFAULT_TEAM_CONFIG["roles"], **data.get("roles", {})}
         raw_sm = data.get("status_mapping") if isinstance(data.get("status_mapping"), dict) else {}
         sanitized_sm = {}
@@ -1666,6 +1683,76 @@ class JiraClient:
         res = self._request("POST", "/rest/api/3/issue", payload)
         return res.get("key") or fallback_key or f"{proj_key}-BUG-1"
 
+    def create_epic_story(
+        self,
+        epic_key: str,
+        title: str,
+        description_md: str,
+        issue_type: str = "Story",
+        priority: str = "",
+    ) -> dict:
+        """Create a child Story under a Jira Epic with parent -> epic_link_field -> unlinked HTTP 400 fallback."""
+        proj_key = self.config.get("project_key") or epic_key.split("-")[0]
+        eff_type = _clean_optional_text(issue_type) or (self.config.get("issue_type_mapping") or {}).get("story") or "Story"
+        if not self.is_live:
+            return {"mode": "offline", "jira_key": "", "epic_link_mode": "offline", "warning": ""}
+
+        adf = self.text_to_adf(description_md)
+        base_fields = {
+            "project": {"key": proj_key},
+            "summary": title,
+            "description": adf,
+            "issuetype": {"name": eff_type},
+        }
+        clean_prio = _clean_optional_text(priority)
+        if clean_prio:
+            base_fields["priority"] = {"name": clean_prio}
+
+        try:
+            res = self._request("POST", "/rest/api/3/issue", {"fields": {**base_fields, "parent": {"key": epic_key}}})
+            new_key = _clean_optional_text((res or {}).get("key")).upper()
+            if not new_key:
+                raise RuntimeError("Jira API did not return a Story key.")
+            return {"mode": "live", "jira_key": new_key, "epic_link_mode": "parent", "warning": ""}
+        except RuntimeError as exc:
+            if "HTTP 400" not in str(exc):
+                raise
+
+        epic_link_field = _clean_optional_text(self.config.get("epic_link_field"))
+        if epic_link_field:
+            try:
+                res2 = self._request("POST", "/rest/api/3/issue", {"fields": {**base_fields, epic_link_field: epic_key}})
+                new_key = _clean_optional_text((res2 or {}).get("key")).upper()
+                if not new_key:
+                    raise RuntimeError("Jira API did not return a Story key.")
+                return {
+                    "mode": "live",
+                    "jira_key": new_key,
+                    "epic_link_mode": "epic_link_field",
+                    "epic_link_field": epic_link_field,
+                    "warning": (
+                        f"Jira rejected fields.parent (HTTP 400); linked Story {new_key} to Epic {epic_key} "
+                        f"via configured epic_link_field '{epic_link_field}'."
+                    ),
+                }
+            except RuntimeError as exc2:
+                if "HTTP 400" not in str(exc2):
+                    raise
+
+        res3 = self._request("POST", "/rest/api/3/issue", {"fields": base_fields})
+        new_key = _clean_optional_text((res3 or {}).get("key")).upper()
+        if not new_key:
+            raise RuntimeError("Jira API did not return a Story key.")
+        return {
+            "mode": "live",
+            "jira_key": new_key,
+            "epic_link_mode": "unlinked",
+            "warning": (
+                f"Jira rejected fields.parent for Epic {epic_key} (HTTP 400); created Story {new_key} "
+                f"without parent Epic link. Configure 'epic_link_field' in .ai-workflow/team-config.json or link manually in Jira."
+            ),
+        }
+
     def add_comment(self, issue_key: str, body_md: str, mention_account_id: str = "", mention_name: str = "") -> dict:
         adf = self.text_to_adf(
             body_md,
@@ -2718,7 +2805,89 @@ def reconcile_story_with_jira(
     return story, delta
 
 
-def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str):
+def _search_jql_issues(client: JiraClient, jql: str, fields: list, max_results: int = 100) -> list:
+    """Query Jira issues via POST /rest/api/3/search/jql with /search HTTP 404 fallback."""
+    if not client or not client.is_live or not (jql or "").strip():
+        return []
+    payload = {
+        "jql": jql,
+        "maxResults": max_results,
+        "fields": list(fields or ["summary", "status", "issuetype", "parent"]),
+    }
+    try:
+        res = client._request("POST", "/rest/api/3/search/jql", payload)
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+        res = client._request("POST", "/rest/api/3/search", payload)
+    issues = (res or {}).get("issues") if isinstance(res, dict) else []
+    return issues if isinstance(issues, list) else []
+
+
+def _fetch_epic_children_live(client: JiraClient, config: dict, epic_key: str) -> tuple:
+    """
+    Fetch child issues under a Jira Epic using `parent = "<EPIC>"` with `"Epic Link" = "<EPIC>"` fallback.
+    Returns (filtered_issues, query_mode, warnings).
+    """
+    clean_epic = validate_jira_key(epic_key)
+    if not client or not client.is_live:
+        return ([], "offline", [])
+
+    fields = ["summary", "status", "issuetype", "parent", "assignee", "subtasks", "issuelinks", "resolution"]
+    cfg_elf = _clean_optional_text((config or {}).get("epic_link_field"))
+    if cfg_elf and cfg_elf not in fields:
+        fields.append(cfg_elf)
+
+    warnings = []
+    issues_raw = []
+    query_mode = "parent"
+    parent_failed_err = ""
+
+    try:
+        issues_raw = _search_jql_issues(client, f'parent = "{clean_epic}"', fields)
+    except RuntimeError as exc:
+        if "HTTP 400" in str(exc) or "HTTP 404" in str(exc):
+            parent_failed_err = str(exc)
+            issues_raw = []
+        else:
+            warnings.append(f"Failed to query Epic {clean_epic} children via parent JQL: {exc}")
+            return ([], "error", warnings)
+
+    if parent_failed_err or not issues_raw:
+        try:
+            issues_fallback = _search_jql_issues(client, f'"Epic Link" = "{clean_epic}"', fields)
+            if parent_failed_err or issues_fallback:
+                issues_raw = issues_fallback
+                query_mode = "epic_link"
+        except RuntimeError as exc2:
+            if parent_failed_err:
+                warnings.append(
+                    f"Failed to query Epic {clean_epic} children (parent query: {parent_failed_err}; Epic Link query: {exc2})."
+                )
+                return ([], "error", warnings)
+
+    filtered = []
+    seen_keys = set()
+    skip_types = {"epic", "sub-task", "subtask", "子任務"}
+    for iss in issues_raw:
+        if not isinstance(iss, dict):
+            continue
+        k = _clean_optional_text(iss.get("key")).upper()
+        if not k or k == clean_epic or k in seen_keys:
+            continue
+        flds = iss.get("fields") or {}
+        itype = flds.get("issuetype") or {}
+        if itype.get("subtask") is True:
+            continue
+        itype_name = _clean_optional_text(itype.get("name")).lower()
+        if itype_name in skip_types:
+            continue
+        seen_keys.add(k)
+        filtered.append(iss)
+    return (filtered, query_mode, warnings)
+
+
+def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str, persist: bool = True):
     """
     Auto-hydrate .ai-workflow/active/<KEY>.json from remote Jira issue when local file is missing.
     Supports hidden Jira Issue Property (ai_workflow_state), legacy [ai-workflow-state] snapshot
@@ -2916,6 +3085,17 @@ def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str
                     ],
                 }
 
+    parent_obj = fields.get("parent") if isinstance(fields.get("parent"), dict) else {}
+    parent_key = _clean_optional_text(parent_obj.get("key")).upper()
+    parent_type = _clean_optional_text(((parent_obj.get("fields") or {}).get("issuetype") or {}).get("name")).lower()
+    cfg_elf = _clean_optional_text(((client.config or {}).get("epic_link_field")))
+    elf_val = _clean_optional_text(fields.get(cfg_elf)).upper() if cfg_elf else ""
+    if not story.get("epic_key"):
+        if parent_key and (not parent_type or parent_type == "epic"):
+            story["epic_key"] = parent_key
+        elif elf_val:
+            story["epic_key"] = elf_val
+
     story, _ = reconcile_story_with_jira(
         client=client,
         config=client.config or load_team_config(repo_root),
@@ -2926,7 +3106,8 @@ def hydrate_story_from_remote(client: JiraClient, repo_root: Path, jira_key: str
         snapshot=snapshot,
         save=False,
     )
-    save_active_story(repo_root, clean_key, story, client=None, sync_remote=False)
+    if persist:
+        save_active_story(repo_root, clean_key, story, client=None, sync_remote=False)
     return story
 
 
@@ -3800,6 +3981,505 @@ def cmd_sprint_status(args) -> int:
         sprints = client.list_sprints(board_id, args.state or "")
         out = {"mode": "live" if client.is_live else "offline", "board_id": board_id, "sprints": sprints}
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _validate_and_plan_epic_stories(raw_stories_arg) -> tuple:
+    """
+    Parse, validate, and topologically order Epic child Story specs into execution waves.
+    Raises ValueError on malformed JSON, empty/non-list input, missing/blank title,
+    duplicate local IDs, self-dependency, unknown depends_on, or dependency cycles.
+    """
+    if raw_stories_arg is None or not str(raw_stories_arg).strip():
+        raise ValueError("--stories-json must be a non-empty JSON array.")
+    try:
+        parsed = load_json_arg(raw_stories_arg)
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
+        raise ValueError(f"Invalid --stories-json: {exc}") from exc
+
+    if not isinstance(parsed, list) or not parsed:
+        raise ValueError("--stories-json must be a non-empty JSON array of Story objects.")
+
+    explicit_ids_lower = set()
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            raise ValueError(f"Story spec at index {idx} must be a JSON object.")
+        if "id" in item and item["id"] is not None:
+            if not isinstance(item["id"], str) or not item["id"].strip():
+                raise ValueError(f"Story spec at index {idx} has an empty or non-string 'id'.")
+            raw_id = item["id"].strip()
+            if raw_id.lower() in explicit_ids_lower:
+                raise ValueError(f"Duplicate local story id '{raw_id}' in --stories-json.")
+            explicit_ids_lower.add(raw_id.lower())
+
+    used_ids_lower = set(explicit_ids_lower)
+    next_seq = 1
+    normalized = []
+    by_id = {}
+
+    for idx, item in enumerate(parsed):
+        raw_title = item.get("title")
+        if not isinstance(raw_title, str) or not raw_title.strip():
+            raise ValueError(f"Story spec at index {idx} is missing a non-empty string 'title'.")
+        title = raw_title.strip()
+
+        if "id" in item and item["id"] is not None:
+            sid = item["id"].strip()
+        else:
+            while f"s-{next_seq}" in used_ids_lower:
+                next_seq += 1
+            sid = f"S-{next_seq}"
+            next_seq += 1
+            used_ids_lower.add(sid.lower())
+
+        summary = _clean_optional_text(item.get("summary"))
+        scope = _clean_optional_text(item.get("scope"))
+        scope_in = _clean_optional_text(item.get("scope_in")) or scope or summary or title
+        scope_out = _clean_optional_text(item.get("scope_out")) or "N/A"
+
+        raw_acs = item.get("acceptance_criteria")
+        acs = []
+        if raw_acs is not None:
+            if not isinstance(raw_acs, list):
+                raise ValueError(f"Story '{sid}' field 'acceptance_criteria' must be a list.")
+            for a_idx, raw_ac in enumerate(raw_acs, start=1):
+                if isinstance(raw_ac, str):
+                    s = raw_ac.strip()
+                    if not s:
+                        continue
+                    if ":" in s and re.match(r"^AC-\d+$", s.split(":", 1)[0].strip(), re.IGNORECASE):
+                        ac_id, ac_desc = s.split(":", 1)
+                        ac_id = ac_id.strip().upper()
+                        ac_desc = ac_desc.strip()
+                    else:
+                        ac_id = f"AC-{a_idx:03d}"
+                        ac_desc = s
+                    if ac_desc:
+                        acs.append({"id": ac_id, "description": ac_desc})
+                elif isinstance(raw_ac, dict):
+                    ac_id = _clean_optional_text(raw_ac.get("id")).upper() or f"AC-{a_idx:03d}"
+                    ac_desc = _clean_optional_text(raw_ac.get("description") or raw_ac.get("text"))
+                    if ac_desc:
+                        acs.append({"id": ac_id, "description": ac_desc})
+                else:
+                    raise ValueError(f"Story '{sid}' contains an invalid acceptance criterion entry.")
+
+        raw_deps = item.get("depends_on")
+        deps = []
+        if raw_deps is not None:
+            if not isinstance(raw_deps, list):
+                raise ValueError(f"Story '{sid}' field 'depends_on' must be a list of story IDs.")
+            for d in raw_deps:
+                if not isinstance(d, str) or not d.strip():
+                    raise ValueError(f"Story '{sid}' contains an empty or non-string entry in 'depends_on'.")
+                clean_d = d.strip()
+                if clean_d not in deps:
+                    deps.append(clean_d)
+
+        raw_sc = item.get("shared_contracts")
+        shared_contracts = []
+        if raw_sc is not None:
+            if isinstance(raw_sc, str):
+                sc_clean = _clean_optional_text(raw_sc)
+                if sc_clean:
+                    shared_contracts.append(sc_clean)
+            elif isinstance(raw_sc, list):
+                for x in raw_sc:
+                    sc_clean = _clean_optional_text(x)
+                    if sc_clean:
+                        shared_contracts.append(sc_clean)
+            else:
+                raise ValueError(f"Story '{sid}' field 'shared_contracts' must be a list or string.")
+
+        priority = _clean_optional_text(item.get("priority"))
+        raw_sp = item.get("story_points")
+        story_points = None
+        if raw_sp is not None and not (isinstance(raw_sp, str) and not raw_sp.strip()):
+            if isinstance(raw_sp, bool):
+                raise ValueError(f"Story '{sid}' field 'story_points' must be numeric.")
+            if isinstance(raw_sp, (int, float)):
+                story_points = raw_sp
+            elif isinstance(raw_sp, str):
+                try:
+                    num = float(raw_sp.strip())
+                    story_points = int(num) if num.is_integer() else num
+                except ValueError as exc:
+                    raise ValueError(f"Story '{sid}' field 'story_points' must be numeric.") from exc
+            else:
+                raise ValueError(f"Story '{sid}' field 'story_points' must be numeric.")
+
+        rec = {
+            "id": sid,
+            "title": title,
+            "summary": summary or scope_in,
+            "scope_in": scope_in,
+            "scope_out": scope_out,
+            "acceptance_criteria": acs,
+            "depends_on": deps,
+            "shared_contracts": shared_contracts,
+            "priority": priority,
+            "story_points": story_points,
+        }
+        normalized.append(rec)
+        by_id[sid] = rec
+
+    for rec in normalized:
+        sid = rec["id"]
+        for dep in rec["depends_on"]:
+            if dep == sid:
+                raise ValueError(f"Self-dependency detected: story '{sid}' cannot depend on itself.")
+            if dep not in by_id:
+                raise ValueError(f"Story '{sid}' depends on unknown story id '{dep}'.")
+
+    # Topological wave computation (Kahn's algorithm preserving input order within each wave)
+    in_degree = {rec["id"]: len(rec["depends_on"]) for rec in normalized}
+    dependents = {rec["id"]: [] for rec in normalized}
+    for rec in normalized:
+        for dep in rec["depends_on"]:
+            dependents[dep].append(rec["id"])
+
+    ready = [rec["id"] for rec in normalized if in_degree[rec["id"]] == 0]
+    processed = set()
+    execution_waves = []
+    wave_num = 0
+    while ready:
+        wave_num += 1
+        execution_waves.append({
+            "wave": wave_num,
+            "label": f"Wave {wave_num}",
+            "story_ids": list(ready),
+        })
+        for sid in ready:
+            by_id[sid]["wave"] = wave_num
+            processed.add(sid)
+        newly_unlocked = set()
+        for sid in ready:
+            for dep_child in dependents[sid]:
+                in_degree[dep_child] -= 1
+                if in_degree[dep_child] == 0:
+                    newly_unlocked.add(dep_child)
+        ready = [rec["id"] for rec in normalized if rec["id"] in newly_unlocked]
+
+    if len(processed) < len(normalized):
+        remaining = [rec["id"] for rec in normalized if rec["id"] not in processed]
+        state = {}
+        stack = []
+        cycle_path = None
+
+        def _find_cycle(node: str) -> bool:
+            nonlocal cycle_path
+            state[node] = 1
+            stack.append(node)
+            for dep in by_id[node]["depends_on"]:
+                if dep in processed:
+                    continue
+                if state.get(dep) == 1:
+                    idx_start = stack.index(dep)
+                    cycle_path = stack[idx_start:] + [dep]
+                    return True
+                if state.get(dep, 0) == 0 and _find_cycle(dep):
+                    return True
+            stack.pop()
+            state[node] = 2
+            return False
+
+        for rem_id in remaining:
+            if state.get(rem_id, 0) == 0 and _find_cycle(rem_id):
+                break
+        cycle_str = " -> ".join(cycle_path) if cycle_path else ", ".join(remaining)
+        raise ValueError(f"Circular dependency cycle detected: {cycle_str}")
+
+    shared_contracts_summary = []
+    seen_sc = set()
+    for rec in normalized:
+        for sc in rec["shared_contracts"]:
+            if sc not in seen_sc:
+                seen_sc.add(sc)
+                shared_contracts_summary.append(sc)
+
+    return normalized, execution_waves, shared_contracts_summary
+
+
+def cmd_epic_decompose(args) -> int:
+    repo_root = Path(args.repo_root).resolve()
+    epic_key = validate_jira_key(args.epic)
+    stories, execution_waves, shared_contracts_summary = _validate_and_plan_epic_stories(args.stories_json)
+
+    raw_issue_type = getattr(args, "issue_type", None)
+    if raw_issue_type is not None and not _clean_optional_text(raw_issue_type):
+        raise ValueError("--issue-type cannot be empty.")
+
+    config = load_team_config(repo_root)
+    eff_issue_type = (
+        _clean_optional_text(raw_issue_type)
+        or (config.get("issue_type_mapping") or {}).get("story")
+        or "Story"
+    )
+    client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="pm")
+    if not ensure_live_or_explicit_offline(client, config, args.offline):
+        return 1
+
+    active_dir = get_active_dir(repo_root)
+    existing_by_key = {}
+    if active_dir.exists():
+        for af in sorted(active_dir.glob("*.json")):
+            try:
+                st = json.loads(af.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(st, dict) and _clean_optional_text(st.get("epic_key")).upper() == epic_key:
+                k = _clean_optional_text(st.get("jira_key") or af.stem).upper()
+                existing_by_key[k] = {
+                    "key": k,
+                    "title": _clean_optional_text(st.get("title")) or k,
+                    "jira_status": _clean_optional_text(st.get("jira_status")) or "To Do",
+                    "epic_decompose_id": _clean_optional_text(st.get("epic_decompose_id")),
+                    "source": "local",
+                }
+
+    epic_summary = epic_key
+    warnings = []
+    if client.is_live:
+        try:
+            epic_issue = client.get_issue(epic_key)
+            if isinstance(epic_issue, dict):
+                e_sum = _clean_optional_text(((epic_issue.get("fields") or {}).get("summary")))
+                if e_sum:
+                    epic_summary = e_sum
+        except Exception:
+            pass
+        remote_children, _, fetch_warnings = _fetch_epic_children_live(client, config, epic_key)
+        warnings.extend(fetch_warnings)
+        for iss in remote_children:
+            rk = _clean_optional_text(iss.get("key")).upper()
+            flds = iss.get("fields") or {}
+            r_sum = _clean_optional_text(flds.get("summary")) or rk
+            r_st = _clean_optional_text(((flds.get("status") or {}).get("name"))) or "To Do"
+            if rk in existing_by_key:
+                existing_by_key[rk]["title"] = r_sum or existing_by_key[rk]["title"]
+                existing_by_key[rk]["jira_status"] = r_st or existing_by_key[rk]["jira_status"]
+                existing_by_key[rk]["source"] = "local+jira"
+            else:
+                existing_by_key[rk] = {
+                    "key": rk,
+                    "title": r_sum,
+                    "jira_status": r_st,
+                    "epic_decompose_id": "",
+                    "source": "jira",
+                }
+
+    existing_stories = [existing_by_key[k] for k in sorted(existing_by_key.keys())]
+    existing_by_decompose_id = {}
+    existing_by_norm_title = {}
+    for row in existing_stories:
+        if row.get("epic_decompose_id"):
+            existing_by_decompose_id[row["epic_decompose_id"].lower()] = row["key"]
+        norm_t = re.sub(r"\s+", " ", (row.get("title") or "").strip().lower())
+        if norm_t and norm_t not in existing_by_norm_title:
+            existing_by_norm_title[norm_t] = row["key"]
+
+    duplicate_warnings = []
+    stories_to_create = []
+    skipped_existing = []
+    for spec in stories:
+        sid = spec["id"]
+        norm_t = re.sub(r"\s+", " ", spec["title"].strip().lower())
+        if sid.lower() in existing_by_decompose_id:
+            ex_key = existing_by_decompose_id[sid.lower()]
+            duplicate_warnings.append({
+                "id": sid,
+                "title": spec["title"],
+                "existing_key": ex_key,
+                "match_type": "epic_decompose_id",
+                "message": f"Story '{sid}' was already created as {ex_key} under Epic {epic_key}; skipping duplicate creation.",
+            })
+            skipped_existing.append({"id": sid, "title": spec["title"], "existing_key": ex_key})
+            continue
+        if norm_t in existing_by_norm_title:
+            ex_key = existing_by_norm_title[norm_t]
+            duplicate_warnings.append({
+                "id": sid,
+                "title": spec["title"],
+                "existing_key": ex_key,
+                "match_type": "title",
+                "message": f"Potential duplicate under Epic {epic_key}: existing Story {ex_key} has a matching title '{spec['title']}'.",
+            })
+        stories_to_create.append(spec)
+
+    if not getattr(args, "apply", False):
+        out = {
+            "ok": True,
+            "action": "epic-decompose",
+            "mode": "preview",
+            "dry_run": True,
+            "applied": False,
+            "execution_mode": "live" if client.is_live else "offline",
+            "epic_key": epic_key,
+            "epic_summary": epic_summary,
+            "issue_type": eff_issue_type,
+            "existing_stories": existing_stories,
+            "stories_to_create": stories_to_create,
+            "skipped_existing": skipped_existing,
+            "duplicate_warnings": duplicate_warnings,
+            "execution_waves": execution_waves,
+            "shared_contracts_summary": shared_contracts_summary,
+            "total_to_create": len(stories_to_create),
+            "warnings": warnings,
+            "requires_user_confirmation": True,
+            "can_auto_chain_next_station": False,
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    spec_by_id = {s["id"]: s for s in stories}
+    local_to_jira_key = {}
+    created_stories = []
+    skipped_stories = []
+    failed_stories = []
+    failed_local_ids = set()
+    used_offline_keys = {f.stem.upper() for f in (active_dir.glob("*.json") if active_dir.exists() else [])}
+    offline_seq = 1
+
+    for wave_info in execution_waves:
+        wave_num = wave_info["wave"]
+        for sid in wave_info["story_ids"]:
+            spec = spec_by_id[sid]
+            if sid.lower() in existing_by_decompose_id:
+                ex_key = existing_by_decompose_id[sid.lower()]
+                local_to_jira_key[sid] = ex_key
+                skipped_stories.append({
+                    "id": sid,
+                    "title": spec["title"],
+                    "jira_key": ex_key,
+                    "wave": wave_num,
+                    "reason": "epic_decompose_id_already_exists",
+                })
+                continue
+
+            failed_deps = [d for d in spec["depends_on"] if d in failed_local_ids or d not in local_to_jira_key]
+            if failed_deps:
+                err_msg = f"Skipped because upstream dependency failed to create: {', '.join(failed_deps)}"
+                failed_local_ids.add(sid)
+                failed_stories.append({
+                    "id": sid,
+                    "title": spec["title"],
+                    "wave": wave_num,
+                    "error": err_msg,
+                })
+                continue
+
+            depends_on_keys = [local_to_jira_key[d] for d in spec["depends_on"]]
+            design_parts = [spec["summary"] or f"Decomposed from Epic {epic_key} ({sid}, Wave {wave_num})."]
+            if depends_on_keys:
+                design_parts.append(f"Depends on Stories: {', '.join(depends_on_keys)}")
+            if spec["shared_contracts"]:
+                design_parts.append(f"Shared Contracts: {'; '.join(spec['shared_contracts'])}")
+
+            story_obj = {
+                "jira_key": f"{epic_key}:{sid}",
+                "epic_key": epic_key,
+                "epic_decompose_id": sid,
+                "title": spec["title"],
+                "scope_in": spec["scope_in"],
+                "scope_out": spec["scope_out"],
+                "change_surface": {"has_ui": False, "has_api": False, "has_data": False},
+                "risk_level": "medium",
+                "acceptance_criteria": spec["acceptance_criteria"],
+                "design": {"summary": "\n".join(design_parts)},
+                "spec_status": "draft",
+                "jira_status": "To Do",
+                "depends_on": list(spec["depends_on"]),
+                "depends_on_keys": depends_on_keys,
+                "wave": wave_num,
+                "shared_contracts": list(spec["shared_contracts"]),
+                "tasks": [],
+                "bugs": [],
+            }
+            if spec["priority"]:
+                story_obj["priority"] = spec["priority"]
+            if spec["story_points"] is not None:
+                story_obj["story_points"] = spec["story_points"]
+
+            try:
+                if client.is_live:
+                    desc_md = format_story_description(story_obj, config)
+                    create_res = client.create_epic_story(
+                        epic_key=epic_key,
+                        title=spec["title"],
+                        description_md=desc_md,
+                        issue_type=eff_issue_type,
+                        priority=spec["priority"],
+                    )
+                    new_key = validate_jira_key(create_res["jira_key"])
+                    epic_link_mode = create_res.get("epic_link_mode") or "parent"
+                    if create_res.get("warning"):
+                        warnings.append(create_res["warning"])
+                else:
+                    while f"{epic_key}-S{offline_seq}" in used_offline_keys:
+                        offline_seq += 1
+                    new_key = f"{epic_key}-S{offline_seq}"
+                    used_offline_keys.add(new_key)
+                    offline_seq += 1
+                    story_obj["jira_key"] = new_key
+                    desc_md = format_story_description(story_obj, config)
+                    epic_link_mode = "offline"
+
+                story_obj["jira_key"] = new_key
+                story_obj["last_synced_description_hash"] = _compute_description_hash(
+                    _adf_to_plain_text(client.text_to_adf(desc_md)).strip()
+                )
+                saved_path = save_active_story(repo_root, new_key, story_obj, client=client, sync_remote=True)
+                local_to_jira_key[sid] = new_key
+                created_stories.append({
+                    "id": sid,
+                    "jira_key": new_key,
+                    "title": spec["title"],
+                    "wave": wave_num,
+                    "depends_on": list(spec["depends_on"]),
+                    "depends_on_keys": depends_on_keys,
+                    "shared_contracts": list(spec["shared_contracts"]),
+                    "epic_link_mode": epic_link_mode,
+                    "active_file": str(saved_path.relative_to(repo_root)),
+                })
+            except Exception as exc:
+                failed_local_ids.add(sid)
+                failed_stories.append({
+                    "id": sid,
+                    "title": spec["title"],
+                    "wave": wave_num,
+                    "error": str(exc),
+                })
+
+    has_failures = bool(failed_stories)
+    out = {
+        "ok": not has_failures,
+        "action": "epic-decompose",
+        "mode": "apply",
+        "dry_run": False,
+        "applied": bool(created_stories),
+        "partial_failure": has_failures,
+        "execution_mode": "live" if client.is_live else "offline",
+        "epic_key": epic_key,
+        "epic_summary": epic_summary,
+        "issue_type": eff_issue_type,
+        "created_stories": created_stories,
+        "skipped_stories": skipped_stories,
+        "failed_stories": failed_stories,
+        "warnings": warnings,
+        "duplicate_warnings": duplicate_warnings,
+        "execution_waves": execution_waves,
+        "shared_contracts_summary": shared_contracts_summary,
+        "total_created": len(created_stories),
+        "requires_user_confirmation": True,
+        "can_auto_chain_next_station": False,
+    }
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    if has_failures:
+        print(
+            f"ERROR: Epic {epic_key} decomposition had {len(failed_stories)} failure(s); {len(created_stories)} Story(ies) created.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -4735,7 +5415,254 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
     }
 
 
+def _cmd_status_epic(
+    repo_root: Path,
+    config: dict,
+    client: JiraClient,
+    standards_exists: bool,
+    creds_missing: bool,
+    raw_epic: str,
+) -> int:
+    epic_key = validate_jira_key(raw_epic)
+    active_dir = get_active_dir(repo_root)
+    stories_by_key = {}
+
+    if active_dir.exists():
+        for af in sorted(active_dir.glob("*.json")):
+            try:
+                st = json.loads(af.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(st, dict) and _clean_optional_text(st.get("epic_key")).upper() == epic_key:
+                k = _clean_optional_text(st.get("jira_key") or af.stem).upper()
+                stories_by_key[k] = st
+
+    if not stories_by_key:
+        main_root = _resolve_main_worktree_root(repo_root)
+        if main_root and get_active_dir(main_root).exists():
+            for mf in sorted(get_active_dir(main_root).glob("*.json")):
+                try:
+                    st = json.loads(mf.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if isinstance(st, dict) and _clean_optional_text(st.get("epic_key")).upper() == epic_key:
+                    k = _clean_optional_text(st.get("jira_key") or mf.stem).upper()
+                    stories_by_key[k] = st
+
+    if not stories_by_key and creds_missing:
+        base_url = (config.get("jira_base_url") or "").strip()
+        claimed_map, unclaimed_list = _partition_claimed_roles(config)
+        out = {
+            "initialized": True,
+            "standards_exists": standards_exists,
+            "epic_key": epic_key,
+            "credentials_missing": True,
+            "requires_member_auth": True,
+            "claimed_roles": claimed_map,
+            "unclaimed_roles": unclaimed_list,
+            "recommended_skill": "team-init",
+            "recommended_mode": "auth",
+            "reason": (
+                f"Project is configured for live Jira ({base_url}), but local `.ai-workflow/credentials.json` is missing "
+                f"(cannot fetch Epic {epic_key} progress)."
+            ),
+            "done_when": "Collaborator claims their role(s) and binds personal Jira credentials via `jira_sync.py auth --role <ROLES> --jira-email <EMAIL> --jira-token <TOKEN>`.",
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    epic_summary = epic_key
+    warnings = []
+    query_mode = "offline"
+    if client.is_live:
+        try:
+            epic_issue = client.get_issue(epic_key)
+            if isinstance(epic_issue, dict):
+                e_sum = _clean_optional_text(((epic_issue.get("fields") or {}).get("summary")))
+                if e_sum:
+                    epic_summary = e_sum
+        except Exception:
+            pass
+
+        for lk in list(stories_by_key.keys()):
+            try:
+                rec_st, _ = reconcile_story_with_jira(
+                    client, config, repo_root, lk, story=stories_by_key[lk], save=True
+                )
+                stories_by_key[lk] = rec_st
+            except Exception:
+                pass
+
+        remote_children, query_mode, fetch_warnings = _fetch_epic_children_live(client, config, epic_key)
+        warnings.extend(fetch_warnings)
+        for r_iss in remote_children:
+            rk = _clean_optional_text(r_iss.get("key")).upper()
+            r_flds = r_iss.get("fields") or {}
+            r_sum = _clean_optional_text(r_flds.get("summary")) or rk
+            r_st_name = _clean_optional_text(((r_flds.get("status") or {}).get("name"))) or "To Do"
+            if rk in stories_by_key:
+                if r_sum and not stories_by_key[rk].get("title"):
+                    stories_by_key[rk]["title"] = r_sum
+                if r_st_name:
+                    stories_by_key[rk]["jira_status"] = r_st_name
+            elif _is_jira_status_done(r_st_name, config):
+                stories_by_key[rk] = {
+                    "jira_key": rk,
+                    "epic_key": epic_key,
+                    "title": r_sum,
+                    "jira_status": r_st_name or "Done",
+                    "spec_status": "approved",
+                    "tasks": [],
+                    "bugs": [],
+                }
+            else:
+                hydrated = hydrate_story_from_remote(client, repo_root, rk, persist=False)
+                if isinstance(hydrated, dict):
+                    hydrated.setdefault("epic_key", epic_key)
+                    stories_by_key[rk] = hydrated
+                else:
+                    stories_by_key[rk] = {
+                        "jira_key": rk,
+                        "epic_key": epic_key,
+                        "title": r_sum,
+                        "jira_status": r_st_name,
+                        "spec_status": "draft",
+                        "tasks": [],
+                        "bugs": [],
+                    }
+
+    def _is_story_completed(st_obj: dict) -> bool:
+        if _is_jira_status_done(st_obj.get("jira_status", ""), config):
+            return True
+        if st_obj.get("issue_kind") == "standalone_bug" and st_obj.get("triage_closed"):
+            return True
+        return False
+
+    completed_keys = {k for k, st in stories_by_key.items() if _is_story_completed(st)}
+
+    ordered_items = sorted(
+        stories_by_key.items(),
+        key=lambda kv: (kv[1].get("wave") if isinstance(kv[1].get("wave"), int) else 9999, kv[0]),
+    )
+
+    story_rows = []
+    station_breakdown = {}
+    completed_stories = 0
+    in_progress_stories = 0
+    blocked_stories = 0
+    ready_to_start_stories = 0
+    next_candidates = []
+
+    for k, st in ordered_items:
+        is_completed = k in completed_keys
+        tasks = st.get("tasks") or []
+        bugs = st.get("bugs") or []
+        open_bugs = len([b for b in bugs if isinstance(b, dict) and b.get("status") not in ("completed", "closed")])
+        tasks_done = len([t for t in tasks if isinstance(t, dict) and t.get("status") == "completed"])
+        tasks_total = len(tasks)
+        depends_on_keys = [str(dk).strip().upper() for dk in (st.get("depends_on_keys") or []) if str(dk).strip()]
+        blocked_by_dependencies = [dk for dk in depends_on_keys if dk not in completed_keys]
+
+        if is_completed:
+            current_station = "Done"
+            recommended_skill = None
+            recommended_mode = None
+            rec = {}
+        else:
+            rec = evaluate_story_next_step(st, config, standards_exists)
+            current_station = rec.get("current_station") or "Unknown"
+            recommended_skill = rec.get("recommended_skill")
+            recommended_mode = rec.get("recommended_mode")
+
+        jira_status_str = _clean_optional_text(st.get("jira_status")) or ("Done" if is_completed else "To Do")
+        spec_status_str = _clean_optional_text(st.get("spec_status")) or ("approved" if is_completed else "draft")
+        wave_val = st.get("wave") if isinstance(st.get("wave"), int) else None
+
+        row = {
+            "key": k,
+            "title": _clean_optional_text(st.get("title")) or k,
+            "jira_status": jira_status_str,
+            "current_station": current_station,
+            "recommended_skill": recommended_skill,
+            "recommended_mode": recommended_mode,
+            "spec_status": spec_status_str,
+            "tasks_done": tasks_done,
+            "tasks_total": tasks_total,
+            "open_bugs": open_bugs,
+            "depends_on_keys": depends_on_keys,
+            "blocked_by_dependencies": blocked_by_dependencies,
+            "is_completed": is_completed,
+            "wave": wave_val,
+        }
+        story_rows.append(row)
+        station_breakdown[current_station] = station_breakdown.get(current_station, 0) + 1
+
+        if is_completed:
+            completed_stories += 1
+        elif blocked_by_dependencies or open_bugs > 0 or rec.get("awaiting_qa_deploy"):
+            blocked_stories += 1
+        elif spec_status_str != "approved" and tasks_total == 0 and jira_status_str.strip().lower() in ("", "to do", "todo"):
+            ready_to_start_stories += 1
+        else:
+            in_progress_stories += 1
+
+        if not is_completed and not blocked_by_dependencies and recommended_skill is not None:
+            is_active_work = 0 if (open_bugs > 0 or tasks_total > 0 or spec_status_str == "approved") else 1
+            next_candidates.append((wave_val if wave_val is not None else 9999, is_active_work, k, row, rec))
+
+    total_stories = len(story_rows)
+    progress_pct = round((completed_stories / total_stories) * 100, 1) if total_stories > 0 else 0.0
+
+    next_recommended_story = None
+    if next_candidates:
+        next_candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        _, _, _, best_row, best_rec = next_candidates[0]
+        next_recommended_story = {
+            "key": best_row["key"],
+            "title": best_row["title"],
+            "wave": best_row["wave"],
+            "current_station": best_row["current_station"],
+            "recommended_skill": best_row["recommended_skill"],
+            "recommended_mode": best_row["recommended_mode"],
+            "responsible_role": best_rec.get("responsible_role"),
+            "responsible_person": best_rec.get("responsible_person"),
+            "reason": best_rec.get("reason") or "",
+        }
+
+    out = {
+        "initialized": True,
+        "standards_exists": standards_exists,
+        "mode": "live" if client.is_live else "offline",
+        "epic_key": epic_key,
+        "epic_summary": epic_summary,
+        "total_stories": total_stories,
+        "completed_stories": completed_stories,
+        "in_progress_stories": in_progress_stories,
+        "blocked_stories": blocked_stories,
+        "ready_to_start_stories": ready_to_start_stories,
+        "progress_pct": progress_pct,
+        "station_breakdown": station_breakdown,
+        "next_recommended_story": next_recommended_story,
+        "stories": story_rows,
+        "can_auto_chain_next_station": False,
+        "requires_user_confirmation": True,
+        "requires_user_confirmation_for_next_station": True,
+    }
+    if client.is_live:
+        out["query_mode"] = query_mode
+    if warnings:
+        out["warnings"] = warnings
+    if creds_missing:
+        out["credentials_missing"] = True
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_status(args) -> int:
+    if getattr(args, "key", None) and getattr(args, "epic", None):
+        print("ERROR: --key and --epic cannot be used together.", file=sys.stderr)
+        return 1
+
     repo_root = Path(args.repo_root).resolve()
     cfg_path = get_config_path(repo_root)
     standards_path = repo_root / "docs" / "shared" / "engineering-standards.md"
@@ -4758,6 +5685,9 @@ def cmd_status(args) -> int:
     client = JiraClient(config, offline=args.offline, repo_root=repo_root)
     base_url = (config.get("jira_base_url") or "").strip()
     creds_missing = bool(base_url and not args.offline and not client.is_live)
+
+    if getattr(args, "epic", None):
+        return _cmd_status_epic(repo_root, config, client, standards_exists, creds_missing, args.epic)
 
     if args.key:
         jira_key = validate_jira_key(args.key)
@@ -5040,6 +5970,96 @@ def cmd_pull(args) -> int:
 # Subcommand 3: sync-story (Station 1: team-spec)
 # ---------------------------------------------------------------------------
 
+def _parse_and_normalize_open_questions(raw_val) -> list:
+    """
+    Parse and normalize --open-questions-json (raw JSON array, file path, or @file path).
+    Accepts dicts ({id, question, owner, proposed_default, impacted_acs, blocking}) or plain strings.
+    Auto-assigns Q-001, Q-002, ... without colliding with explicit IDs; sanitizes None/empty safely.
+    """
+    if raw_val is None:
+        return []
+    s = str(raw_val).strip()
+    if not s:
+        return []
+    try:
+        parsed = load_json_arg(s)
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
+        raise ValueError(f"Malformed --open-questions-json: {exc}") from exc
+
+    if parsed is None:
+        return []
+    if not isinstance(parsed, list):
+        raise ValueError("--open-questions-json must be a JSON array.")
+
+    used_ids_upper = set()
+    for item in parsed:
+        if isinstance(item, dict):
+            ex_id = _clean_optional_text(item.get("id")).upper()
+            if ex_id:
+                used_ids_upper.add(ex_id)
+
+    next_seq = 1
+
+    def _next_q_id() -> str:
+        nonlocal next_seq
+        while f"Q-{next_seq:03d}" in used_ids_upper:
+            next_seq += 1
+        qid = f"Q-{next_seq:03d}"
+        used_ids_upper.add(qid)
+        next_seq += 1
+        return qid
+
+    normalized = []
+    for item in parsed:
+        if item is None:
+            continue
+        if isinstance(item, str):
+            q_text = _clean_optional_text(item)
+            if not q_text:
+                continue
+            normalized.append({
+                "id": _next_q_id(),
+                "question": q_text,
+                "owner": "",
+                "proposed_default": "",
+                "impacted_acs": [],
+                "blocking": False,
+            })
+        elif isinstance(item, dict):
+            q_text = _clean_optional_text(item.get("question") or item.get("text") or item.get("summary"))
+            if not q_text:
+                continue
+            explicit_id = _clean_optional_text(item.get("id")).upper()
+            q_id = explicit_id or _next_q_id()
+            owner = _clean_optional_text(item.get("owner"))
+            proposed_default = _clean_optional_text(item.get("proposed_default"))
+            raw_acs = item.get("impacted_acs")
+            if isinstance(raw_acs, str):
+                impacted_acs = [a.strip() for a in raw_acs.split(",") if a.strip()]
+            elif isinstance(raw_acs, list):
+                impacted_acs = [_clean_optional_text(a) for a in raw_acs if _clean_optional_text(a)]
+            else:
+                impacted_acs = []
+            raw_blocking = item.get("blocking")
+            if isinstance(raw_blocking, bool):
+                blocking = raw_blocking
+            elif isinstance(raw_blocking, str):
+                blocking = raw_blocking.strip().lower() in ("true", "1", "yes")
+            else:
+                blocking = bool(raw_blocking) if raw_blocking is not None else False
+            normalized.append({
+                "id": q_id,
+                "question": q_text,
+                "owner": owner,
+                "proposed_default": proposed_default,
+                "impacted_acs": impacted_acs,
+                "blocking": blocking,
+            })
+        else:
+            raise ValueError("Each item in --open-questions-json must be a JSON object or string.")
+    return normalized
+
+
 def format_story_description(story: dict, config: dict = None) -> str:
     zh = is_zh_tw(config)
     lines = [f"# {story.get('jira_key')}: {story.get('title', '')}", ""]
@@ -5133,10 +6153,78 @@ def format_story_description(story: dict, config: dict = None) -> str:
                 lines.append(f"- {item}")
             lines.append("")
 
+    spec_meta = story.get("spec") if isinstance(story.get("spec"), dict) else {}
+    risks_text = _clean_optional_text(spec_meta.get("risks") if "risks" in spec_meta else story.get("risks"))
+    raw_oqs = spec_meta.get("open_questions") if "open_questions" in spec_meta else story.get("open_questions")
+    open_questions = [
+        q for q in (raw_oqs or [])
+        if isinstance(q, dict) and _clean_optional_text(q.get("question"))
+    ]
+
+    if risks_text or open_questions:
+        lines.append("### 風險與待確認問題 (Risks & Open Questions)" if zh else "### Risks & Open Questions")
+        if risks_text:
+            risk_lines = [ln.strip() for ln in risks_text.splitlines() if ln.strip()]
+            if len(risk_lines) == 1:
+                label = "**風險與隱含需求：**" if zh else "**Risks & Implicit Requirements:**"
+                lines.append(f"- {label} {risk_lines[0]}")
+            elif risk_lines:
+                lines.append("**風險與隱含需求：**" if zh else "**Risks & Implicit Requirements:**")
+                for rl in risk_lines:
+                    cleaned_rl = re.sub(r"^[-*]\s+", "", rl).strip()
+                    if cleaned_rl:
+                        lines.append(f"- {cleaned_rl}")
+        for q in open_questions:
+            q_id = _clean_optional_text(q.get("id")) or "Q-001"
+            q_text = _clean_optional_text(q.get("question"))
+            is_blocking = bool(q.get("blocking"))
+            if zh:
+                b_tag = "[阻塞核准]" if is_blocking else "[非阻塞]"
+                meta_parts = []
+                if _clean_optional_text(q.get("owner")):
+                    meta_parts.append(f"責任角色: {_clean_optional_text(q.get('owner'))}")
+                if _clean_optional_text(q.get("proposed_default")):
+                    meta_parts.append(f"建議預設: {_clean_optional_text(q.get('proposed_default'))}")
+                acs_str = ", ".join(str(a).strip() for a in (q.get("impacted_acs") or []) if _clean_optional_text(a))
+                if acs_str:
+                    meta_parts.append(f"影響 AC: {acs_str}")
+            else:
+                b_tag = "[Blocking]" if is_blocking else "[Non-blocking]"
+                meta_parts = []
+                if _clean_optional_text(q.get("owner")):
+                    meta_parts.append(f"Owner: {_clean_optional_text(q.get('owner'))}")
+                if _clean_optional_text(q.get("proposed_default")):
+                    meta_parts.append(f"Proposed default: {_clean_optional_text(q.get('proposed_default'))}")
+                acs_str = ", ".join(str(a).strip() for a in (q.get("impacted_acs") or []) if _clean_optional_text(a))
+                if acs_str:
+                    meta_parts.append(f"Impacted ACs: {acs_str}")
+            suffix = f" ({'; '.join(meta_parts)})" if meta_parts else ""
+            lines.append(f"- **{q_id}** {b_tag}: {q_text}{suffix}")
+        lines.append("")
+
     return "\n".join(lines).strip()
 
 
 def cmd_sync_story(args) -> int:
+    backfill_mode = bool(getattr(args, "backfill", False))
+    preserve_owner = bool(getattr(args, "preserve_owner", False)) or backfill_mode
+    if backfill_mode and args.status == "approved":
+        print(
+            "ERROR: --backfill cannot be combined with --status approved. "
+            "Backfill mode only syncs specification documentation without approving the spec or triggering role handoff.",
+            file=sys.stderr,
+        )
+        return 1
+
+    parsed_open_questions = None
+    raw_oq_arg = getattr(args, "open_questions_json", None)
+    if raw_oq_arg is not None:
+        try:
+            parsed_open_questions = _parse_and_normalize_open_questions(raw_oq_arg)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
     client = JiraClient(config, offline=args.offline, repo_root=repo_root, role="pm")
@@ -5145,16 +6233,23 @@ def cmd_sync_story(args) -> int:
 
     jira_key = validate_jira_key(args.key)
     active_path = get_active_dir(repo_root) / f"{jira_key}.json"
+    had_prior_workflow_state = False
     if active_path.exists():
+        had_prior_workflow_state = True
         story = json.loads(active_path.read_text(encoding="utf-8"))
         if not args.create and client.is_live:
             story, _ = reconcile_story_with_jira(client, config, repo_root, jira_key, story=story, save=False)
     else:
         hydrated = None
-        if not args.create and not args.title and not args.spec_json:
+        if not args.create and (preserve_owner or (not args.title and not args.spec_json)):
             hydrated = _hydrate_story_from_worktree(repo_root, jira_key)
-            if not hydrated and client.is_live:
-                hydrated = hydrate_story_from_remote(client, repo_root, jira_key)
+            if hydrated is not None:
+                had_prior_workflow_state = True
+            elif client.is_live:
+                remote_snap = client.get_state_snapshot(jira_key)
+                if isinstance(remote_snap, dict) and remote_snap.get("jira_key"):
+                    had_prior_workflow_state = True
+                hydrated = hydrate_story_from_remote(client, repo_root, jira_key, persist=False)
         story = hydrated if isinstance(hydrated, dict) else {"jira_key": jira_key}
 
     if story.get("remote_description_modified"):
@@ -5170,6 +6265,12 @@ def cmd_sync_story(args) -> int:
             )
             return 1
 
+    preserved_snapshot = {}
+    if preserve_owner:
+        for pf in ("current_owner_role", "role_owners", "jira_status", "tasks", "review", "qa", "bugs"):
+            if pf in story:
+                preserved_snapshot[pf] = json.loads(json.dumps(story[pf]))
+
     prior_status = story.get("spec_status")
     prior_acs = [dict(ac) for ac in (story.get("acceptance_criteria") or []) if isinstance(ac, dict) and ac.get("id")]
     prior_material_decisions = list(story.get("material_decisions") or [])
@@ -5178,14 +6279,24 @@ def cmd_sync_story(args) -> int:
     if args.spec_json:
         spec_payload = load_json_arg(args.spec_json)
         if isinstance(spec_payload, dict):
+            if preserve_owner:
+                for protected_k in ("current_owner_role", "role_owners", "jira_status", "tasks", "review", "qa", "bugs"):
+                    spec_payload.pop(protected_k, None)
             story.update(spec_payload)
 
+    if preserve_owner:
+        for pf in ("current_owner_role", "role_owners", "jira_status", "tasks", "review", "qa", "bugs"):
+            if pf in preserved_snapshot:
+                story[pf] = json.loads(json.dumps(preserved_snapshot[pf]))
+
     if args.title:
-        story["title"] = args.title.strip()
+        clean_title = _clean_optional_text(args.title)
+        if clean_title:
+            story["title"] = clean_title
     if args.scope_in is not None:
-        story["scope_in"] = args.scope_in.strip()
+        story["scope_in"] = _clean_optional_text(args.scope_in)
     if args.scope_out is not None:
-        story["scope_out"] = args.scope_out.strip()
+        story["scope_out"] = _clean_optional_text(args.scope_out)
     if args.risk_level:
         story["risk_level"] = args.risk_level
 
@@ -5222,7 +6333,7 @@ def cmd_sync_story(args) -> int:
             acs.append({"id": ac_id, "description": desc})
 
         if (
-            prior_status in ("draft", "approved")
+            (prior_status in ("draft", "approved") or backfill_mode)
             and prior_acs
             and all_explicit_ids
             and not getattr(args, "replace_acs", False)
@@ -5242,7 +6353,7 @@ def cmd_sync_story(args) -> int:
 
     design = story.get("design") or {}
     if args.design_summary is not None:
-        design["summary"] = args.design_summary.strip()
+        design["summary"] = _clean_optional_text(args.design_summary)
     # Conditional sections: only store UI/API specs when surface applies (no empty placeholder bloat)
     if surface.get("has_ui") and args.ui_spec:
         design["ui_spec"] = args.ui_spec.strip()
@@ -5255,7 +6366,44 @@ def cmd_sync_story(args) -> int:
         design.pop("api_spec", None)
     story["design"] = design
 
-    status = args.status or story.get("spec_status") or "draft"
+    spec_meta = story.setdefault("spec", {}) if isinstance(story.get("spec"), dict) else {}
+    if not isinstance(story.get("spec"), dict):
+        story["spec"] = spec_meta
+    if getattr(args, "risks", None) is not None:
+        cleaned_risks = _clean_optional_text(args.risks)
+        if cleaned_risks:
+            spec_meta["risks"] = cleaned_risks
+        else:
+            spec_meta.pop("risks", None)
+        story.pop("risks", None)
+    elif "risks" in story:
+        cleaned_top_risks = _clean_optional_text(story.pop("risks"))
+        if cleaned_top_risks:
+            spec_meta["risks"] = cleaned_top_risks
+
+    if parsed_open_questions is not None:
+        spec_meta["open_questions"] = parsed_open_questions
+        story.pop("open_questions", None)
+    elif "open_questions" in story:
+        top_oqs = story.pop("open_questions")
+        if isinstance(top_oqs, list):
+            spec_meta["open_questions"] = top_oqs
+
+    eff_open_questions = spec_meta.get("open_questions") if isinstance(spec_meta.get("open_questions"), list) else []
+    open_blocking_questions = [
+        q["id"] for q in eff_open_questions
+        if isinstance(q, dict) and q.get("blocking") and _clean_optional_text(q.get("id"))
+    ]
+
+    if backfill_mode:
+        if args.status == "draft":
+            status = "draft"
+        elif not had_prior_workflow_state:
+            status = "draft"
+        else:
+            status = story.get("spec_status") or "draft"
+    else:
+        status = args.status or story.get("spec_status") or "draft"
 
     if args.auto_decision:
         new_auto = [d.strip() for d in args.auto_decision if d.strip()]
@@ -5299,16 +6447,16 @@ def cmd_sync_story(args) -> int:
         )
         return 1
 
-    if status == "approved" and not (story.get("acceptance_criteria") or []):
+    if not backfill_mode and status == "approved" and not (story.get("acceptance_criteria") or []):
         print("ERROR: Cannot mark spec 'approved' without at least one testable AC (AC-001..N).", file=sys.stderr)
         return 1
 
     pm_person = resolve_acting_person(config, "pm", client=client, story=story)
-    if _is_member_claimed("pm", pm_person):
+    if not preserve_owner and _is_member_claimed("pm", pm_person):
         story.setdefault("role_owners", {})["pm"] = serialize_member_for_config(pm_person, "pm")
 
     story["spec_status"] = status
-    if status == "approved":
+    if not backfill_mode and status == "approved":
         story["approved_by"] = args.approved_by or story.get("approved_by") or pm_person["name"]
         story["approved_at"] = story.get("approved_at") or now_iso()
 
@@ -5323,35 +6471,50 @@ def cmd_sync_story(args) -> int:
         jira_key = validate_jira_key(sync_res["jira_key"])
         story["jira_key"] = jira_key
 
-    story["last_synced_description_hash"] = _compute_description_hash(
+    expected_desc_hash = _compute_description_hash(
         _adf_to_plain_text(client.text_to_adf(desc_md)).strip()
     )
+    story["last_synced_description_hash"] = expected_desc_hash
 
-    if status == "draft":
-        story["current_owner_role"] = "pm"
-        if pm_person.get("jira_account_id"):
-            safe_assign_issue(client, jira_key, pm_person["jira_account_id"])
+    description_verified = True
+    if backfill_mode and client.is_live:
+        try:
+            verify_issue = client.get_issue(jira_key)
+            verify_plain = _adf_to_plain_text(((verify_issue or {}).get("fields") or {}).get("description")).strip()
+            description_verified = bool(verify_plain and _compute_description_hash(verify_plain) == expected_desc_hash)
+        except Exception:
+            description_verified = False
 
     handoff_info = None
-    if status == "approved" and (args.status == "approved" or prior_status != "approved"):
-        zh = is_zh_tw(config)
-        ac_total = len(story.get("acceptance_criteria", []))
-        s1_comment = (
-            f"[站點 1：規格與設計核准] 規格與設計已確認核准（共 {ac_total} 項 AC），請進入站點 2 (`team-dev`) 進行任務拆解與實作。"
-            if zh
-            else f"[Station 1: Spec Approved] Specification and design approved ({ac_total} ACs). Ready for Station 2 (`team-dev`)."
-        )
-        handoff_info = execute_role_handoff(
-            client=client,
-            config=config,
-            story=story,
-            from_role="pm",
-            to_role="developer",
-            status_key="in_progress",
-            comment_md=s1_comment,
-            from_person_override=pm_person,
-            to_assignee=getattr(args, "to_assignee", None),
-        )
+    if not preserve_owner:
+        if status == "draft":
+            story["current_owner_role"] = "pm"
+            if pm_person.get("jira_account_id"):
+                safe_assign_issue(client, jira_key, pm_person["jira_account_id"])
+
+        if status == "approved" and (args.status == "approved" or prior_status != "approved"):
+            zh = is_zh_tw(config)
+            ac_total = len(story.get("acceptance_criteria", []))
+            s1_comment = (
+                f"[站點 1：規格與設計核准] 規格與設計已確認核准（共 {ac_total} 項 AC），請進入站點 2 (`team-dev`) 進行任務拆解與實作。"
+                if zh
+                else f"[Station 1: Spec Approved] Specification and design approved ({ac_total} ACs). Ready for Station 2 (`team-dev`)."
+            )
+            handoff_info = execute_role_handoff(
+                client=client,
+                config=config,
+                story=story,
+                from_role="pm",
+                to_role="developer",
+                status_key="in_progress",
+                comment_md=s1_comment,
+                from_person_override=pm_person,
+                to_assignee=getattr(args, "to_assignee", None),
+            )
+    else:
+        for pf in ("current_owner_role", "role_owners", "jira_status", "tasks", "review", "qa", "bugs"):
+            if pf in preserved_snapshot:
+                story[pf] = json.loads(json.dumps(preserved_snapshot[pf]))
 
     saved_path = save_active_story(repo_root, jira_key, story, client=client, sync_remote=True)
     if active_path.exists() and active_path != saved_path:
@@ -5369,6 +6532,17 @@ def cmd_sync_story(args) -> int:
     }
     if handoff_info is not None:
         out.update(_handoff_governance_fields(handoff_info))
+    if preserve_owner:
+        out.update({
+            "backfill_mode": backfill_mode,
+            "owner_preserved": True,
+            "status_preserved": True,
+            "open_blocking_questions": open_blocking_questions,
+            "backfill_stage": "spec_pending_confirmation" if open_blocking_questions else "material_backfilled",
+            "description_verified": description_verified,
+            "can_auto_chain_next_station": False,
+            "requires_user_confirmation_for_next_station": True,
+        })
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
@@ -8396,13 +9570,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_sprint_status.add_argument("--state", default=None, help="Filter board sprints by future, active, or closed")
     p_sprint_status.set_defaults(func=cmd_sprint_status)
 
+    # 2a. epic-decompose
+    p_epic_dec = sub.add_parser("epic-decompose", parents=[sub_common], help="Preview (default dry_run) or apply Epic-to-Story decomposition with wave ordering and duplicate detection")
+    p_epic_dec.add_argument("--epic", required=True, help="Parent Jira Epic key (e.g. PROJ-10)")
+    p_epic_dec.add_argument("--stories-json", required=True, help="JSON array string or @file/file path of Story specs")
+    p_epic_dec.add_argument("--apply", action="store_true", help="Create Stories in Jira and persist local active state (default is dry_run preview)")
+    p_epic_dec.add_argument("--issue-type", default=None, help="Jira issue type for created Stories (default: Story)")
+    p_epic_dec.set_defaults(func=cmd_epic_decompose)
+
     # 2b. status
     p_status = sub.add_parser("status", parents=[sub_common], help="Inspect active workflow state, reconcile live Jira changes, and recommend the next station/role")
     p_status.add_argument("--key", help="Specific Jira Story key (e.g. PROJ-101)")
+    p_status.add_argument("--epic", default=None, help="Aggregate workflow progress across all Stories under a Jira Epic key (e.g. PROJ-10)")
     p_status.add_argument("--fetch-remote", action="store_true", help="Fetch remote Jira issue details when in live mode")
     p_status.set_defaults(func=cmd_status)
 
-    # 2b. pull (explicit bidirectional Jira UI -> local active state reconciliation)
+    # 2c. pull (explicit bidirectional Jira UI -> local active state reconciliation)
     p_pull = sub.add_parser("pull", parents=[sub_common], help="Pull & reconcile manual Jira Web UI changes (Sub-tasks, Bugs, Status, Assignee, Description/ACs) into .ai-workflow/active/")
     p_pull.add_argument("--key", default=None, help="Optional Jira Story key (reconciles all active/discovered project Stories if omitted)")
     p_pull.set_defaults(func=cmd_pull)
@@ -8427,6 +9610,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--api-spec", help="API contract specification (only stored when --has-api is true)")
     p_sync.add_argument("--auto-decision", action="append", help="AI auto-decided conventional detail (抓大放小)")
     p_sync.add_argument("--material-decision", action="append", help="Human-confirmed material decision (<=3 for single-pass approval, <=5 per draft round)")
+    p_sync.add_argument("--risks", default=None, help="Optional risks / implicit requirements summary (omitted for simple stories)")
+    p_sync.add_argument("--open-questions-json", default=None, help="Optional JSON array or @file of open questions (Q-###)")
+    p_sync.add_argument("--preserve-owner", action="store_true", help="Preserve current_owner_role, Jira Assignee/Status, and existing tasks/review/qa/bugs")
+    p_sync.add_argument("--backfill", action="store_true", help="Backfill specification on an existing Story in draft/preserved mode (implies --preserve-owner; rejects --status approved)")
     p_sync.add_argument("--spec-json", help="JSON string or file with full story spec fields")
     p_sync.add_argument("--status", choices=["draft", "approved"], help="Spec status (draft or approved)")
     p_sync.add_argument("--approved-by", help="Role or person approving the spec")
