@@ -1,5 +1,42 @@
 # Changelog
 
+## v1.5.0 — 2026-11-23 — Existing-Story Spec Backfill & Platform-Neutral Epic Decomposition
+
+- **Existing-Story Backfill Mode & `has_data` Clarification (PR #17, Issue #2 scoped):**
+  - Added `sync-story --backfill`, `--preserve-owner`, `--risks`, and `--open-questions-json` to document or enrich existing Jira Stories without altering `current_owner_role`, Jira Assignee, Jira status, or preserved lifecycle fields (`tasks`, `review`, `qa`, `bugs`, `qa_deploy_gate`, `triage_closed`, etc.).
+  - Enforced backfill safety guards: rejects `--backfill --status approved` (including nested `spec.spec_status: "approved"`), `--backfill --create`, 404 create fallback, duplicate `Q-###` IDs, and non-boolean `blocking` values; honors the Description Drift Guard on untracked existing prose and verifies `last_synced_description_hash` after sync.
+  - Added optional `Risks & Open Questions` (`風險與待確認問題`) Story Description rendering in strict ADF only when `--risks` or `--open-questions-json` is non-empty (omitted on simple stories).
+  - Clarified `has_data` in `team-spec/SKILL.md` and `spec-method.md` (schema/migration/storage-format/data-model changes only; calling existing persistence APIs is `has_data: false`), formalized 5-category evidence separation and 3-state completion reporting (`material_backfilled`, `spec_pending_confirmation`, `approved`), and upheld the Jira-only boundary (no Verification Scenarios table in Story Descriptions and no `analysis.md` / per-feature Git Markdown).
+- **Platform-Neutral Epic Decomposition & Progress Aggregation (PR #17, Issue #5 Phase 1):**
+  - Added `epic-decompose` (`--epic`, `--stories-json`, `--apply`, `--issue-type`) with mandatory `dry_run: true` preview (zero writes) before explicit confirmation, topological `execution_waves` calculation, validation for blank titles / duplicate IDs / dependency cycles / `story_points` / 404 Epic, remote snapshot cross-machine duplicate detection, and partial-failure tracking.
+  - Under `--apply`, creates child Stories in topological wave order so downstream `depends_on_keys` resolve to real upstream Jira keys, links Epics via `fields.parent` with graceful fallback to configured `epic_link_field` in `team-config.json` (or unlinked warning on HTTP 400), and persists `.ai-workflow/active/<NEW-KEY>.json` (`spec_status: "draft"`).
+  - Added `status --epic <EPIC-KEY>` progress aggregation with `parent` / `"Epic Link"` JQL fallback, cached remote upstream dependency lookup, secondary worktree merge, localized `status_mapping.todo` handling, `close-story` sibling `resolved_depends_on_keys` propagation, and HITL stop gates (`can_auto_chain_next_station: false`, `requires_user_confirmation: true`). Documented in `team-plan` (`decompose` mode) and `team-next-step`, keeping core `team-*` skills strictly platform-neutral without coupling `run-workflow` or Phase 2 multi-Story Sub-agent execution.
+- **Verification:** Expanded `tools/test_workflow.py` to 36 end-to-end and mock Jira/Qase tests covering 16 CLI subcommands across 8 byte-identical skill bundles.
+
+## v1.4.0 — 2026-11-23 — Commit & Sub-task Governance, Deploy-Gated QA Handoff, Bug Triage & Root-Cause Capture
+
+- **Commit Gate, Project Commit Conventions & Rich Sub-tasks (PR #15, Issues #3, #7, #8):**
+  - Added `commit_policy` in `team-config.json` (`init --commit-policy`), defaulting to `"confirm_before_commit"` (pause after local tests pass to await human confirmation before `git commit` and `complete-task`) with optional `"auto_on_test_pass"` opt-in, plus optional `commit_message_pattern` (`init --commit-message-pattern`) for non-blocking `commit_message_warnings` in `complete-task`.
+  - Enforced project Commit convention precedence (`docs/shared/engineering-standards.md` §4 first, fallback `AGENTS.md`) and Dual Jira Key Traceability (`<STORY-KEY>` + `<SUBTASK-KEY>` whenever `jira_subtask_key` exists) across `team-dev`, `team-review`, and `complete-task`.
+  - Upgraded `create-subtasks` (`format_subtask_description`) to render rich structured Jira Sub-task Descriptions (`description`, `implementation_steps`, target `files`, `ac_coverage`, `depends_on`, `verification`).
+- **Multi-Environment QA Deploy Decoupling (PR #16, Issue #4):**
+  - Added optional `qa_handoff_mode` (`"immediate"` default vs `"gated_by_deploy"`, via `init --qa-handoff-mode`) and `status_mapping.dev_done` (`init --status-dev-done`).
+  - Under `"gated_by_deploy"`, `handoff --review-status approved` transitions to `dev_done`, records commit-bound `qa_deploy_gate` (`status: "awaiting_qa_deploy"`), and holds QA reassignment/`@mention`; `record-qa --mode plan` remains allowed in parallel while `record-qa --mode verify` is gated until CI/CD transitions Jira to `in_qa` (synced via `status`/`pull`) or the new `promote-qa` subcommand (`--key`, `--from-role`, `--tag`, `--environment`, `--note`, `--to-assignee`) runs explicitly.
+- **Jira Bug Triage & Controlled Release Gate (PR #16, Issue #11):**
+  - Added `triage-bug` subcommand (`--key`, `--bug-id`, `--resolution`, `--reason`, `--decided-by`, `--duplicate-of`, `--waive-tcs`, `--tc-disposition`) and `team-qa` Mode 4 (`triage`) supporting `not-a-bug`, `wont-fix`, `duplicate`, `cannot-reproduce`, and `fixed` (including live Jira transition out of `Done` on reopen) with `fields.resolution` sync (and graceful retry if Jira rejects `fields.resolution` on the transition screen).
+  - Added parity-checked, auditable `waived` / `not-applicable` TC release gating in `close-story` and `status` (never marking waived TCs as `pass`), **Bug Triage & Risk Acceptance Disclosure** in the Release Summary, and `triage_closed` handling/filtering in `status`.
+- **Bug Fix Root Cause & Solution Capture (PR #16, Issue #12):**
+  - Added `complete-task --root-cause` and `--solution` persisted in active JSON (`bug_report` / `bug_fix_summary` / bug entry) and rendered in Jira completion comments without modifying original reporter Descriptions, emitting non-blocking `bug_fix_warnings` if omitted on bug fixes.
+
+## v1.3.1 — 2026-11-23 — Inline Markdown ADF Parsing & Strict HITL / SoD Clean Stop
+
+- **Inline Markdown to Jira ADF (PR #14, Issue #6):**
+  - Upgraded `jira_sync.py` ADF conversion to parse inline bold, italic, inline code, links, strikethrough, and nested formatting into valid Jira ADF marks with zero empty text nodes and no illegal mark combinations.
+- **Strict HITL Confirmation Gate & Separation of Duties Clean Stop (PR #14, Issues #9, #13):**
+  - Eliminated unconfirmed `same_person: true` auto-chaining across all stations; `same_person: true` now suppresses redundant Jira self-`@mention` noise (`handoff_mode: "auto-consolidated"`) only and pauses with one short confirmation question.
+  - Enforced mandatory cross-person SoD Clean Stop (`same_person: false`) forbidding prompts for the next role's slash command, emitted explicit governance flags (`can_auto_chain_next_station: false`, `requires_user_confirmation_for_next_station: true`, `cross_person_clean_stop`, `next_station_prompt_allowed`, `next_station_owner`), added `team-qa` entry identity guardrail (`qa_identity_guardrail`), and enforced the `Stop & Yield on Fix` hard boundary across all 8 skills.
+  - *(Note: Issue #10 was closed as `wontfix` to uphold the Jira-only First-Principles Asset Boundary.)*
+
 # v1.3.0 — 2026-11-13 — Epic/Sprint Planning Layer
 
 - Added `team-plan` for Epic context, Future/Active Sprint planning, preview-before-apply membership changes, and read-only Sprint status.

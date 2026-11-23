@@ -1,14 +1,14 @@
-# AI 工程工作流技能套件（ai-engineering-workflow-skills v1.3）教育訓練與情境實戰手冊
+# AI 工程工作流技能套件（ai-engineering-workflow-skills v1.5）教育訓練與情境實戰手冊
 
 > **版本記錄**
 >
-> - **目前版本：** `v1.3.0`
-> - **更新日期：** 2026-11-13
-> - **本次變更：** 新增 `team-plan` Epic / Sprint 規劃層，並同步 8 個 workflow skills、13 個 CLI 子命令與 18 項驗證。
+> - **目前版本：** `v1.5.0`
+> - **更新日期：** 2026-11-23
+> - **本次變更：** 同步 `v1.3.1`–`v1.5.0` 全量演進——行內 Markdown 轉 Jira ADF、嚴格 HITL 確認門禁與 SoD Clean Stop、`commit_policy` 與雙 Jira 票號溯源、多環境 QA 部署解耦（`qa_handoff_mode` / `promote-qa`）、Bug Triage 受控豁免（`triage-bug`）、Bug 根因與解法回填（`--root-cause` / `--solution`）、既有 Story 規格回補（`sync-story --backfill`）、平台中立 Epic 拆解（`epic-decompose`）與 Epic 進度彙總（`status --epic`），對齊 8 個工作流技能、16 個 CLI 子命令與 36 項驗證測試。
 > - **完整變更：** 請參閱根目錄的 `CHANGELOG.md`。
 
 
-本手冊為 `ai-engineering-workflow-skills`（v1.3 規劃層 + 四站八技能 Jira 核心工程工作流，另附動態多代理系統編排技能 `run-workflow`）之完整教育訓練教材與實戰操作指南。全書採用**真實使用情境驅動（Scenario-Driven Training）**編排，結合視覺化架構圖、終端機與 Jira 雙視窗實況對照圖、CLI 參數規格表與標準操作步驟，協助工程團隊從零完成專案導入、協作者認領、規格定義、任務拆解、AI 編碼、同儕審查、三層混合測試、探索／獨立缺陷閉環與正式發佈結案。
+本手冊為 `ai-engineering-workflow-skills`（v1.5 規劃層 + 四站八技能 Jira 核心工程工作流，另附動態多代理系統編排技能 `run-workflow`）之完整教育訓練教材與實戰操作指南。全書採用**真實使用情境驅動（Scenario-Driven Training）**編排，結合視覺化架構圖、終端機與 Jira 雙視窗實況對照圖、CLI 參數規格表與標準操作步驟，協助工程團隊從零完成專案導入、協作者認領、Epic 拆解與 Sprint 規劃、規格定義與回補、任務拆解、AI 編碼與提交門禁、同儕審查、多環境部署交接、三層混合測試、缺陷分診／報修閉環與正式發佈結案。
 
 ---
 
@@ -22,12 +22,12 @@
 2. **一人兼多職或多人共職時交接摩擦大（Handoff Ceremony Fatigue）**：團隊既常由同一位成員兼任多職（例如 PM 兼 Release Manager），也常由多位成員共擔同一角色（例如前後端多位 Developer 或多位 QA），傳統流程不是被迫自己簽核自己，就是單據長期留白無人指派。
 3. **細枝末節追問耗盡人類審查精力，大需求又漏掉邊界（Review Fatigue vs. Edge-Case Blindness）**：AI 若將常規分頁筆數、標準錯誤碼逐題追問人類會耗盡耐心；但若把複雜架構硬壓成單回合快審，又容易遺漏併發與權限邊界。
 
-為解決上述問題，`ai-engineering-workflow-skills` v1.3 確立了四大核心設計支柱：
+為解決上述問題，`ai-engineering-workflow-skills` v1.5 確立了四大核心設計支柱：
 
-- **第一性原理資產邊界（First-Principles Asset Boundary）**：單一功能的生命週期資產永久保存於 **Jira**（`User Story`、`Sub-task`、`Bug`、結構化評論與隱藏屬性 `ai_workflow_state`）及選用之 **Qase TestOps**；本地僅在開發期間維護受 `.gitignore` 保護的暫存狀態檔 `.ai-workflow/active/<JIRA-KEY>.json`（結案自動刪除）與個人憑證檔 `.ai-workflow/credentials.json`（權限 `0600`）。Git 儲存庫僅保留全系統常駐活資產（`.ai-workflow/team-config.json`、`.ai-workflow/bin/jira_sync.py`、`AGENTS.md`、`docs/shared/engineering-standards.md`，以及選用之 `glossary.md`、`adr/` 與 `docs/manuals/<manual-name>/<manual-name>.html` 常駐產品手冊）。
-- **規劃層 + 四站八技能精煉架構與雙向對帳（4-Station Architecture & Bidirectional Sync）**：將傳統十餘個零碎步驟收斂為 **Init 初始化／協作者認領**、**Router 導航員**及 **Station 1 至 Station 4** 共 8 個工作流技能（預設繁體中文 `zh-TW` 輸出），支援開發與 QA 平行推進、跨機自動水合，以及與 Jira 網頁端手動修改的即時雙向對帳。
-- **一人兼多職整併與 1 對多角色池自動指派（Smart Handoff & 1-to-N Role Pools）**：透過 `team-config.json` 同時支援「一人兼多職」（`auto-consolidated` 零自我通知噪音並自動連貫推進）與「一職多人池」（`roles.<role>.members` 搭配 `specialty` 專長標籤自動指派子任務、自動避開作者選取同儕審查、自動追蹤原開發者派發 Bug）。
-- **按規模分軌之「抓大放小」審查（Scale-Aware Focus-on-Material-Risks）**：常規工程與 UI 細節由 AI 依專案標準自動拍板並列入**AI 預設細節清單**（`auto_decisions`）；小型明確需求單趟最多問 **3 題**關鍵問題即核准，中大型複雜需求則透過多輪 `draft` 深挖（每輪 3 至 5 題）與 6 大 AC 維度檢查把關。
+- **第一性原理資產邊界（First-Principles Asset Boundary）**：單一功能的生命週期資產永久保存於 **Jira**（`User Story`、`Sub-task`、`Bug`、結構化評論與隱藏屬性 `ai_workflow_state`）及選用之 **Qase TestOps**；本地僅在開發期間維護受 `.gitignore` 保護的暫存狀態檔 `.ai-workflow/active/<JIRA-KEY>.json`（結案自動刪除）與個人憑證檔 `.ai-workflow/credentials.json`（權限 `0600`）。Git 儲存庫僅保留全系統常駐活資產（`.ai-workflow/team-config.json`、`.ai-workflow/bin/jira_sync.py`、`AGENTS.md`、`docs/shared/engineering-standards.md`，以及選用之 `glossary.md`、`adr/` 與 `docs/manuals/<manual-name>/<manual-name>.html` 常駐產品手冊）；絕不提交 `analysis.md` 或任何單功能流程 Markdown。
+- **規劃層 + 四站八技能精煉架構與雙向對帳（4-Station Architecture & Bidirectional Sync）**：將傳統十餘個零碎步驟收斂為 **Init 初始化／協作者認領**、**Planning 規劃層**、**Router 導航員**及 **Station 1 至 Station 4** 共 8 個工作流技能（預設繁體中文 `zh-TW` 輸出與行內 Markdown 轉 Jira ADF 渲染），支援開發與 QA 平行推進、跨機自動水合，以及與 Jira 網頁端手動修改的即時雙向對帳。
+- **一人兼多職整併、1 對多角色池與嚴格 HITL / SoD 邊界（Smart Handoff, HITL & SoD Clean Stop）**：透過 `team-config.json` 同時支援「一人兼多職」（`same_person: true` 僅透過 `auto-consolidated` 抑制自我 `@mention` 噪音，**絕不自動串接下一站**，一律停下以一句簡短確認詢問使用者）與「一職多人池」（`roles.<role>.members` 搭配 `specialty` 專長標籤自動指派子任務、自動避開作者選取同儕審查、跨人交接強制執行職責分離 Clean Stop）。
+- **按規模分軌之「抓大放小」審查（Scale-Aware Focus-on-Material-Risks）**：常規工程與 UI 細節由 AI 依專案標準自動拍板並列入**AI 預設細節清單**（`auto_decisions`）；小型明確需求單趟最多問 **3 題**關鍵問題即核准，中大型複雜需求則透過多輪 `draft` 深挖（每輪 3 至 5 題）與 6 大 AC 維度檢查把關，既有 Story 亦支援 `--backfill` 無損回補規格。
 
 ### 1.2 六大核心角色職責與建議訓練路徑
 
@@ -35,29 +35,29 @@
 
 | 角色識別碼 (`roles.*`) | 角色中文名稱 | 核心職責與關注焦點 | 必讀訓練情境章節 | 常駐操作技能 |
 | :--- | :--- | :--- | :--- | :--- |
-| `pm` | **產品經理 (PM Owner)** | 界定功能範圍（In/Out-of-Scope）、審核可測試驗收條件 `AC-*`、依大小需求單趟或多輪 `draft` 拍板關鍵決策 | 第 2 章、第 3 章（情境 0）、第 4 章（情境 1）、第 10 章（情境 7） | `team-init`, `team-spec` (`one-pass` / `draft`), `team-next-step` |
-| `tech_lead` | **技術負責人 (Tech Lead)** | 維護全系統工程標準 `docs/shared/engineering-standards.md` 與 `ADR-*`，把關變更面與技術設計 | 第 2 章、第 3 章（情境 0）、第 4 章（情境 1）、第 6 章（情境 3） | `team-init`, `team-spec`, `team-review` |
-| `developer` | **開發工程師 (Developer)** | 將規格拆解為垂直切片子任務 `TASK-001..N`（支援前後端專長自動指派）、掛載領域技能編碼測試、修復 `BUG-*` 並執行 `complete-task` 打卡 | 第 5 章（情境 2A/2B）、第 8 章（情境 5）、第 10 章（情境 7） | `team-dev` (`plan` / `implement`), `team-next-step` |
-| `reviewer` / `independent_reviewer` | **程式碼審查員 (Reviewer)** | 執行三軸程式碼審查（AC 逐條覆蓋、設計符合度、工程標準與資安），多人池自動同儕交叉審查，決定放行至 QA 或退回重修 | 第 6 章（情境 3）、第 8 章（情境 5） | `team-review` |
-| `qa` | **品質工程師 (QA Owner)** | 平行規劃三層測試案例 `TC-001..N`（同步至 `jira-comment` 或 `qase`）、驗證結果與媒體附件（`--attach`）、回報探索性缺陷或納管獨立線上 `Bug` | 第 7 章（情境 4A/4B/4C）、第 8 章（情境 5） | `team-qa` (`plan` / `verify` / `report`) |
-| `release_manager` | **發佈管理員 (Release Manager)** | 執行五大發佈閘門與 Commit SHA 對齊檢查、按規模同步 `docs/manuals/<name>/` HTML 常駐手冊、將 Jira 轉為 `Done` 並清除本地暫存鷹架 | 第 9 章（情境 6）、第 11 章（情境 8） | `team-release`, `team-next-step` |
+| `pm` | **產品經理 (PM Owner)** | 規劃 Epic 拆解與 Sprint、界定功能範圍（In/Out-of-Scope）、審核可測試驗收條件 `AC-*`、依大小需求單趟／多輪 `draft` 或 `backfill` 拍板關鍵決策 | 第 2 章、第 3 章（情境 0）、第 4 章（情境 1）、第 10 章（情境 7） | `team-init`, `team-plan`, `team-spec` (`one-pass` / `draft` / `backfill`), `team-next-step` |
+| `tech_lead` | **技術負責人 (Tech Lead)** | 維護全系統工程標準 `docs/shared/engineering-standards.md` 與 `ADR-*`，把關變更面、Epic 拆解波次與技術設計 | 第 2 章、第 3 章（情境 0）、第 4 章（情境 1）、第 6 章（情境 3） | `team-init`, `team-plan`, `team-spec`, `team-review` |
+| `developer` | **開發工程師 (Developer)** | 將規格拆解為含實作步驟之垂直切片子任務 `TASK-001..N`（支援專長自動指派）、掛載領域技能編碼測試、遵守提交確認門禁與雙 Jira 票號規範、修復 `BUG-*`（附根因與解法）並執行 `complete-task` 打卡 | 第 5 章（情境 2A/2B）、第 8 章（情境 5）、第 10 章（情境 7） | `team-dev` (`plan` / `implement`), `team-next-step` |
+| `reviewer` / `independent_reviewer` | **程式碼審查員 (Reviewer)** | 執行三軸程式碼審查（AC 逐條覆蓋、設計符合度、工程標準／資安／Commit 格式），多人池自動同儕交叉審查，依 `qa_handoff_mode` 放行至 QA 或 `dev_done` 等待部署 | 第 6 章（情境 3）、第 8 章（情境 5） | `team-review` |
+| `qa` | **品質工程師 (QA Owner)** | 平行規劃三層測試案例 `TC-001..N`（同步至 `jira-comment` 或 `qase`）、驗證結果與媒體附件（`--attach`）、回報探索性缺陷或納管獨立線上 `Bug`，以及執行人工授權之 Bug Triage 分診 | 第 7 章（情境 4A/4B/4C/4D）、第 8 章（情境 5） | `team-qa` (`plan` / `verify` / `report` / `triage`) |
+| `release_manager` | **發佈管理員 (Release Manager)** | 執行五大發佈閘門（含經稽核之 `waived`/`not-applicable` TC 與 Commit SHA 對齊檢查）、按規模同步 `docs/manuals/<name>/` HTML 常駐手冊、將 Jira 轉為 `Done` 並清除本地暫存鷹架 | 第 9 章（情境 6）、第 11 章（情境 8） | `team-release`, `team-next-step` |
 
 ### 1.3 三分鐘極速上手卡（零記憶門檻 Cheat Sheet）
 
 **重要觀念：你完全不需要背誦任何 `jira_sync.py` CLI 指令或旗標！**
-本手冊後半部列出的 CLI 語法與參數表，是供 AI 代理在背景自動組裝執行與架構師查閱的底層規格。在日常開發中，**所有 CLI 指令皆由 AI 在背景自動執行（Zero-CLI Burden）**，預設皆以繁體中文溝通與寫入 Jira，甚至當你一人兼任前後兩站角色（`same_person: true`）時，AI 會自動連貫推進。你只需要記住唯一萬用導航指令 **`$team-next-step`**，或直接對 AI 說出下表中的自然語言白話指令：
+本手冊後半部列出的 CLI 語法與參數表，是供 AI 代理在背景自動組裝執行與架構師查閱的底層規格。在日常開發中，**所有 CLI 指令皆由 AI 在背景自動執行（Zero-CLI Burden）**，預設皆以繁體中文溝通與寫入 Jira；同時為確保職責分離與人工決策權，**任何工作站完成後皆不會未經確認自動串接下一站**（同人兼任僅免除自我 `@mention` 並以一句簡短確認詢問是否繼續；跨人交接則執行 Clean Stop）。你只需要記住唯一萬用導航指令 **`$team-next-step`**，或直接對 AI 說出下表中的自然語言白話指令：
 
 | 階段與情境 | 你只需要對 AI 說這 1 句話（人類零 CLI 負擔） | AI 在背景自動幫你完成的事（無須手敲指令） |
 | :--- | :--- | :--- |
-| **隨時迷路 / 接手工作** | **「執行 `$team-next-step`（或：下一步要做什麼？）」** | 自動以 JQL 探索進行中單據並與遠端 Jira 雙向對帳（若換電腦或開新 Worktree 缺少本地檔案則無損回填），給出唯一具體行動。 |
-| **規劃 Epic / Sprint (`team-plan`)** | **「請用 `$team-plan` 預覽 Epic `PROJ-EPIC-12` 的下一個 Sprint，先不要寫入 Jira。」** | 讀取 Scrum Board、Future/Active Sprint 與候選 Story/Task/Bug，產出 `dry_run: true` 預覽；只有確認後才套用 Sprint 成員變更。 |
-| **初次設定專案 (`init`)** | **「請用 `$team-init` 初始化專案，代號 `TEAM`，我先認領 PM 與 Tech Lead。」** | 支援漸進式認領個人角色，建立 `team-config.json`、安全寫入本機 `credentials.json` (`0600`)、安裝 `.ai-workflow/bin/jira_sync.py` 並萃取工程標準。 |
+| **隨時迷路 / 接手工作** | **「執行 `$team-next-step`（或：查看 Epic `PROJ-EPIC-12` 整體進度）」** | 自動以 JQL 探索進行中單據與遠端 Jira 雙向對帳（含 `status --epic` 跨 Story 進度與依賴阻斷彙總），給出唯一具體行動。 |
+| **規劃 Epic / Sprint (`team-plan`)** | **「請用 `$team-plan` 拆解 Epic `PROJ-EPIC-12`（或預覽下一個 Sprint），先不要寫入 Jira。」** | 執行平台中立 `epic-decompose`（計算拓撲波次 `execution_waves`）或 `sprint-plan` 產出 `dry_run: true` 預覽；僅在使用者明確確認後才以 `--apply` 寫入 Jira。 |
+| **初次設定專案 (`init`)** | **「請用 `$team-init` 初始化專案，代號 `TEAM`，我先認領 PM 與 Tech Lead。」** | 支援漸進式認領個人角色，建立 `team-config.json`（含 `commit_policy`、`qa_handoff_mode` 等設定）、安全寫入本機 `credentials.json` (`0600`)、安裝 `.ai-workflow/bin/jira_sync.py` 並萃取工程標準。 |
 | **協作者加入 (`auth`)** | **「我剛 clone 專案，負責前端開發（或 QA），請幫我綁定憑證！」** | 執行 `auth` 驗證個人 Jira/Qase Token（僅存本機 `credentials.json`），並非破壞性追加至 `team-config.json` 對應角色池（`members`）。 |
-| **Station 1 定規格** | **「請用 `$team-spec` 規劃 `PROJ-101` 訂單 CSV 匯出，確認沒問題請同步 Jira。」** | 小需求單趟產出 `AC-001..N` 與**AI 預設細節清單**（最多問 3 題）；複雜大需求自動改走多輪 `draft` 深挖與 6 大維度檢查後同步 Jira。 |
-| **Station 2 寫程式** | **「請用 `$team-dev` 實作 `PROJ-101` 並跑過測試打卡。」** | 拆解子任務並依專長自動指派（`<= 3` AC 中低風險小功能可走 **Dev Fast-Track** 免拆單），通過四項准出檢查後自動抓取 Git Commit 打卡。 |
-| **Station 3a 審程式** | **「請用 `$team-review` 審查 `PROJ-101` 並交接給 QA。」** | 比對 Git Diff 與三軸標準，多人審查池自動選取非作者同儕；通過則轉 `In QA` 並 `@mention` QA，退回則建立 `REV-001` 交回開發修復。 |
-| **Station 3b 測驗與報修** | **「請用 `$team-qa` 驗證 `PROJ-101`（或：回報線上 Bug `TEAM-888`）！」** | 記憶 `jira-comment` 或 `qase` 後端，內建 `--all-pass` 防假通過守衛（保護 `external`/`manual`）；失敗或獨立報修支援掛載截圖/錄影附件。 |
-| **Station 4 上線結案** | **「請用 `$team-release` 將 `PROJ-101` 結案發佈。」** | 對帳五大發佈閘門、按規模新建或增量更新 `docs/manuals/<name>/<name>.html` 常駐手冊，將 Jira 轉為 `Done` 並清除本地暫存 JSON。 |
+| **Station 1 定規格 / 回補** | **「請用 `$team-spec` 規劃 `PROJ-101`（或：用 backfill 幫既有 Story `PROJ-200` 補齊規格）。」** | 小需求單趟產出 `AC-001..N`（最多問 3 題）；大需求走多輪 `draft` 與 6 大維度檢查；既有單據支援 `--backfill` 無損回補規格與選填風險／待確認問題（`Q-###`）且不改原 Owner/狀態。 |
+| **Station 2 寫程式** | **「請用 `$team-dev` 實作 `PROJ-101` 並跑過本地測試。」** | 拆解含實作步驟之子任務（`<= 3` AC 中低風險可走 **Dev Fast-Track**），通過五項准出檢查（含專案 Commit 格式與雙 Jira 票號）後，預設於 `confirm_before_commit` 停下等使用者確認再提交並打卡（修 Bug 同步記錄 `--root-cause` 與 `--solution`）。 |
+| **Station 3a 審程式** | **「請用 `$team-review` 審查 `PROJ-101` 並交接。」** | 比對 Git Diff、三軸標準與 Commit 規範，多人審查池自動選取非作者同儕；`immediate` 模式轉 `In QA` 並 `@mention` QA，`gated_by_deploy` 模式則先轉 `dev_done` 待部署完成後以 `promote-qa` 或 CI/CD 解鎖 QA。 |
+| **Station 3b 測驗、報修與分診** | **「請用 `$team-qa` 驗證 `PROJ-101`（或：報修 `TEAM-888`／分診非程式缺陷 `BUG-1`）！」** | 記憶 `jira-comment` 或 `qase` 後端，內建身分守衛與 `--all-pass` 防假通過守衛；支援媒體附件報修與人工授權之 `triage` 模式（`Not a Bug`/`Won't Fix`/`Duplicate`/`Cannot Reproduce` 與受控 TC 豁免）。 |
+| **Station 4 上線結案** | **「請用 `$team-release` 將 `PROJ-101` 結案發佈。」** | 對帳五大發佈閘門（含經稽核之豁免 TC 與風險揭露）、按規模同步 `docs/manuals/<name>/<name>.html` 常駐手冊、傳遞同 Epic 下游 Story 依賴解除狀態、將 Jira 轉為 `Done` 並清除本地暫存 JSON。 |
 
 ---
 
@@ -74,36 +74,39 @@
 
 | 工作站 (Station) | 技能名稱 (Skill) | 執行模式 (Modes) | 負責角色 | 底層 `jira_sync.py` 子命令 | 核心產出與狀態變更 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Planning 規劃層** | `team-plan` | `epic` / `sprint` / `commit` / `status` | `pm` / `tech_lead` | `sprint-status` / `sprint-plan` | 維護 Epic 脈絡、Future/Active Sprint、候選 Story/Task/Bug 與預覽後套用；不改寫 Story 交付閘門 |
-| **Init 初始化** | `team-init` | `init` / `auth` | `tech_lead` / `pm` / 協作者 | `init` / `auth` | 建立 `team-config.json`（支援漸進認領與 1 對多角色池）、本機 `credentials.json` (`0600`)、`.gitignore`，並萃取 `engineering-standards.md` |
-| **Router 導航員** | `team-next-step` | 無（導航與對帳） | 全體成員 | `status` / `pull` | 自動執行遠端 JQL 探索與 Jira 網頁端雙向對帳，依優先序推薦唯一具體下一步行動與負責人 |
-| **Station 1 規格設計** | `team-spec` | `one-pass` / `draft` | `pm` (+ `tech_lead`) | `sync-story` | 按規模單趟或多輪 `draft` 產出 Scope、`AC-001..N`、條件式 UI/API 規格與抓大放小決策，同步至 Jira Story（含描述漂移防護） |
-| **Station 2 任務與編碼** | `team-dev` | `plan` / `implement` | `developer` | `create-subtasks` / `complete-task` | `plan` 拆解 `TASK-001..N` 並依專長自動指派 Jira `Sub-task`；`implement` 掛載領域技能編碼測試、四關卡自檢後打卡更新 `candidate_commit` |
-| **Station 3a 審查交接** | `team-review` | 無（單一模式） | `reviewer` / `independent_reviewer` | `handoff` | 合併開發交接與三軸審查，多人池自動選取非作者同儕，更新 `reviewed_commit` 並通知 QA 或退回開發 |
-| **Station 3b 測試與報修** | `team-qa` | `plan` / `verify` / `report` | `qa` | `record-qa` / `create-bug` | 支援 `jira-comment` 或 `qase` 雙後端與三層執行類型；失敗自動上傳媒體附件開立 `Bug`，`report` 支援探索缺陷與獨立線上 `Bug` |
-| **Station 4 發佈清除** | `team-release` | 無（單一模式） | `release_manager` | `close-story` | 對帳五大發佈閘門、按規模同步 `docs/manuals/<name>/<name>.html` 常駐手冊、發佈摘要、轉 `Done` 並刪除本地 Active JSON |
-| **系統編排（輔助）** | `system/run-workflow` | Python 動態編排 | AI 代理內部編排 | `run_workflow` 工具 | 當單站或多模組任務需大規模平行展開與匯總時，以 `agent`、`parallel`、`pipeline`、`phase` 動態編排子代理 |
+| **Planning 規劃層** | `team-plan` | `epic` / `decompose` / `sprint` / `commit` / `status` | `pm` / `tech_lead` | `epic-decompose` / `sprint-status` / `sprint-plan` | 維護 Epic 脈絡、平台中立 Epic 拆解（`dry_run` 預覽 -> `--apply` 拓撲波次建單）、Future/Active Sprint 與候選項目；不改寫 Story 交付閘門 |
+| **Init 初始化** | `team-init` | `init` / `auth` | `tech_lead` / `pm` / 協作者 | `init` / `auth` | 建立 `team-config.json`（含角色池、`commit_policy`、`qa_handoff_mode`、`epic_link_field`）、本機 `credentials.json` (`0600`)、`.gitignore`，並萃取 `engineering-standards.md` |
+| **Router 導航員** | `team-next-step` | 無（導航與對帳） | 全體成員 | `status [--epic]` / `pull` | 自動執行遠端 JQL 探索、Jira 網頁端雙向對帳與 Epic 進度彙總（含 `awaiting_qa_deploy` 與 `triage_closed` 狀態），推薦唯一具體下一步與負責人 |
+| **Station 1 規格設計** | `team-spec` | `one-pass` / `draft` / `backfill` | `pm` (+ `tech_lead`) | `sync-story` | 按規模單趟、多輪 `draft` 或既有單據 `--backfill` 產出 Scope、`AC-001..N`、條件式 UI/API 規格、選填風險與 `Q-###` 問題，同步至 Jira Story（含描述漂移防護） |
+| **Station 2 任務與編碼** | `team-dev` | `plan` / `implement` | `developer` | `create-subtasks` / `complete-task` | `plan` 拆解含實作步驟與目標檔案之 `TASK-001..N` 並依專長指派 Jira `Sub-task`；`implement` 掛載領域技能編碼測試、五關卡自檢、依 `commit_policy` 停等確認後提交並打卡（修 Bug 附 `--root-cause` / `--solution`） |
+| **Station 3a 審查交接** | `team-review` | 無（單一模式） | `reviewer` / `independent_reviewer` | `handoff` / `promote-qa` | 合併開發交接與三軸審查（含 Commit 格式與雙 Jira 票號檢查），多人池自動選取非作者同儕，支援 `immediate` 或 `gated_by_deploy`（`dev_done` -> `promote-qa` / CI/CD `in_qa`）交接 |
+| **Station 3b 測試、報修與分診** | `team-qa` | `plan` / `verify` / `report` / `triage` | `qa` | `record-qa` / `create-bug` / `triage-bug` | 支援 `jira-comment` 或 `qase` 雙後端、身分守衛與三層執行類型；失敗上傳媒體附件開立 `Bug`，`report` 支援探索缺陷與獨立線上 `Bug`，`triage` 支援人工授權非程式缺陷結案與受控 TC 豁免 |
+| **Station 4 發佈清除** | `team-release` | 無（單一模式） | `release_manager` | `close-story` | 對帳五大發佈閘門（含經稽核之 `waived`/`not-applicable` TC 與風險揭露）、按規模同步 `docs/manuals/<name>/<name>.html` 常駐手冊、傳遞同 Epic 依賴解除、轉 `Done` 並刪除本地 Active JSON |
+| **系統編排（輔助）** | `system/run-workflow` | Python 動態編排 | AI 代理內部編排 | `run_workflow` 工具 | 當單站或多模組任務需大規模平行展開與匯總時，以 `agent`、`parallel`、`pipeline`、`phase` 動態編排子代理（不與核心 `team-*` 耦合） |
 
-### 2.2 Jira 狀態轉換機、1 對多角色池與智慧交接機制
+### 2.2 Jira 狀態轉換機、1 對多角色池與嚴格 HITL / SoD 智慧交接機制
 
-真實團隊往往同時存在「一人身兼多職」與「多人共擔一職」。本套件內建 `is_same_person()`、多人角色池（`roles.<role>.members`）與 `execute_role_handoff()` 智慧交接引擎，自動根據 `.ai-workflow/team-config.json` 切換交接與指派行為：
+真實團隊往往同時存在「一人身兼多職」與「多人共擔一職」。本套件內建 `is_same_person()`、多人角色池（`roles.<role>.members`）與 `execute_role_handoff()` 智慧交接引擎，自動根據 `.ai-workflow/team-config.json` 切換交接與指派行為，並在所有工作站強制落實 **Human-in-the-Loop（HITL）確認門禁**與 **Separation of Duties（SoD）職責分離邊界**：
 
 ![狀態機與多角色治理：Jira 六階段狀態流轉與小團隊智慧交接機制](./screenshots/02-state-machine-and-roles.png)
-*圖 2-2：Jira 六階段狀態轉換機與多角色智慧交接決策圖。用途：展示 Jira Story 從 `To Do` 到 `Done` 的正向流轉、異常退回閉環，以及同人兼任與跨人交接的行為差異。視覺焦點：請依序查看標註序號 ① 頂部六大標準 Jira 狀態（`To Do` → `In Progress` → `In Review` → `In QA` → `Ready for Release` → `Done`）與退回迴圈；② 左下角同人兼任自動整併路徑（`handoff_mode: "auto-consolidated"`）；③ 右下角跨人交接三合一通知路徑（`handoff_mode: "jira-notification"`）。狀態變化：當前後站為同一人時不發送自我 `@mention` 並連貫推進；當前後站為不同人時自動轉狀態、改指派並發送含 `@mention` 之 ADF 評論。*
+*圖 2-2：Jira 六階段狀態轉換機與多角色智慧交接決策圖。用途：展示 Jira Story 從 `To Do` 到 `Done` 的正向流轉（含可選之 `dev_done` 部署緩衝態）、異常退回閉環，以及同人兼任與跨人交接的行為差異。視覺焦點：請依序查看標註序號 ① 頂部標準 Jira 狀態（`To Do` → `In Progress` → `In Review` → `In QA` → `Ready for Release` → `Done`）與退回迴圈；② 左下角同人兼任抑制自我通知路徑（`handoff_mode: "auto-consolidated"`）；③ 右下角跨人交接三合一通知路徑（`handoff_mode: "jira-notification"`）。狀態變化：不論同人或跨人，CLI 永遠回傳 `can_auto_chain_next_station: false` 與 `requires_user_confirmation_for_next_station: true`——同人兼任僅免除自我 `@mention` 並以一句簡短確認詢問是否繼續；跨人交接則自動轉狀態、改指派、發送 `@mention` 並執行強制 Clean Stop。*
 
-多角色智慧交接、自動指派與獨立審查安全網之核心規則如下：
+多角色智慧交接、自動指派與治理安全網之核心規則如下：
 
 1. **1 對多多人角色池與全站自動指派（`roles.<role>.members` & `safe_assign_issue`）**：
    - 每個角色可配置多位成員與專長標籤（`specialty`：`backend`、`frontend`、`mobile`、`devops`）。
-   - 各工作站自動呼叫 Jira Assignee API 完成指派，杜絕單據留白為 `Unassigned`：`sync-story`（`draft` 指派 `pm`、`approved` 指派 `developer`）、`create-subtasks`（依任務檔案或 `--task-assignee` 自動匹配專長開發者指派各張 `Sub-task`）、`create-bug`（依 `TC -> AC -> TASK` 自動追溯指派原實作開發者）。
-2. **同人身分判定與自動整併模式（`is_same_person` -> `auto-consolidated`）**：
+   - 各工作站自動呼叫 Jira Assignee API 完成指派，杜絕單據留白為 `Unassigned`：`sync-story`（`draft` 指派 `pm`、`approved` 指派 `developer`；`--backfill` / `--preserve-owner` 則保留原經辦人）、`create-subtasks`（依任務檔案或 `--task-assignee` 自動匹配專長開發者指派各張 `Sub-task`）、`create-bug`（依 `TC -> AC -> TASK` 自動追溯指派原實作開發者）。
+2. **同人身分判定與通知整併模式（`is_same_person` -> `auto-consolidated`；嚴禁未確認自動串接）**：
    - 依序比對雙方的 `jira_account_id`、`email`（忽略大小寫）與實際姓名 `name`。
-   - 當 `from_role` 與 `to_role` 指向同一位成員時，系統自動更新 Jira 狀態、確保經辦人已綁定該成員 `jira_account_id` 並寫入含角色署名之交接評論，但設定 `"notified": false`，**不發送自我 `@mention`、不打斷工作流等待自己簽核自己**，並主動連貫推進下一站。
-3. **跨人三合一通知模式（`jira-notification`）**：
-   - 當 `from_role` 與 `to_role` 為不同成員時，系統自動執行三步驟：(1) 轉換 Jira Issue 至目標狀態；(2) 將 Issue 重新指派給下一站負責人的 `jira_account_id`；(3) 在繁體中文 Jira 評論開頭插入原生 ADF Mention 節點（`@{name}` **請接手下一階段工作：**），觸發 Jira 原生通知推播。
-4. **同儕交叉審查與獨立審查安全網（`resolve_effective_reviewer`）**：
-   - 在 Station 3a（`team-review`），若 `roles.reviewer.members` 角色池中有未參與本單任務實作的其他成員，系統**第一優先自動選取該同儕**執行交叉審查（`self_reviewed_with_ai: false`）。
-   - 若無其他同儕，次優檢查是否配置了不同人之 `independent_reviewer`；若為極小或一人團隊，則由 AI 執行三軸嚴格審查，並強制在 Active JSON 與 Jira 評論寫入 `"self_reviewed_with_ai": true` 透明稽核標記。
+   - 當 `from_role` 與 `to_role` 指向同一位成員時，系統記錄 `same_person: true`、`handoff_mode: "auto-consolidated"`、`can_auto_chain_next_station: false`、`requires_user_confirmation_for_next_station: true`、`cross_person_clean_stop: false`、`next_station_prompt_allowed: true`，更新 Jira 狀態與經辦人並省略自我 `@mention` 噪音。
+   - **同人停等確認規則（Stop & Ask）**：`same_person: true` **僅抑制自我 `@mention` 噪音，絕不授權自動串接下一站**。完成本站後必須簡要回報結果、只問一句簡短確認（例如：「下一站同由您負責，是否要繼續執行？」），並**立即停下**等待使用者明確授權。
+3. **跨人三合一通知模式與職責分離 Clean Stop（`jira-notification` & SoD Hard Boundary）**：
+   - 當 `from_role` 與 `to_role` 為不同成員時，系統記錄 `same_person: false`、`cross_person_clean_stop: true`、`next_station_prompt_allowed: false` 與 `next_station_owner`，並執行三步驟：(1) 轉換 Jira Issue 至目標狀態；(2) 將 Issue 重新指派給下一站負責人的 `jira_account_id`；(3) 在繁體中文 Jira 評論開頭插入原生 ADF Mention 節點觸發 Jira 通知。
+   - **強制 Clean Stop**：跨人交接完成後必須立即結束本回合，僅回報本站結果、交接對象（`to_person` / `next_station_owner`）與目標 Jira 狀態，**嚴禁提示、建議或邀請當前使用者執行屬於其他角色的下一站指令**（例如嚴禁詢問「是否立即執行 `/team-qa`？」）。
+4. **同儕交叉審查、`Stop & Yield on Fix` 與多環境部署閘門（`qa_handoff_mode`）**：
+   - 在 Station 3a（`team-review`），若 `roles.reviewer.members` 角色池中有未參與本單任務實作的其他成員，系統**第一優先自動選取該同儕**執行交叉審查（`self_reviewed_with_ai: false`）；若無同儕則依序檢查 `independent_reviewer` 或寫入 `"self_reviewed_with_ai": true` 透明稽核標記。
+   - **`Stop & Yield on Fix` 紅線**：若當前回合是在修復使用者於人工驗證或審查中回報的缺陷／微調，修改程式並通過本地測試後**必須立即停下**回報修復與測試結果供使用者確認，嚴禁於同回合擅自執行 `handoff`、`record-qa` 或 `close-story`。
+   - **多環境部署解耦（`qa_handoff_mode`）**：預設為 `"immediate"`（審查通過即進 `In QA`）；多環境 CI/CD 團隊可選用 `"gated_by_deploy"` 並設定 `status_mapping.dev_done`，審查通過後先停於 `dev_done` 並記錄 `qa_deploy_gate`，待 CI/CD 轉入 `in_qa` 或顯式執行 `promote-qa` 後才解除 `team-qa (verify)` 閘門。
 
 ### 2.3 三層源碼功能盤點對帳表（3-Layer Coverage Matrix）
 
@@ -111,62 +114,76 @@
 
 | 層級與源碼路徑 | 功能名稱（對齊源碼定義） | 次級介面 / 模式 / 子命令 / 閘門 | 適用角色 | 對應章節與視覺圖表 |
 | :--- | :--- | :--- | :--- | :--- |
-| **L1/L3** `common-workflow-governance.md` | 規劃層 + 四站八技能共同治理契約 | 第一性原理資產邊界、1 對多角色池自動指派、抓大放小、Jira 網頁雙向對帳、預設 `zh-TW` 與證據鐵律 | 全體角色 | 2.1 - 2.3（圖 2-1：`01-architecture-asset-boundary.png`、圖 2-2：`02-state-machine-and-roles.png`） |
-| **L1/L2** `skills/team-plan/SKILL.md` | Epic / Sprint 規劃層 (`team-plan`) | `epic` / `sprint` / `commit` / `status`、`sprint-status`、`sprint-plan`、預覽後確認、最多 50 張單批次移動 | `pm` / `tech_lead` | 第 2.4 節；`skills/team-plan/evals/evals.json` |
-| **L1/L2** `skills/team-init/SKILL.md` | 專案初始化與協作者認領 (`team-init`) | `jira_sync.py init` / `auth`、漸進式角色認領、`credentials.json` (`0600`)、`AGENTS.md` 規範萃取去重 | `tech_lead` / `pm` / 協作者 | 第 3 章 情境 0（圖 3-1：`03-scenario0-team-init.png`） |
-| **L1/L2** `skills/team-spec/SKILL.md` | 一體化規格、UX 與技術設計 (`team-spec`) | `jira_sync.py sync-story`、大小需求雙軌制（`one-pass` vs 多輪 `draft`）、6 大 AC 維度、遠端描述漂移防護 | `pm` / `tech_lead` | 第 4 章 情境 1（圖 4-1：`04-scenario1-team-spec.png`） |
-| **L1/L2** `skills/team-dev/SKILL.md` (`plan`) | 開發任務垂直拆解 (`team-dev` `plan` 模式) | `jira_sync.py create-subtasks`、`TASK-001..N`、前後端 `specialty` 子任務自動指派、DFS 循環依賴檢查 | `developer` | 5.1 - 5.2 情境 2A（圖 5-1：`05-scenario2-team-dev-plan.png`） |
-| **L1/L2** `skills/team-dev/SKILL.md` (`implement`) | 編碼、領域技能掛載與打卡 (`team-dev` `implement`) | `jira_sync.py complete-task`、三層優先序、Bring-Your-Own-Skill 鉤子、四項准出關卡、Dev Fast-Track 守衛 | `developer` | 5.3 - 5.4 情境 2B（圖 5-2：`06-scenario2-team-dev-implement.png`） |
-| **L1/L2** `skills/team-review/SKILL.md` | 合併開發交接與三軸審查 (`team-review`) | `jira_sync.py handoff`、三軸審查、多人池同儕自動選取、QA 外部測試環境提示、AI 自審透明標記 | `reviewer`（含同儕/獨立審查） | 第 6 章 情境 3（圖 6-1：`07-scenario3-team-review.png`） |
-| **L1/L2** `skills/team-qa/SKILL.md` (`plan`/`verify`) | 三層混合測試規劃與驗證 (`team-qa`) | `jira_sync.py record-qa`、記憶 `jira-comment`/`qase` 雙後端、`--all-pass` 防假通過守衛、`--tc-attach` 媒體附件 | `qa` | 7.1 - 7.2、7.4 情境 4A/4B（圖 7-1、圖 7-2） |
-| **L1/L2** `skills/team-qa/SKILL.md` (`report`) + `team-dev` | 探索缺陷、獨立線上 Bug 與修復閉環 | `jira_sync.py create-bug`、探索缺陷 `TC-EXP-###`、獨立報修 `--standalone`/`--adopt`、Jira/Qase 附件與重審重驗 | `qa` / `developer` / `reviewer` | 7.3 情境 4C、第 8 章 情境 5（圖 8-1：`10-scenario5-bug-loop.png`） |
-| **L1/L2** `skills/team-release/SKILL.md` | 發佈閘門對帳、HTML 手冊與清除 (`team-release`) | `jira_sync.py close-story`、五大發佈閘門、按規模同步 `docs/manuals/<name>/<name>.html`、刪除本地 Active JSON | `release_manager` | 第 9 章 情境 6（圖 9-1：`11-scenario6-team-release.png`） |
-| **L1/L2** `skills/team-next-step/SKILL.md` | 導航員與雙向對帳 (`team-next-step`) | `jira_sync.py status` / `pull`、遠端 JQL 探索、Jira 網頁人工變更雙向對帳、協作者 `auth` 攔截提示 | 全體角色 | 第 10 章 情境 7（圖 10-1：`12-scenario7-and-8-router-and-modes.png`） |
-| **L3** `scripts/jira_sync.py` + `system/run-workflow` + `tools/*` | 同步引擎、多代理編排與 18 項測試套件 | Jira REST API v3（含隱藏屬性 `ai_workflow_state`）、Qase API v1、`run-workflow`、`check_shared.sh`、`test_workflow.py` | 維運 / 全體角色 | 第 11 - 13 章 情境 8（圖 10-1） |
+| **L1/L3** `common-workflow-governance.md` | 規劃層 + 四站八技能共同治理契約 | 第一性原理資產邊界、1 對多角色池、嚴格 HITL 與 SoD Clean Stop、`commit_policy`、`qa_handoff_mode`、行內 Markdown ADF、預設 `zh-TW` 與證據鐵律 | 全體角色 | 2.1 - 2.3（圖 2-1：`01-architecture-asset-boundary.png`、圖 2-2：`02-state-machine-and-roles.png`） |
+| **L1/L2** `skills/team-plan/SKILL.md` | Epic / Sprint 規劃層 (`team-plan`) | `epic` / `decompose` / `sprint` / `commit` / `status`、`epic-decompose`、`sprint-status`、`sprint-plan`、預覽後確認、拓撲波次建單與最多 50 張單批次移動 | `pm` / `tech_lead` | 第 2.4 節；`skills/team-plan/evals/evals.json` |
+| **L1/L2** `skills/team-init/SKILL.md` | 專案初始化與協作者認領 (`team-init`) | `jira_sync.py init` / `auth`、漸進式角色認領、`commit_policy`、`qa_handoff_mode`、`status_mapping.dev_done`、`epic_link_field`、`credentials.json` (`0600`) | `tech_lead` / `pm` / 協作者 | 第 3 章 情境 0（圖 3-1：`03-scenario0-team-init.png`） |
+| **L1/L2** `skills/team-spec/SKILL.md` | 一體化規格、UX、技術設計與回補 (`team-spec`) | `jira_sync.py sync-story`、大小需求雙軌制（`one-pass` vs 多輪 `draft`）、既有 Story `--backfill` / `--preserve-owner`、選填風險與 `Q-###`、嚴格 `has_data` 界定、描述漂移防護 | `pm` / `tech_lead` | 第 4 章 情境 1（圖 4-1：`04-scenario1-team-spec.png`） |
+| **L1/L2** `skills/team-dev/SKILL.md` (`plan`) | 開發任務垂直拆解 (`team-dev` `plan` 模式) | `jira_sync.py create-subtasks`、`TASK-001..N`、豐富結構化 Sub-task 描述（步驟／檔案／驗證）、前後端 `specialty` 自動指派、DFS 循環依賴檢查 | `developer` | 5.1 - 5.2 情境 2A（圖 5-1：`05-scenario2-team-dev-plan.png`） |
+| **L1/L2** `skills/team-dev/SKILL.md` (`implement`) | 編碼、提交門禁與打卡 (`team-dev` `implement`) | `jira_sync.py complete-task`、三層優先序、Bring-Your-Own-Skill 鉤子、五項准出關卡（含專案 Commit 格式與雙 Jira 票號）、`commit_policy` 停等確認、修 Bug `--root-cause`/`--solution` | `developer` | 5.3 - 5.4 情境 2B（圖 5-2：`06-scenario2-team-dev-implement.png`） |
+| **L1/L2** `skills/team-review/SKILL.md` | 合併開發交接與三軸審查 (`team-review`) | `jira_sync.py handoff` / `promote-qa`、三軸審查（含 Commit 格式核對）、多人池同儕選取、`gated_by_deploy` 部署解耦、嚴格 HITL 與 SoD Clean Stop | `reviewer`（含同儕/獨立審查） | 第 6 章 情境 3（圖 6-1：`07-scenario3-team-review.png`） |
+| **L1/L2** `skills/team-qa/SKILL.md` (`plan`/`verify`/`triage`) | 三層混合測試、分診與驗證 (`team-qa`) | `jira_sync.py record-qa` / `triage-bug`、身分守衛 `qa_identity_guardrail`、`jira-comment`/`qase` 雙後端、`--all-pass` 防假通過守衛、人工授權 Bug Triage 與受控 TC 豁免 | `qa` | 7.1 - 7.5 情境 4A/4B/4D（圖 7-1、圖 7-2） |
+| **L1/L2** `skills/team-qa/SKILL.md` (`report`) + `team-dev` | 探索缺陷、獨立線上 Bug 與修復閉環 | `jira_sync.py create-bug`、探索缺陷 `TC-EXP-###`、獨立報修 `--standalone`/`--adopt`、Jira/Qase 附件、`--root-cause`/`--solution` 與重審重驗 | `qa` / `developer` / `reviewer` | 7.3 情境 4C、第 8 章 情境 5（圖 8-1：`10-scenario5-bug-loop.png`） |
+| **L1/L2** `skills/team-release/SKILL.md` | 發佈閘門對帳、HTML 手冊與清除 (`team-release`) | `jira_sync.py close-story`、五大發佈閘門（含經稽核豁免 TC 與風險揭露）、按規模同步 `docs/manuals/<name>/<name>.html`、同 Epic 下游依賴解除、刪除本地 Active JSON | `release_manager` | 第 9 章 情境 6（圖 9-1：`11-scenario6-team-release.png`） |
+| **L1/L2** `skills/team-next-step/SKILL.md` | 導航員、Epic 進度與雙向對帳 (`team-next-step`) | `jira_sync.py status [--epic]` / `pull`、遠端 JQL 探索、Jira 網頁人工變更雙向對帳、`awaiting_qa_deploy` 與 `triage_closed` 路由、協作者 `auth` 攔截提示 | 全體角色 | 第 10 章 情境 7（圖 10-1：`12-scenario7-and-8-router-and-modes.png`） |
+| **L3** `scripts/jira_sync.py` + `system/run-workflow` + `tools/*` | 同步引擎、多代理編排與 36 項測試套件 | Jira REST API v3（含行內 Markdown ADF 與 `ai_workflow_state`）、Qase API v1、`run-workflow`、`check_shared.sh`（8 份一致）、`test_workflow.py`（36 項測試） | 維運 / 全體角色 | 第 11 - 13 章 情境 8（圖 10-1） |
 
 ---
 
 
-### 2.4 Epic / Sprint 規劃層（`team-plan`）
+### 2.4 Epic / Sprint 規劃層與平台中立 Epic 拆解（`team-plan`）
 
 `team-plan` 位於 Story 交付工作流之前，負責把產品脈絡與時間盒整理成可審查的 Jira 規劃。Epic 是可跨多個 Sprint 的產品容器；Sprint 是具有名稱、目標、日期與成員的 Scrum 時間盒。Story、Task 與 Bug 可以加入 Sprint，Sub-task 則跟隨父 Story，不作為獨立 Sprint 項目。
 
-規劃層有四種模式：
+規劃層有五種模式：
 
 - `epic`：採用既有 Epic 的 key，整理目標、範圍與候選 Story 邊界。若 Jira 已有 Epic，不能重複建立。
+- `decompose`（`epic-decompose`）：分析既有 Epic 與程式碼庫，將大型需求拆解為具備跨 Story 依賴（`depends_on`）與共用契約（`shared_contracts`）的拓撲波次（`execution_waves`：`Wave 1`、`Wave 2`...）子 Story。**Phase 1 嚴格維持平台中立**，不將 `skills/system/run-workflow` 或多 Story Sub-agent 平行執行耦合進核心 `team-*` 技能，確保 Codex CLI、Claude Code、Antigravity 等所有客戶端行為一致。
 - `sprint`：檢視或建立 Future / Active Sprint，先列出 Board 與現有 Sprint 狀態。
 - `commit`：把使用者選定的 Story、Task、Bug 放入既有或新建的 Sprint。
-- `status`：唯讀查看 Board、Sprint 狀態、項目數量與排除原因。
+- `status`：唯讀查看 Board / Sprint 狀態（`sprint-status`）或 Epic 跨 Story 整體進度彙總（`status --epic <EPIC-KEY>`）。
 
-規劃工作必須先產生預覽，再決定是否寫入 Jira。典型操作如下：
+規劃與拆解皆必須先產生 `dry_run: true` 預覽，待使用者明確確認後才以 `--apply` 寫入 Jira。典型操作如下：
 
 ```bash
-# 先檢視 Board 上的 Future / Active Sprint
-python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-status \\
+# 1. 先檢視 Board 上的 Future / Active Sprint
+python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-status \
   --board-id "42"
 
-# 產生 Future Sprint 與候選項目的 dry-run 預覽
-python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \\
-  --board-id "42" \\
-  --name "2026-11 Sprint 3" \\
-  --goal "完成 CSV 匯出" \\
-  --start-date "2026-11-16" \\
-  --end-date "2026-11-27" \\
-  --epic-key "PROJ-EPIC-12" \\
-  --issue-key "PROJ-101" \\
+# 2. 預覽既有 Epic 拆解為波次化子 Story（預設 dry_run: true，零寫入）
+python3 .ai-workflow/bin/jira_sync.py --repo-root . epic-decompose \
+  --epic "PROJ-EPIC-12" \
+  --stories-json '@stories.json'
+
+# 確認波次、依賴與重複警示後，才套用建單（自動依波次解析上游 Jira Key）
+python3 .ai-workflow/bin/jira_sync.py --repo-root . epic-decompose \
+  --epic "PROJ-EPIC-12" \
+  --stories-json '@stories.json' \
+  --apply
+
+# 3. 產生 Future Sprint 與候選項目的 dry-run 預覽
+python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
+  --board-id "42" \
+  --name "2026-11 Sprint 3" \
+  --goal "完成 CSV 匯出" \
+  --start-date "2026-11-16" \
+  --end-date "2026-11-27" \
+  --epic-key "PROJ-EPIC-12" \
+  --issue-key "PROJ-101" \
   --issue-key "PROJ-102"
 
 # 預覽確認後，才套用既有 Sprint 的成員變更
-python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \\
-  --sprint-id "881" \\
-  --issue-key "PROJ-201" \\
-  --issue-key "PROJ-202" \\
+python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
+  --sprint-id "881" \
+  --issue-key "PROJ-201" \
+  --issue-key "PROJ-202" \
   --apply
 ```
 
-預覽結果必須列出 Project Key、Board id、Epic key、Sprint id / name / state、每個候選 Issue 的納入或排除原因，以及 `dry_run: true`。預設排除 Epic、Sub-task 與已完成項目；遇到多個相似 Issue 時，保留候選清單並要求選擇，不能猜測。套用時 CLI 以最多 50 張單為一批移動 Issue，並回報實際移動的 Jira keys。Sprint 規劃不會改變 Story 的規格、指派、Review、QA 或 Release 狀態。
+`epic-decompose` 內建嚴格驗證（攔截空白標題、重複本地 ID、未知／自我／循環依賴、無效 `story_points`、404 Epic 與跨機重複子 Story 警示），套用時依拓撲波次逐層建單，自動將下游 `depends_on_keys` 對應至真實上游 Jira Key，並優先透過 `fields.parent` 關聯 Epic（若 Jira 回傳 400 則優雅回退至 `team-config.json` 設定之 `epic_link_field`，再不行則以警告建單不崩潰），同時寫入 `.ai-workflow/active/<NEW-KEY>.json`（`spec_status: "draft"`）並支援部分失敗追蹤。
 
-完成 Sprint 規劃後，將每張 Story 導回既有交付站點：新需求進入 `team-spec`，規格核准後進入 `team-dev`，再依序通過 `team-review`、`team-qa` 與 `team-release`。Sprint 尚未加入不會自動阻塞 Story 交付，除非團隊另行採用「必須先進 Sprint」的治理政策。
+`sprint-plan` 預覽結果必須列出 Project Key、Board id、Epic key、Sprint id / name / state、每個候選 Issue 的納入或排除原因，以及 `dry_run: true`。預設排除 Epic、Sub-task 與已完成項目；遇到多個相似 Issue 時，保留候選清單並要求選擇，不能猜測。套用時 CLI 以最多 50 張單為一批移動 Issue，並回報實際移動的 Jira keys。Sprint 規劃不會改變 Story 的規格、指派、Review、QA 或 Release 狀態。
+
+完成規劃或拆解後必須停下等待使用者確認，絕不自動串接交付站點；進入交付時將每張 Story 依序導回 `team-spec`、`team-dev`、`team-review`、`team-qa` 與 `team-release`，並可隨時透過 `status --epic <EPIC-KEY>` 檢視整體進度與可啟動之下一張 Story。
 
 
 ## 3. 情境 0：專案初次導入、漸進式角色認領與協作者加入（`team-init`）
@@ -252,14 +269,16 @@ python3 skills/team-init/scripts/jira_sync.py \
 | **CLI 旗標** | `--name` / `--language` | 選填（預設 `zh-TW`） | 指定成員顯示名稱，以及全專案 Jira 描述與評論預設語言（預設 `zh-TW` 繁體中文） | 連線模式下若未傳 `--name`，自動由 Jira `/rest/api/3/myself` 帶入 `displayName` 與 `accountId` |
 | **CLI 旗標** | `--inspect` | 選填（布林旗標） | 唯讀檢查目前專案初始化、角色認領與憑證狀態，回傳尚未確認之 `questions_to_ask` | 不修改任何檔案；供 AI 在執行 `init` 或 `auth` 前先向使用者詢問確認 |
 | **CLI 旗標** | `-i` / `--interactive` | 選填（布林旗標） | 終端機互動式問答模式，逐步詢問 URL、Project Key、帳號、Token 與角色 | 適合人類開發者直接於終端機手動執行初始化或憑證綁定 |
-| **CLI 旗標** | `--project-key` | 選填（預設 `PROJ`） | 設定 Jira 專案代號（自動轉為大寫，如 `TEAM`） | 寫入 `team-config.json` 之 `project_key` |
+| **CLI 旗標** | `--project-key` / `--jira-board-id` | 選填（預設 `PROJ` / 空字串） | 設定 Jira 專案代號（自動轉為大寫，如 `TEAM`）與選用之 Scrum Board ID | 寫入 `team-config.json` 之 `project_key` 與 `jira_board_id` |
+| **CLI 旗標** | `--commit-policy` / `--commit-message-pattern` | 選填（預設 `confirm_before_commit` / 空字串） | 設定提交確認門禁（`confirm_before_commit` 預設停等確認，或顯式選擇 `auto_on_test_pass`）與選用之 Commit 格式正規表達式 | 寫入 `team-config.json`；供 Station 2 `team-dev` 與 `complete-task` 非阻塞格式檢查使用 |
+| **CLI 旗標** | `--qa-handoff-mode` / `--status-dev-done` | 選填（預設 `immediate` / 空字串） | 設定 QA 交接模式（`immediate` 預設即時進 `In QA`，或 `gated_by_deploy` 搭配 `status_mapping.dev_done` 解耦多環境部署） | 寫入 `team-config.json` 之 `qa_handoff_mode` 與 `status_mapping.dev_done` |
 | **CLI 旗標** | `--jira-url` | 選填（預設空字串） | 設定 Jira Cloud 主機網址（如 `https://org.atlassian.net`） | 僅允許 `http` 或 `https` 協定；自動移除結尾斜線 |
 | **CLI 旗標** | `--jira-email` / `--jira-token` | 選填 | 設定 Jira 認證登入信箱與 API Token | 寫入受 `.gitignore` 保護之 `.ai-workflow/credentials.json`（權限 `0600`），**嚴禁寫入 `team-config.json`** |
 | **CLI 旗標** | `--roles-json` | 選填 | JSON 字串或檔案路徑，定義六大角色（支援單一物件或含 `members` 多人陣列）及選用之 `independent_reviewer` | 內嵌之 `api_token` 會自動剝離轉存至 `credentials.json`，並自動呼叫 Jira API 解析補齊 `jira_account_id` |
 | **CLI 旗標** | `--role-tokens-json` | 選填 | JSON 字串或檔案路徑，設定各角色專屬 Jira API Token（如 `{"qa": "..."}`） | 寫入 `.ai-workflow/credentials.json` 之 `role_credentials`，使各站點直接以該角色本人之 Jira 帳號發送評論與流轉狀態 |
-| **CLI 旗標** | `--status-mapping-json` / `--issue-type-mapping-json` | 選填 | 自訂六大狀態對應之 Jira 狀態名稱與 `story`、`subtask`、`bug` 單據類型 | 覆寫 `team-config.json` 之 `status_mapping` 與 `issue_type_mapping` |
+| **CLI 旗標** | `--status-mapping-json` / `--issue-type-mapping-json` | 選填 | 自訂狀態對應之 Jira 狀態名稱（含選用 `dev_done`）與 `story`、`subtask`、`bug` 單據類型 | 覆寫 `team-config.json` 之 `status_mapping` 與 `issue_type_mapping` |
 | **CLI 旗標** | `--agents-md` / `--standards-md` | 選填 | 指定專案 AI 入口文件（預設 `AGENTS.md`）與全專案工程規範路徑（預設 `docs/shared/engineering-standards.md`） | 若 `AGENTS.md` 含規範段落則自動萃取合併並去重，否則由預設範本建立 |
-| **產出檔案** | `.ai-workflow/team-config.json` | 自動建立（進 Git） | 儲存專案代號、Jira 網址、1 對多角色池映射、狀態表、預設語言與選用之 `qa_test_backend` | **嚴禁寫入 `JIRA_API_TOKEN`、`QASE_API_TOKEN` 或密碼** |
+| **產出檔案** | `.ai-workflow/team-config.json` | 自動建立（進 Git） | 儲存專案代號、Jira 網址、1 對多角色池映射、狀態表、`commit_policy`、`qa_handoff_mode`、選用 `epic_link_field`、`qa_test_backend` 與預設語言 | **嚴禁寫入 `JIRA_API_TOKEN`、`QASE_API_TOKEN` 或密碼** |
 | **產出檔案** | `.ai-workflow/credentials.json` | 自動建立（**不進 Git**） | 儲存本機預設、角色與個人之 Jira / Qase API Token（權限 `0600`），供各站自動解析連線 | 自動寫入 `.gitignore`，防止憑證外洩 |
 | **產出檔案** | `.ai-workflow/bin/jira_sync.py` | 自動建立（進 Git） | 業務專案本地統一 CLI 入口（權限 `0755`） | 解決全域安裝 Skill 時業務專案無 `skills/` 目錄之路徑問題 |
 | **產出檔案** | `.gitignore` | 自動更新（進 Git） | 自動確保包含 `.ai-workflow/active/`、`.ai-workflow/credentials.json` 與 `.ai-workflow/.env` | 具備冪等性，重複執行 `init` 不會重複插入多行 |
@@ -315,9 +334,11 @@ python3 skills/team-spec/scripts/jira_sync.py \
   --status approved
 ```
 
-4. **步驟四：確認自動交接結果**
-   - 若 `pm` 與 `developer` 為同一人（例如 Alice 兼任），系統記錄 `handoff_mode: "auto-consolidated"` 並直接提示可執行 `$team-dev`（`plan` 模式）。
-   - 若 `pm`（Alice）與 `developer`（Bob）為不同人，系統自動將 `PROJ-101` 轉為 `In Progress`、指派給 Bob 並發佈 `@Bob` 評論通知；同時提示 QA（Carol）可平行啟動 `$team-qa`（`plan` 模式）。
+4. **步驟四：確認角色感知交接與嚴格 HITL 邊界**
+   - 若 `pm` 與 `developer` 為同一人（例如 Alice 兼任），系統記錄 `handoff_mode: "auto-consolidated"`、`can_auto_chain_next_station: false` 並抑制自我 `@mention`，接著僅以一句簡短確認詢問是否繼續進入 `$team-dev` 並停下等待授權。
+   - 若 `pm`（Alice）與 `developer`（Bob）為不同人，系統自動將 `PROJ-101` 轉為 `In Progress`、指派給 Bob 並發佈 `@Bob` 評論通知，接著強制執行 **Clean Stop**（不建議當前使用者執行屬於其他角色的 `/team-dev` 或 `/team-qa`）。
+
+> **既有 Story 無損規格回補模式（`--backfill` / `--preserve-owner`）**：若要替已存在、進行中或已交付之 Jira Story 補齊規格文件，可使用 `sync-story --key <EXISTING-KEY> --backfill`（隱含 `--preserve-owner`）。此模式**拒絕 `--status approved` 與 `--create`**、不改動 `current_owner_role`／Jira Assignee／Jira 狀態，也不會重置既有的 `tasks`、`review`、`qa`、`bugs`、`qa_deploy_gate` 或 `triage_closed`。僅當傳入 `--risks` 或 `--open-questions-json` 時才會額外渲染 `風險與待確認問題` 區塊（簡單 Story 保持精簡）；同時嚴格遵守五類證據分離（原始需求、程式碼實況、AI 建議、`Q-###` 待確認問題、實測證據）、三態回報（`material_backfilled` / `spec_pending_confirmation` / `approved`），且絕不在 Story 描述加入驗證場景表（歸屬 `team-qa`）或於 Git 建立 `analysis.md`。
 
 ### 4.3 `jira_sync.py sync-story` 參數與防呆規格表
 
@@ -328,18 +349,20 @@ python3 skills/team-spec/scripts/jira_sync.py \
 | `--scope-in` / `--scope-out` | 選填（字串） | 明確定義本次包含範圍（In-Scope）與不包含範圍（Out-of-Scope） | 寫入 Jira Story 描述第 1 節與本地 JSON |
 | `--has-ui` / `--no-ui` | 選填（布林旗標） | 標記是否包含前端畫面、元件或文案變更 | 當 `has_ui` 為 `false` 時，自動清除 `design.ui_spec` 防止殘留無效規格 |
 | `--has-api` / `--no-api` | 選填（布林旗標） | 標記是否包含跨邊界 API 或事件契約變更 | 當 `has_api` 為 `false` 時，自動清除 `design.api_spec` |
-| `--has-data` / `--no-data` | 選填（布林旗標） | 標記是否包含資料表、索引、Migration 或快取格式變更 | 記錄於 `change_surface.has_data` |
+| `--has-data` / `--no-data` | 選填（布林旗標） | **僅限**資料表 Schema、索引、Migration、儲存格式或持久資料模型變更（單純呼叫既有持久化／Repository API 屬 `has_data: false`） | 記錄於 `change_surface.has_data` |
 | `--risk-level` | 選填（列舉） | 風險等級：`low`、`medium`、`high`、`critical` | 預設為 `medium`，顯示於 Jira Story 規格標頭 |
 | `--ac` / `--replace-acs` | 可重複指定 / 布林 | 可測試驗收條件，格式為 `AC-001:<description>`（省略前綴則自動編號） | **增量 Upsert 與空白攔截**：於既有 Story 上依 ID 增量更新或附加（加 `--replace-acs` 可整批重設）；描述為空立即報錯 |
 | `--design-summary` | 選填（字串） | 技術架構、影響模組、資料相容性與資安控制點摘要 | 寫入 `design.summary` |
 | `--ui-spec` / `--api-spec` | 選填（字串） | 條件式 UI 狀態規格與 API 介面契約 | 僅在對應之 `--has-ui` / `--has-api` 為真時儲存與渲染 |
 | `--auto-decision` | 可重複指定 | 「放小」：AI 依專案慣例自動決定的常規技術或 UX 細節 | 彙整於 Jira 描述第 4 節 **AI 預設細節清單**（跨輪次自動去重累加） |
 | `--material-decision` | 可重複指定 | 「抓大」：經人類確認之關鍵架構或業務決策 | **大小需求雙軌防呆**：全新 Story 單趟直接 `approved` 上限 3 筆；多輪 `draft` 或 Station 2 Spec-Gap 補齊時每輪上限 5 筆且跨輪次自動無損累加 |
+| `--risks` / `--open-questions-json` | 選填（字串 / JSON） | 選填風險與待確認問題陣列（支援 `id`、`question`、`owner`、`proposed_default`、`impacted_acs`、`blocking`；拒絕重複 `Q-###` 與非布林 `blocking`） | 僅非空時以嚴格 ADF 渲染 `風險與待確認問題` 區塊，簡單 Story 自動省略 |
+| `--backfill` / `--preserve-owner` | 選填（布林旗標） | 既有 Story 規格回補模式與保留原負責人旗標（`--backfill` 自動啟用 `--preserve-owner`） | **保護既有生命週期**：拒絕 `--backfill --status approved`、`--backfill --create` 與 404 自動建單回退；保留 Owner／Assignee／狀態與 `tasks`/`review`/`qa`/`bugs` |
 | `--spec-json` | 選填（JSON 字串或檔案） | 以整包 JSON 載入規格欄位 | 可與個別 CLI 旗標搭配使用（個別旗標優先覆寫） |
-| `--status` / `--to-assignee` | 選填（`draft` / `approved`） | 規格狀態與選用之目標開發負責人信箱/專長 | `draft` 自動指派 `pm`；`approved` 禁止無 `AC-*`，核准後自動指派並交接予 `developer` |
-| `--accept-remote-description` / `--force-overwrite` | 選填（布林旗標） | 遠端描述漂移防護處理選項 | 當成員曾於 Jira 網頁端手動編輯描述時，預設攔截防止覆蓋；可選擇吸收遠端變更或強制覆寫 |
+| `--status` / `--to-assignee` | 選填（`draft` / `approved`） | 規格狀態與選用之目標開發負責人信箱/專長 | `draft` 自動指派 `pm`（除非 `--preserve-owner`）；`approved` 禁止無 `AC-*`，核准後自動指派並交接予 `developer` |
+| `--accept-remote-description` / `--force-overwrite` | 選填（布林旗標） | 遠端描述漂移防護處理選項 | 當成員曾於 Jira 網頁端手動編輯描述（含尚未追蹤之既有文字）時，預設攔截防止覆蓋；可選擇吸收遠端變更或強制覆寫 |
 | `--approved-by` | 選填（字串） | 核准人姓名或角色 | 預設自動帶入 `team-config.json` 中之 `pm.name` |
-| `--create` | 選填（布林旗標） | 在 Live Jira 模式下，若尚無此 Story 則呼叫 `POST /rest/api/3/issue` 新建 | 若建立成功，自動以遠端回傳之正式 Jira Key 更新本地檔名 |
+| `--create` | 選填（布林旗標） | 在 Live Jira 模式下，若尚無此 Story 則呼叫 `POST /rest/api/3/issue` 新建 | 若建立成功，自動以遠端回傳之正式 Jira Key 更新本地檔名（與 `--backfill` 互斥） |
 
 ---
 
@@ -402,7 +425,7 @@ python3 .ai-workflow/bin/jira_sync.py \
 | 參數名稱 | 必填 / 類型 | 功能說明與輸入規範 | 內建防呆與狀態影響 |
 | :--- | :--- | :--- | :--- |
 | `--key` | **必填**（字串） | 母單 Jira Story 代號（如 `PROJ-101`） | 必須已存在 `.ai-workflow/active/<KEY>.json` |
-| `--tasks-json` | 選填（JSON 字串或檔案） | 完整任務陣列（支援 `id`、`title`、`ac_coverage`、`depends_on`、`files`、`verification`、`assignee`） | 推薦用於包含前置依賴 `depends_on` 與目標檔案清單之任務拆解 |
+| `--tasks-json` | 選填（JSON 字串或檔案） | 完整任務陣列（支援 `id`、`title`、`description`、`implementation_steps`、`ac_coverage`、`depends_on`、`files`、`verification`、`assignee`） | 推薦使用；`format_subtask_description` 會於 Jira Sub-task 渲染完整實作步驟、目標檔案、AC 覆蓋與驗證指令 |
 | `--task` | 可重複指定 | 快速單行格式：`TASK-001:<Title>:AC-001,AC-002:<Verification>`（保留測試命令內冒號） | 可與 `--tasks-json` 併用；若省略 `TASK-###` 前綴則自動依序編號 |
 | `--assignee` / `--task-assignee` | 選填（信箱或專長標籤） | 指定預設子任務負責人或個別任務負責人（如 `TASK-003=frontend`） | 未傳時自動依 `roles.developer.members` 之 `specialty`（如前後端路徑）匹配並呼叫 Jira Assignee API 指派 |
 | `--proceed-at-risk` | 選填（布林旗標） | 允許在 `spec_status != "approved"` 時強制先行拆解任務 | **預設安全防呆**：未加此旗標時，若規格未核准將直接報錯拒絕拆解 |
@@ -425,10 +448,12 @@ python3 .ai-workflow/bin/jira_sync.py \
 2. **步驟二：極簡上下文載入與專業技能掛載（Bring-Your-Own-Skill Hook）**
    - 僅讀取：(1) `AGENTS.md` 與 `docs/shared/engineering-standards.md`；(2) `.ai-workflow/active/PROJ-101.json` 中該任務關聯的 `AC-*` 與設計摘要（缺失時自動從主 Worktree 或遠端 Jira 無損回填）；(3) 該任務 `files` 指定的目標源碼與測試檔。
    - **專業技能協同掛載**：動手寫程式前，AI 會主動載入環境中對應的領域技能（如 TDD、前端介面設計、React/Go/Python 框架規範或測試模式技能），與本工作流相輔相成。
-3. **步驟三：撰寫程式、自動化測試並通過四項審查對齊准出關卡（Exit Gate）**
+3. **步驟三：撰寫程式、自動化測試並通過五項審查對齊准出關卡（Exit Gate）**
    - 若 QA 已平行完成 `team-qa`（`plan` 模式），在測試名稱中直接納入 `TC-001`、`TC-002`（保留連字號 `TC-\d{3,}` 格式）以便後續 `record-qa --mode verify --junit-xml` 自動對應。
-   - 打卡前強制自檢四項准出條件：(1) 複用既有專案共用模組不重複造輪子；(2) 每條關聯 `AC-*` 同時具備正常路徑與至少一項邊界/錯誤測試；(3) 完整實作 API 權限/交易保護或 UI 四態（`Normal`/`Loading`/`Empty`/`Error`）；(4) 驗證測試與型別/Linter 靜態檢查皆為 `0` 錯誤。
-4. **步驟四：執行驗證測試並呼叫 `complete-task` 完工打卡（支援免填 `--commit` / `--files` 自動偵測與多 ID 批次打卡）**
+   - 打卡前強制自檢五項准出條件：(1) 複用既有專案共用模組不重複造輪子；(2) 每條關聯 `AC-*` 同時具備正常路徑與至少一項邊界/錯誤測試；(3) 完整實作 API 權限/交易保護或 UI 四態（`Normal`/`Loading`/`Empty`/`Error`）；(4) 驗證測試與型別/Linter 靜態檢查皆為 `0` 錯誤；(5) **遵守專案 Commit 格式與雙 Jira 票號溯源**：依 `docs/shared/engineering-standards.md` §4（回退 `AGENTS.md`）撰寫 Commit 訊息，且只要任務具 `jira_subtask_key`，訊息須同時包含 `<STORY-KEY>` 與 `<SUBTASK-KEY>`。
+4. **步驟四：Human-in-the-Loop 提交門禁（`commit_policy`）與 `complete-task` 完工打卡**
+   - 預設 `"commit_policy": "confirm_before_commit"` 下，完成實作並確認本地測試通過後**必須先停下**，向使用者回報異動檔案與測試結果並等待確認，才執行 `git commit` 與 `complete-task`（僅於使用者明確授權或設定 `"auto_on_test_pass"` 時才自動提交；嚴禁在真實 Commit 存在前偽造 SHA）。
+   - 修復 `standalone_bug` 或 Story `BUG-*` 時，務必傳入 `--root-cause` 與 `--solution`（略過會回報非阻塞之 `bug_fix_warnings`）；若設定 `commit_message_pattern` 或缺少雙 Jira 票號，亦會回傳非阻塞 `commit_message_warnings`。
 
 ```bash
 python3 .ai-workflow/bin/jira_sync.py \
@@ -438,8 +463,8 @@ python3 .ai-workflow/bin/jira_sync.py \
   --test-result "pytest tests/test_csv.py (4 passed in 0.18s)"
 ```
 
-5. **步驟五：依序完成 `TASK-002` 與 `TASK-003`（或一次傳入 `--task-id TASK-002,TASK-003`）直至 `ready_for_review: true`**
-   - 當輸出顯示 `"remaining_tasks": []`、`"remaining_bugs": []` 且 `"ready_for_review": true` 時，代表 Station 2 全部完成，立即引導進入 **Station 3a（`$team-review`）**。
+5. **步驟五：依序完成剩餘任務直至 `ready_for_review: true`（遵守 HITL / SoD 與 `Stop & Yield on Fix`）**
+   - 當輸出顯示 `"remaining_tasks": []`、`"remaining_bugs": []` 且 `"ready_for_review": true` 時，Station 2 完成；若是修復使用者人工驗證回報的缺陷／微調，通過本地測試後即刻停下交由使用者確認（`Stop & Yield on Fix`）。同人兼任 `reviewer` 時僅問一句是否繼續 `$team-review` 並停下；跨人則執行 Clean Stop 不提示 `/team-review`。
 
 ### 5.4 `jira_sync.py complete-task` 參數與防呆規格表
 
@@ -447,9 +472,10 @@ python3 .ai-workflow/bin/jira_sync.py \
 | :--- | :--- | :--- | :--- |
 | `--key` | **必填**（字串） | Jira Story 或獨立 `Bug` 代號（如 `PROJ-101`） | 更新對應之 `.ai-workflow/active/<KEY>.json`（缺失時自動從 Worktree 或 Jira 回填） |
 | `--task-id` | 選填（預設 `TASK-001`，支援逗號多選） | 支援單一或逗號分隔之多個目標 ID：(1) 子任務 `TASK-001,TASK-002`；(2) 缺陷單 `PROJ-101-BUG-1`（或獨立 `Bug` 本身代號）；(3) 審查問題 `REV-001,REV-002` | **Dev Fast-Track 與複雜度守衛**：僅限 `AC <= 3` 且 `low`/`medium` 風險之小型 Story 可自動建立 `TASK-001` 並打卡；修復關聯 Qase Defect 之 Bug 時自動同步將 Qase Defect 標為已解決 |
-| `--commit` | 選填（自動從 Git HEAD 偵測） | 實作該任務或修復該缺陷之 Git Commit SHA（如 `a1b2c3d`） | 未傳時自動執行 `git rev-parse --short HEAD` 取得，並更新 Story 之 `candidate_commit` |
+| `--commit` | 選填（自動從 Git HEAD 偵測） | 實作該任務或修復該缺陷之 Git Commit SHA（如 `a1b2c3d`） | 未傳時自動執行 `git rev-parse --short HEAD` 取得，更新 `candidate_commit` 並對照 `commit_message_pattern` 與雙 Jira 票號回報非阻塞 `commit_message_warnings` |
 | `--files` | 選填（自動從 Git Diff 偵測） | 以逗號分隔之實際修改檔案路徑清單 | 未傳時自動執行 `git show --name-only` / `git diff --name-only` 取得修改檔案清單 |
 | `--test-result` | **必填**（字串） | 實際執行的測試指令與通過結果摘要 | **證據鐵律**：若未提供測試結果字串，拒絕標記為完成 |
+| `--root-cause` / `--solution` | Bug 修復建議必填（字串） | 修復 `standalone_bug` 或 Story `BUG-*` 時之問題根因分析與修復策略 | 寫入本地 Active JSON（`bug_report` / `bug_fix_summary` / bug 紀錄）並渲染於 Jira 完工評論（不覆寫原報修描述）；略過時輸出非阻塞 `bug_fix_warnings` |
 | **內建防呆** | 前置依賴完成度檢查 | 當目標為 `TASK-###` 時，自動檢查其 `depends_on` 是否全數已在 `completed_ids` 集合中 | 若嘗試跳過前置任務（例如 `TASK-001` 未完成就打卡 `TASK-002`），直接報錯攔截 |
 | **自動連動** | Review 退回狀態自動更新 | 當修復完所有 `blocker`/`major` 之 `REV-###` 審查問題後 | 若原 `review.status` 為 `changes-requested` 且已無開放之阻斷問題，自動轉為 `remediated` |
 
@@ -514,11 +540,21 @@ python3 .ai-workflow/bin/jira_sync.py \
   ]'
 ```
 
-3. **步驟三：確認同儕審查選取與多角色交接行為**
+3. **步驟三：確認同儕審查選取、部署解耦閘門與嚴格 SoD Clean Stop**
    - 若 `roles.reviewer.members` 設有多位審查員，系統會自動避開本單實作作者並選取另一位同儕（`self_reviewed_with_ai: false`）；若為一人兼任且無同儕，則檢查 `independent_reviewer` 或透明標記 `self_reviewed_with_ai: true`。
-   - 若 `--review-status approved` 且 `reviewer`（Alice）與 `qa`（Carol）為不同人：Jira Story 自動轉為 `In QA`、指派給 Carol 並發佈 `@Carol Wu` 評論；若為同一人則記錄 `handoff_mode: "auto-consolidated"` 並連貫提示進入 `$team-qa`。
+   - **預設即時交接（`qa_handoff_mode == "immediate"`）**：若 `--review-status approved` 且 `reviewer`（Alice）與 `qa`（Carol）為不同人，Jira Story 自動轉為 `In QA`、指派給 Carol 並發佈 `@Carol Wu` 評論，接著執行 **Clean Stop**（嚴禁提示開發／審查者執行 `/team-qa`）；若為同一人則記錄 `handoff_mode: "auto-consolidated"` 抑制自我 `@mention`，僅問一句是否繼續 `$team-qa` 並停下等待授權。
+   - **多環境部署解耦（`qa_handoff_mode == "gated_by_deploy"`）**：審查通過後會轉換至 `status_mapping.dev_done`（不提前轉 `In QA` 亦不 `@mention` QA），並寫入綁定 Commit 的 `qa_deploy_gate`（`status: "awaiting_qa_deploy"`）。此時 QA 仍可平行執行 `team-qa (plan)`，但 `team-qa (verify)` 會被鎖定，直到 CI/CD 將 Jira 轉為 `in_qa`（經 `status`/`pull` 同步）或團隊在部署完成後顯式執行 `promote-qa` 解鎖：
 
-### 6.3 `jira_sync.py handoff` 參數與防呆規格表
+```bash
+python3 .ai-workflow/bin/jira_sync.py \
+  --repo-root . promote-qa \
+  --key "PROJ-101" \
+  --tag "v1.4.0-qa.1" \
+  --environment "qa-staging" \
+  --note "已完成 QA 環境部署，通知 QA 開始驗證"
+```
+
+### 6.3 `jira_sync.py handoff` / `promote-qa` 參數與防呆規格表
 
 | 參數名稱 | 必填 / 預設值 | 功能說明與輸入規範 | 內建防呆與狀態影響 |
 | :--- | :--- | :--- | :--- |
@@ -527,18 +563,20 @@ python3 .ai-workflow/bin/jira_sync.py \
 | `--to-role` / `--to-assignee` | 選填（預設 `qa`） | 接收交接之目標角色與多人池指定接收人信箱/姓名 | 當 `--review-status changes-requested` 時，**強制覆寫為 `developer`** 並退回 `In Progress` |
 | `--review-status` | 選填（預設 `approved`） | 審查結論：`approved` 或 `changes-requested` | **四大前置攔截**：若設為 `approved`，但 (1) `spec_status != approved`、(2) 有未完成之 `TASK-*`、(3) 有未關閉之 `BUG-*`、或 (4) `findings` 含開放之 `blocker`/`major`，立即報錯拒絕放行 |
 | `--commit` | 選填（字串） | 本次審查對應之 Git Commit SHA（預設讀取 `candidate_commit`） | 儲存於 `review.reviewed_commit`，供後續發佈閘門比對是否發生 Commit 漂移 |
-| `--summary` | 選填（字串） | 合併之「開發交接摘要 + 三軸審查結論」 | 同步發佈至 Jira Story 結構化評論 |
+| `--summary` | 選填（字串） | 合併之「開發交接摘要 + 三軸審查結論（含 Commit 格式核對）」 | 同步發佈至 Jira Story 結構化評論 |
 | `--findings-json` | 選填（JSON 字串或檔案） | 結構化審查問題陣列（含 `id`、`severity`、`axis`、`location`、`ac_id`、`observation`、`status`） | **自動產生 `REV-001` 防卡死**：若 `--review-status changes-requested` 未傳入阻斷項，系統自動依 `summary` 建立 `REV-001` 供開發者後續以 `complete-task --task-id REV-001` 標記完成 |
-| `--target-status` | 選填（字串） | 手動指定 `status_mapping` 鍵值（如 `in_qa` 或 `ready_for_release`） | 未指定時自動依 `effective_to_role` 推導 |
+| `--target-status` | 選填（字串） | 手動指定 `status_mapping` 鍵值（如 `in_qa` 或 `ready_for_release`） | 未指定時自動依 `effective_to_role` 與 `qa_handoff_mode` 推導 |
+| **`promote-qa` 子指令** | `--key` 必填；`--from-role`、`--tag`、`--environment`、`--note`、`--to-assignee` 選填 | 在 `qa_handoff_mode == "gated_by_deploy"` 模式下，於部署至 QA 環境後顯式解除 `qa_deploy_gate` | 將 Jira 轉為 `in_qa`、指派並 `@mention` QA、記錄部署版本與環境註記，且不代跑 `git tag` 或 CI/CD |
 
 ---
 
-## 7. 情境 4：QA 平行測試規劃、多源驗證與探索／獨立報修（`team-qa`）
+## 7. 情境 4：QA 平行測試規劃、多源驗證、報修與缺陷分診（`team-qa`）
 
-**Station 3b（`team-qa`）** 將傳統繁瑣的測試計畫、執行類型確認、證據收集、探索式缺陷與線上問題回報收斂為**三個精煉模式**，支援一次性選擇並記憶 **`jira-comment`（Jira 評論表格）** 或 **`qase`（Qase TestOps Suite / Case / Test Run / Defect 雙向連動）** 後端，並內建**三層混合測試模型（`automated` / `external` / `manual`）**與**防假通過守衛（Anti-False-Pass Guardrail）**：
-- **模式一：`plan`（首次自動詢問並記憶 `jira-comment` 或 `qase` 後端 + 平行測試案例規劃 + AI 預填 `automated` / `external` / `manual` 三層執行類型，且不對 QA 自我 `@mention`）**
-- **模式二：`verify`（依記憶之後端自動同步本機自動測試、外部工具報告、人工驗證結果與 `--tc-attach` 媒體附件 + Qase Test Run 自動結案 + 自動放行或開立關聯 Bug 單）**
+**Station 3b（`team-qa`）** 將傳統繁瑣的測試計畫、執行類型確認、證據收集、探索式缺陷、線上問題回報與非程式缺陷分診收斂為**四個精煉模式**，在入口透過 `record-qa --inspect` 執行 **QA 身分職責守衛（`qa_identity_guardrail`）** 並支援一次性選擇記憶 **`jira-comment`（Jira 評論表格）** 或 **`qase`（Qase TestOps Suite / Case / Test Run / Defect 雙向連動）** 後端，並內建**三層混合測試模型（`automated` / `external` / `manual`）**與**防假通過守衛（Anti-False-Pass Guardrail）**：
+- **模式一：`plan`（首次自動詢問並記憶 `jira-comment` 或 `qase` 後端 + 平行測試案例規劃 + AI 預填三層執行類型；即使在 `gated_by_deploy` 的 `awaiting_qa_deploy` 期間仍可平行進行，且不對 QA 自我 `@mention`）**
+- **模式二：`verify`（在 `gated_by_deploy` 下須待 QA 部署解鎖；自動同步本機自動測試、外部工具報告、人工驗證結果與 `--tc-attach` 媒體附件 + Qase Test Run 自動結案 + 自動放行或開立關聯 Bug 單）**
 - **模式三：`report`（支援在既有 Story 上回報測試計畫外的探索性缺陷 `TC-EXP-###`，或直接建立／納管無母單之獨立線上／客服報修 `Bug` 走輕量閉環）**
+- **模式四：`triage`（`triage-bug`：經人工／PO 明確授權後，針對 Story 關聯 Bug 或獨立 Bug 執行 `Not a Bug`、`Won't Fix`、`Duplicate`、`Cannot Reproduce` 或 `Fixed` 重開分診，並以可稽核的 `waived` / `not-applicable` 處置關聯 TC，絕不偽標 `pass`）**
 
 ### 7.1 情境 4A（`team-qa` `plan` 模式）：平行測試規劃與 AI 預填類型一鍵確認
 
@@ -618,9 +656,28 @@ python3 .ai-workflow/bin/jira_sync.py \
   --actual "30 秒後斷線"
 ```
 
-   - **輕量直通閉環**：獨立 `Bug`（`issue_kind: "standalone_bug"`）**免走 `team-spec` 且不建立多餘 Jira `Sub-task`**，直接進入 `team-dev (implement) -> team-review -> team-qa (verify) -> team-release` 四步修復重測結案！
+   - **輕量直通閉環**：獨立 `Bug`（`issue_kind: "standalone_bug"`）**免走 `team-spec` 且不建立多餘 Jira `Sub-task`**，直接進入 `team-dev (implement) -> team-review -> team-qa (verify) -> team-release` 四步修復重測結案（若經研判不需改碼，則直接走模式四 `triage` 結案）！
 
-### 7.4 `jira_sync.py record-qa` 參數與防呆規格表
+### 7.4 情境 4D（`team-qa` `triage` 模式）：人工授權缺陷分診與受控豁免（`triage-bug`）
+
+當 Story 關聯 Bug 或獨立線上 Bug 經評估不需修改程式碼（`not-a-bug`、`wont-fix`、`duplicate`、`cannot-reproduce`），或需明確標記重開修復（`fixed`，支援從 `Done` 轉出重開）時，進入 `team-qa` 的 **`triage` 模式**。
+
+- **強制 HITL 紅線**：AI 僅可分析規格、程式碼與日誌並提出分診建議，**絕不可未經人工／PO 明確授權（`--decided-by`）擅自決定非程式缺陷結案或豁免任何 TC**；且**嚴禁將失敗或豁免之 TC 偽標為 `pass`**。
+- **Jira Resolution 同步與受控豁免**：執行 `triage-bug` 會寫入結構化分診評論、同步 Jira `fields.resolution`（若 Jira 轉換畫面拒絕則自動優雅重試），並可搭配 `--waive-tcs` 與 `--tc-disposition`（`waived` 或 `not-applicable`）記錄完整稽核軌跡（`waived_bug_id`、`triage_resolution`、`waived_by`、`waived_reason`、`waived_at`），讓 `close-story` 於發佈摘要中以 **Bug Triage & Risk Acceptance Disclosure** 透明揭露而不卡死發佈。
+
+```bash
+python3 .ai-workflow/bin/jira_sync.py \
+  --repo-root . triage-bug \
+  --key "PROJ-101" \
+  --bug-id "PROJ-101-BUG-1" \
+  --resolution "wont-fix" \
+  --reason "PO 確認本期僅支援 UTF-8 CSV，舊版編碼不納入範圍" \
+  --decided-by "Alice Chen (PO)" \
+  --waive-tcs "TC-003" \
+  --tc-disposition "waived"
+```
+
+### 7.5 `jira_sync.py record-qa` / `triage-bug` 參數與防呆規格表
 
 | 參數名稱 | 適用模式 | 必填 / 類型 | 功能說明與輸入規範 | 內建防呆與狀態影響 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -639,6 +696,7 @@ python3 .ai-workflow/bin/jira_sync.py \
 | `--tc-attach` | `verify` | 可重複指定 | 綁定個別測試案例之媒體附件：`TC-002=path/to/shot.png` | 當 `qase` 啟用時自動上傳至該筆 Qase Test Run Result，且後續 `create-bug` 自動繼承該附件清單 |
 | `--all-pass` | `verify` | 選填（布林旗標） | **防假通過守衛（Anti-False-Pass）**：僅將尚未覆寫且 `execution_type == "automated"` 之本機自動化測試案例標記為 `pass` | `external`（外部工具/Staging）與 `manual`（人工測試）案例**絕不會**被 `--all-pass` 自動標為通過，必須透過 `--junit-xml`、`--results-json` 或 `--result` 提供真實結果，否則維持 `not-executed`（`qa_status: "incomplete"`） |
 | `--commit` | `verify` | 選填（字串） | 本次測試驗證對應之 Git Commit SHA（預設讀取 `candidate_commit` 或 Git `HEAD`） | 記錄於 `qa.tested_commit`，作為 Station 4 發佈閘門對帳依據 |
+| **`triage-bug` 子指令** | `triage` | `--key`、`--resolution`、`--reason`、`--decided-by` 必填；`--bug-id`、`--duplicate-of`、`--waive-tcs`、`--tc-disposition` 選填 | 執行人工授權缺陷分診（`not-a-bug`、`wont-fix`、`duplicate`、`cannot-reproduce`、`fixed`）與選填 TC 豁免（`waived` / `not-applicable`） | 同步 Jira `fields.resolution` 與狀態轉換，為獨立 Bug 標記 `triage_closed: true`（免走 `team-dev`），並於 `close-story` 驗證豁免稽核一致性 |
 
 ---
 
@@ -687,10 +745,12 @@ python3 skills/team-dev/scripts/jira_sync.py \
   --task-id "PROJ-101-BUG-1" \
   --commit "999beef" \
   --files "src/api/orders.py,tests/test_api.py" \
-  --test-result "pytest tests/test_api.py (6 passed in 0.21s)"
+  --test-result "pytest tests/test_api.py (6 passed in 0.21s)" \
+  --root-cause "匯出路由遺漏 report:export 權限檢查裝飾器" \
+  --solution "於 ExportController 補上 AuthZ 裝飾器並新增 403 回歸測試"
 ```
 
-   - 此動作會將 `PROJ-101-BUG-1` 標為 `completed`（在 Jira 轉為 `Done`），並將 `PROJ-101` 的 `candidate_commit` 更新為 `999beef`。
+   - 此動作會將 `PROJ-101-BUG-1` 標為 `completed`（在 Jira 轉為 `Done`），把 `--root-cause` 與 `--solution` 寫入本地 JSON 並渲染於 Jira 完工評論（保留原報修描述），同時將 `PROJ-101` 的 `candidate_commit` 更新為 `999beef`。
 4. **步驟四（重新審查）：針對新 Commit `999beef` 執行 `team-review`**
    - 由於 `candidate_commit`（`999beef`）已與先前的 `reviewed_commit`（`f00baa1`）不同，導航員會自動要求執行 `team-review` 審查該修復 Commit：
 
@@ -788,8 +848,8 @@ python3 skills/team-release/scripts/jira_sync.py \
 | **Gate 1** | **規格核准閘門** | `story.spec_status == "approved"` | 若未核准，列入 `unmet_gates` 並拒絕結案（exit code 1） |
 | **Gate 2** | **子任務完成閘門** | `tasks` 非空，且所有 `TASK-*` 之 `status == "completed"` | 若無子任務或有未完成子任務，列出未完成 ID 並阻斷結案 |
 | **Gate 3** | **審查與 Commit 對齊閘門** | `review.status == "approved"` 且 `review.reviewed_commit == --commit` | 若未通過審查或 `--commit` 與審查 Commit 不一致，阻斷結案並要求重審 |
-| **Gate 4** | **QA 驗證與 Commit 對齊閘門** | `qa.status == "passed"`、`qa.tested_commit == --commit`、100% AC 覆蓋且無非 `pass` 之 TC | 若未通過驗證、漏測 AC 或 `--commit` 與受測 Commit 不一致，阻斷結案 |
-| **Gate 5** | **零開放缺陷閘門** | `bugs` 中無任何未完成（`status not in ("completed", "closed")`）之 Bug | 若仍有未關閉之 `BUG-*`，列出缺陷單號並阻斷結案 |
+| **Gate 4** | **QA 驗證與 Commit 對齊閘門** | `qa.status == "passed"`、`qa.tested_commit == --commit`、100% AC 覆蓋，且每筆 TC 皆為 `pass` 或具完整稽核紀錄並對應已關閉／分診 Bug 之 `waived` / `not-applicable` | 若未通過驗證、漏測 AC、存在未經稽核的豁免 TC 或 `--commit` 與受測 Commit 不一致，阻斷結案；有經稽核豁免時於發佈摘要自動附加 **Bug Triage & Risk Acceptance Disclosure** |
+| **Gate 5** | **零開放缺陷閘門** | `bugs` 中無任何未完成（`status not in ("completed", "closed")`）之 Bug | 若仍有未關閉之 `BUG-*`，列出缺陷單號並阻斷結案；結案成功後自動將完成狀態傳遞至同 Epic 下游 Story 的 `resolved_depends_on_keys` |
 
 ---
 
@@ -818,6 +878,11 @@ python3 skills/team-release/scripts/jira_sync.py \
 python3 .ai-workflow/bin/jira_sync.py \
   --repo-root . status
 
+# 彙總指定 Epic 下所有子 Story 之進度、依賴阻斷與下一張建議啟動單據
+python3 .ai-workflow/bin/jira_sync.py \
+  --repo-root . status \
+  --epic "PROJ-EPIC-12"
+
 # 指定查詢特定 Jira Story（或用 pull 融合網頁端變更）
 python3 .ai-workflow/bin/jira_sync.py \
   --repo-root . status \
@@ -836,21 +901,23 @@ python3 .ai-workflow/bin/jira_sync.py \
 
 | 優先級 / 參數 | 觀測狀態條件或參數用法 | 推薦技能 (`recommended_skill`) | 推薦模式 (`recommended_mode`) | 負責角色 (`responsible_role`) |
 | :--- | :--- | :--- | :--- | :--- |
-| **`--key`** | （選填參數）指定要查詢之 Jira Story 或獨立 `Bug` 代號；若本地無 `<KEY>.json`，自動從主 Git Worktree 或遠端 Jira 無損回填（Auto-Hydrate） | 依該單據狀態決定 | 依該單據狀態決定 | 依該單據狀態決定 |
-| **`--fetch-remote` / `pull`** | 在 Live 模式下主動呼叫 Jira REST API v3（含 `POST /rest/api/3/search/jql` 探索新單）並執行 `reconcile_story_with_jira()` 融合網頁端人工新增/改狀態之 `Sub-task`、關聯 `Bug`、Assignee 與描述 `AC-###` | 附加於對帳結果欄位 | — | — |
-| **協作者憑證攔截** | `team-config.json` 已設定 `jira_base_url`，但本機尚無 `.ai-workflow/credentials.json`（`requires_member_auth: true`） | `team-init` | `auth` | 新加入之協作者（顯示 `claimed_roles` 與 `unclaimed_roles`） |
-| **多工歧義防呆** | 未傳 `--key` 且 `.ai-workflow/active/` 下存在 `> 1` 個進行中單據 | 回傳 `ambiguous: true` 與 `active_stories` 清單 | 嚴禁依檔案修改時間盲猜，強制請使用者選擇 | — |
+| **`--key` / `--epic`** | （選填參數）`--key` 指定單一 Story 或獨立 `Bug`（自動從主 Worktree 或 Jira 回填）；`--epic` 彙總 Epic 下所有子 Story 進度（`parent` / `"Epic Link"` JQL 回退、跨 Worktree 合併、依賴阻斷解析與 `next_recommended_story`） | 依該單據或 Epic 狀態決定 | 依狀態決定 | 依狀態決定 |
+| **`--fetch-remote` / `pull`** | 在 Live 模式下主動呼叫 Jira REST API v3（含 `POST /rest/api/3/search/jql` 探索新單）並執行 `reconcile_story_with_jira()` 融合網頁端人工新增/改狀態之 `Sub-task`、關聯 `Bug`、Assignee、CI/CD `in_qa` 轉換與描述 `AC-###` | 附加於對帳結果欄位 | — | — |
+| **協作者憑證攔截 (`0b`)** | `team-config.json` 已設定 `jira_base_url`，但本機尚無 `.ai-workflow/credentials.json`（`requires_member_auth: true`） | `team-init` | `auth` | 新加入之協作者（顯示 `claimed_roles` 與 `unclaimed_roles`） |
+| **多工歧義防呆** | 未傳 `--key` 且 `.ai-workflow/active/` 下存在 `> 1` 個進行中單據（自動過濾已 `triage_closed` 之獨立 Bug） | 回傳 `ambiguous: true` 與 `active_stories` 清單 | 嚴禁依檔案修改時間盲猜，強制請使用者選擇 | — |
 | **Priority 0** | `.ai-workflow/team-config.json` 不存在 (`initialized: false`) | `team-init` | `init` | `tech_lead` / `pm` |
-| **Priority 1** | 尚無 Active Story，或 `spec_status != "approved"`（獨立 `Bug` 免走此站） | `team-spec` | `one-pass` / `draft` | `pm` |
-| **Priority 2** | 存在任何未關閉之缺陷（`bugs` 中 `status not in ("completed", "closed")`，或未打卡之 `standalone_bug`） | `team-dev` | `implement` | `developer` |
-| **Priority 3** | `spec_status == "approved"`，但 `tasks` 為空陣列 `[]` | `team-dev`（附註 `team-qa` `plan` 可平行；自動輸出 `dev_fast_track_allowed` 標示是否允許快車道） | `plan` | `developer` |
-| **Priority 4** | 存在未完成之子任務（`tasks` 中 `status != "completed"`） | `team-dev`（自動選出依賴已滿足之首個 `next_task_id`） | `implement` | `developer` |
-| **Priority 5** | `review.status == "changes-requested"`（且有阻斷問題或尚未提交新 Commit） | `team-dev` | `implement` | `developer` |
-| **Priority 6** | 子任務全完成，但 `review.status != "approved"` 或 `reviewed_commit != candidate_commit` | `team-review` | `null` | `reviewer` / `independent_reviewer` |
-| **Priority 7** | Review 已通過，但 `qa.test_cases` 為空或有未覆蓋之 `AC-*` | `team-qa` | `plan` | `qa` |
-| **Priority 8** | Review 已通過且 TC 已規劃，但 `qa.status != "passed"` 或 `tested_commit != candidate_commit` | `team-qa`（自動輸出 `pending_automated_tcs`、`pending_external_tcs`、`pending_manual_tcs` 待驗清單） | `verify` | `qa` |
-| **Priority 9** | 五大閘門全數滿足、0 Open Bugs 且三個 Commit SHA 完全對齊 | `team-release` | `null` | `release_manager` |
-| **Priority 10** | Jira Story（或獨立 `Bug`）已轉為 `Done` 且本地 Active JSON 已刪除 | 無後續動作（已完成結案） | — | — |
+| **Priority 1** | 明確之 Epic 拆解／Sprint／Backlog 規劃需求，或缺少必要 Board / Sprint 選擇 | `team-plan` | `epic` / `decompose` / `sprint` / `commit` / `status` | `pm` |
+| **Priority 2** | 尚無 Active Story，或 `spec_status != "approved"`（獨立 `Bug` 免走此站） | `team-spec` | `one-pass` / `draft` / `backfill` | `pm` (+ `tech_lead`) |
+| **Priority 3** | 存在任何未關閉之缺陷（`bugs` 中 `status not in ("completed", "closed")`，或未打卡之 `standalone_bug`） | `team-dev` | `implement` | `developer` |
+| **Priority 4** | `spec_status == "approved"`，但 `tasks` 為空陣列 `[]` | `team-dev`（附註 `team-qa` `plan` 可平行；自動輸出 `dev_fast_track_allowed` 標示是否允許快車道） | `plan` | `developer` |
+| **Priority 5** | 存在未完成之子任務（`tasks` 中 `status != "completed"`） | `team-dev`（自動選出依賴已滿足之首個 `next_task_id`） | `implement` | `developer` |
+| **Priority 6** | `review.status == "changes-requested"`（且有阻斷問題或尚未提交新 Commit） | `team-dev` | `implement` | `developer` |
+| **Priority 7** | 子任務全完成，但 `review.status != "approved"` 或 `reviewed_commit != candidate_commit` | `team-review` | `null` | `reviewer` / `independent_reviewer` |
+| **Priority 8** | Review 已通過，但 `qa.test_cases` 為空或有未覆蓋之 `AC-*`（即使處於 `awaiting_qa_deploy` 仍可平行規劃） | `team-qa` | `plan` | `qa` |
+| **Priority 8b** | `qa_handoff_mode == "gated_by_deploy"`、Review 已通過且 TC 已規劃，但 `awaiting_qa_deploy: true`（尚未轉入 `in_qa`） | **等待 QA 部署解鎖**（由 CI/CD 轉 `in_qa` + `pull`/`status`，或顯式執行 `promote-qa`） | — | `developer` |
+| **Priority 9** | Review 已通過、QA 部署已解鎖且 TC 已規劃，但 `qa.status != "passed"` 或 `tested_commit != candidate_commit` | `team-qa`（自動輸出 `pending_automated_tcs`、`pending_external_tcs`、`pending_manual_tcs`；非程式缺陷走 `triage`） | `verify` / `triage` | `qa` |
+| **Priority 10** | 五大閘門全數滿足（含經稽核之 `waived`/`not-applicable` TC）、0 Open Bugs 且三個 Commit SHA 完全對齊 | `team-release` | `null` | `release_manager` |
+| **Priority 11** | Jira Story 已轉為 `Done` 且本地 Active JSON 已刪除，或獨立 Bug 已透過 Bug Triage 結案（`triage_closed: true`） | 無後續動作（已完成結案） | — | — |
 
 ---
 
@@ -885,7 +952,7 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 | :--- | :--- | :--- | :--- | :--- |
 | **Jira API** | `/rest/api/3/myself` | `GET` | `init`、`auth` 驗證個人/角色 Token 有效性，並自動帶入真實 `displayName` 與 `accountId` | HTTP Basic Auth；Token 僅存於 `credentials.json` (`0600`) |
 | **Jira API** | `/rest/api/3/search/jql` | `POST` | `status`、`pull` 自動探索專案下所有尚未 `Done` 之進行中 Story | 即使本地已有部分 Active JSON 仍會持續探索新單 |
-| **Jira API** | `/rest/api/3/issue` | `POST` | `sync-story`（建立 `Story`）、`create-subtasks`（建立 `Sub-task`，400 時自動重試 `Subtask` / **子任務**）、`create-bug`（建立 `Bug`） | 原生 ADF v1 `heading`、`bulletList`、`table` 富文本轉換 |
+| **Jira API** | `/rest/api/3/issue` | `POST` | `sync-story`（建立 `Story`）、`epic-decompose`（波次建單並依 `parent` -> `epic_link_field` 關聯 Epic）、`create-subtasks`（建立 `Sub-task`，400 時自動重試 `Subtask` / **子任務**）、`create-bug`（建立 `Bug`） | 原生 ADF v1（含粗體／斜體／行內程式碼／連結／刪除線／巢狀標記、`heading`、`bulletList`、`table`，零空文字節點） |
 | **Jira API** | `/rest/api/3/issue/{key}` | `PUT` / `GET` | `sync-story` 更新標題與描述（含 `last_synced_description_hash` 人工修改漂移防護）、`reconcile_story_with_jira` 雙向對帳 | URL Path 自動經 `urllib.parse.quote` 編碼 |
 | **Jira API** | `/rest/api/3/issue/{key}/properties/ai_workflow_state` | `PUT` / `GET` / `DELETE` | 將結構化工作流狀態存入隱藏 Issue Property（避免污染人類閱讀之描述區），結案時清除或標記完成 | 支援跨機與跨 Git Worktree 依 `updated_at` 無損同步 |
 | **Jira API** | `/rest/api/3/issue/{key}/comment` | `POST` | 各工作站同步繁體中文結構化評論與角色署名；跨人交接時自動注入 ADF `mention` 節點 | 支援 `mention_account_id` 與 `mention_name` |
@@ -893,7 +960,7 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 | **Jira API** | `/rest/api/3/issueLink` & `/issue/{key}/attachments` | `POST` | `create-bug` 建立 `Blocks` 關聯，並以 `multipart/form-data`（`X-Atlassian-Token: no-check`）上傳截圖/錄影/日誌附件 | 內建檔案存在、大小與路徑檢查 |
 | **Qase API** | `https://api.qase.io/v1/*` (`suite`, `case`, `run`, `result`, `attachment`, `defect`) | `GET` / `POST` / `PATCH` | 當 `qa_test_backend == "qase"` 時，自動同步測試套件、案例、執行輪次、附件與 Qase Defect（`complete-task` 時自動結案） | `Token` Header 認證（`qase_api_token` 僅存於 `credentials.json`） |
 | **自檢工具** | `tools/check_shared.sh` | `bash tools/check_shared.sh` | 驗證全部 8 個工作流技能目錄下的 `scripts/jira_sync.py` 與 `references/common-workflow-governance.md` 是否 100% SHA256 一致 | 任何一個技能副本發生漂移（Drift）立即回傳 exit code 1 |
-| **測試套件** | `tools/test_workflow.py` | `python3 tools/test_workflow.py` | 執行 **18 項**端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試 | 涵蓋初始化、漸進認領、多人角色池、雙向對帳、雙軌深挖、三層 QA、Qase/媒體附件、`report` 獨立 Bug 與結案全流程 |
+| **測試套件** | `tools/test_workflow.py` | `python3 tools/test_workflow.py` | 執行 **36 項**端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試 | 涵蓋初始化、漸進認領、多人角色池、行內 ADF、HITL/SoD、`commit_policy`、雙向對帳、`gated_by_deploy`/`promote-qa`、Bug Triage、`--root-cause`/`--solution`、Spec Backfill、Epic 拆解與進度彙總全流程 |
 
 ---
 
@@ -921,25 +988,28 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 
 ### 13.1 附錄 A：全系統技能、CLI 子命令與狀態轉換完整對帳表
 
-本表彙整 `scripts/jira_sync.py` 全部 2 個全域旗標、13 個子命令以及隨附系統編排技能之完整語法對帳（預設語言 `"language": "zh-TW"`，所有 Jira 評論、Story/Sub-task/Bug 描述預設皆以繁體中文輸出，技術代號維持標準 ASCII）：
+本表彙整 `scripts/jira_sync.py` 全部 2 個全域旗標、**16 個子命令**以及隨附系統編排技能之完整語法對帳（預設語言 `"language": "zh-TW"`，所有 Jira 評論、Story/Sub-task/Bug 描述預設皆以繁體中文輸出並支援行內 Markdown 轉 ADF，技術代號維持標準 ASCII）：
 
 | 子命令 / 層級 | 對應技能與工作站 | 完整支援旗標清單 | 核心讀取檔案 | 核心寫入 / 更新標的 |
 | :--- | :--- | :--- | :--- | :--- |
 | **Global 全域旗標** | 全部 8 個工作流技能 | `--repo-root <PATH>`（預設 `.`）、`--offline`（強制離線模式） | 環境變數或 `.ai-workflow/credentials.json` | 控制工作目錄與 `JiraClient` / `QaseClient` 連線或離線模式 |
-| `init` | `team-init` (Init) | `--inspect`, `-i`, `--auth-only`, `--role`, `--specialty`, `--language`, `--name`, `--project-key`, `--jira-url`, `--jira-email`, `--jira-token`, `--roles-json`, `--role-tokens-json`, `--status-mapping-json`, `--issue-type-mapping-json`, `--qa-backend`, `--qase-*`, `--agents-md`, `--standards-md` | 既有 `AGENTS.md`、既有 `.gitignore` 與 `team-config.json` | `.ai-workflow/team-config.json`（含 1 對多角色池 `members` 與預設 `zh-TW`）、`credentials.json`、`.ai-workflow/bin/jira_sync.py`、`.gitignore`、`docs/shared/engineering-standards.md`、`AGENTS.md` |
-| `auth` | `team-init` (`auth` 協作者認領) | `--inspect`, `-i`, `--role`, `--specialty`, `--replace-role`, `--name`, `--jira-email`, `--jira-token`, `--role-tokens-json`, `--qase-token` | `team-config.json`, `credentials.json` | 將協作者非破壞性追加至 `team-config.json` 角色池（`members`），並將個人 Token 安全寫入本機 `credentials.json` (`member_credentials`) |
-| `status` | `team-next-step` (Router) | `--key`, `--fetch-remote` | `team-config.json`, `.ai-workflow/active/*.json`, `engineering-standards.md` | 自動與遠端 Jira 雙向對帳（含新建 Story JQL 探索、人工新增/改狀態之 Sub-task 與 Bug 同步）並推薦下一步 |
-| `sprint-status` | `team-plan` (`status`) | `--board-id` | `team-config.json`, Jira Scrum Board | 唯讀列出 Board 的 Future / Active Sprint、成員數量與排除資訊，不修改 Sprint 或 Story |
-| `sprint-plan` | `team-plan` (`epic` / `sprint` / `commit`) | `--board-id`, `--sprint-id`, `--epic-key`, `--jql`, `--issue-key`, `--name`, `--goal`, `--start-date`, `--end-date`, `--apply` | `team-config.json`, Jira Backlog / Sprint | 先產生 `dry_run: true` 預覽；確認後建立或更新 Sprint，並以最多 50 張單為一批移動選定 Story / Task / Bug |
-| `pull` | `team-next-step` (雙向對帳) | `--key` | `team-config.json`, `active/*.json`, 遠端 Jira Issues | 主動拉取並融合 Jira 網頁端人工新增/修改之 Story、Sub-task、連結 Bug、Assignee 與描述 `AC-###`（含描述覆寫防護 `remote_description_modified`） |
-| `sync-story` | `team-spec` (Station 1) | `--key`, `--title`, `--scope-in`, `--scope-out`, `--has-ui`, `--no-ui`, `--has-api`, `--no-api`, `--has-data`, `--no-data`, `--risk-level`, `--ac`, `--replace-acs`, `--design-summary`, `--ui-spec`, `--api-spec`, `--auto-decision`, `--material-decision`, `--spec-json`, `--status`, `--approved-by`, `--to-assignee`, `--accept-remote-description`, `--force-overwrite`, `--create` | `team-config.json`, 既有 `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`, Jira `Story`（`draft` 自動指派 `pm`、`approved` 自動交接指派 `developer`，並保護網頁端人工描述變更） |
-| `create-subtasks` | `team-dev` (`plan`, Station 2) | `--key`, `--tasks-json`, `--task`, `--assignee`, `--task-assignee`, `--proceed-at-risk` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json` (`tasks`), 建立 Jira `Sub-task` 並依專長/指定自動指派各子任務經辦人（Assignee） |
-| `complete-task` | `team-dev` (`implement`, Station 2) | `--key`, `--task-id`, `--commit`, `--files`, `--test-result` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`（支援多 ID、Dev Fast-Track、獨立 `Bug` 與 Git 自動偵測）, Jira `Sub-task`/`Bug` 繁體中文打卡並同步關閉 Qase Defect |
-| `handoff` | `team-review` (Station 3a) | `--key`, `--from-role`, `--to-role`, `--to-assignee`, `--review-status`, `--commit`, `--summary`, `--findings-json`, `--target-status` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`（多人 `reviewer` 自動避開作者選取同儕審查）, Jira 狀態轉換、Assignee 指派與繁體中文 `@mention` 評論 |
-| `record-qa` | `team-qa` (`plan`/`verify`, Station 3b) | `--inspect`, `--key`, `--mode`, `--qa-owner`, `--to-assignee`, `--qa-backend`, `--qase-*`, `--cases-json`, `--tc`, `--junit-xml`, `--results-json`, `--result`, `--tc-attach`, `--all-pass`, `--commit` | `team-config.json`, `active/<KEY>.json`, JUnit XML / JSON 報告 | `.ai-workflow/active/<KEY>.json` (`qa`, `handoffs`), Jira 繁體中文測試計畫評論 / Qase 同步（含媒體附件與獨立報修驗證）與 `Ready for Release` 交接 |
+| `init` | `team-init` (Init) | `--inspect`, `-i`/`--interactive`, `--auth-only`, `--role`, `--specialty`, `--language`, `--commit-policy`, `--commit-message-pattern`, `--qa-handoff-mode`, `--status-dev-done`, `--name`, `--project-key`, `--jira-board-id`, `--jira-url`, `--jira-email`, `--jira-token`, `--roles-json`, `--role-tokens-json`, `--status-mapping-json`, `--issue-type-mapping-json`, `--qa-backend`, `--qase-project-code`, `--qase-token`, `--qase-base-url`, `--qase-app-url`, `--qase-jira-type`, `--agents-md`, `--standards-md` | 既有 `AGENTS.md`、既有 `.gitignore` 與 `team-config.json` | `.ai-workflow/team-config.json`（含角色池、`commit_policy`、`qa_handoff_mode`、`status_mapping.dev_done`、`epic_link_field` 與預設 `zh-TW`）、`credentials.json`、`.ai-workflow/bin/jira_sync.py`、`.gitignore`、`docs/shared/engineering-standards.md`、`AGENTS.md` |
+| `auth` | `team-init` (`auth` 協作者認領) | `--inspect`, `-i`/`--interactive`, `--role`, `--specialty`, `--replace-role`, `--name`, `--jira-email`, `--jira-token`, `--role-tokens-json`, `--qase-token` | `team-config.json`, `credentials.json` | 將協作者非破壞性追加至 `team-config.json` 角色池（`members`），並將個人 Token 安全寫入本機 `credentials.json` (`member_credentials`) |
+| `sprint-plan` | `team-plan` (`epic` / `sprint` / `commit`) | `--name`, `--goal`, `--start-date`, `--end-date`, `--board-id`, `--sprint-id`, `--epic-key`, `--jql`, `--issue-key`, `--apply` | `team-config.json`, Jira Backlog / Sprint | 先產生 `dry_run: true` 預覽；確認後建立或更新 Sprint，並以最多 50 張單為一批移動選定 Story / Task / Bug |
+| `sprint-status` | `team-plan` (`status`) | `--board-id`, `--sprint-id`, `--state` | `team-config.json`, Jira Scrum Board | 唯讀列出 Board 的 Future / Active Sprint、成員數量與排除資訊，不修改 Sprint 或 Story |
+| `epic-decompose` | `team-plan` (`decompose`) | `--epic`, `--stories-json`, `--apply`, `--issue-type` | `team-config.json`, `active/*.json`, 遠端 Jira Epic 與既有子 Story | 預設 `dry_run: true` 零寫入預覽拓撲波次與重複警示；確認後以 `--apply` 按波次建單、解析 `depends_on_keys`、以 `parent` -> `epic_link_field` 關聯 Epic 並寫入 `.ai-workflow/active/<NEW-KEY>.json` |
+| `status` | `team-next-step` (Router) | `--key`, `--epic`, `--fetch-remote` | `team-config.json`, `.ai-workflow/active/*.json`, `engineering-standards.md` | 自動與遠端 Jira 雙向對帳、支援 `--epic <EPIC-KEY>` 跨 Story 進度與依賴阻斷彙總、處理 `awaiting_qa_deploy` 與 `triage_closed`，並推薦唯一具體下一步 |
+| `pull` | `team-next-step` (雙向對帳) | `--key` | `team-config.json`, `active/*.json`, 遠端 Jira Issues | 主動拉取並融合 Jira 網頁端人工新增/修改之 Story、Sub-task、連結 Bug、Assignee、CI/CD `in_qa` 轉換與描述 `AC-###`（含描述覆寫防護 `remote_description_modified`） |
+| `sync-story` | `team-spec` (Station 1) | `--key`, `--title`, `--scope-in`, `--scope-out`, `--has-ui`, `--no-ui`, `--has-api`, `--no-api`, `--has-data`, `--no-data`, `--risk-level`, `--ac`, `--replace-acs`, `--design-summary`, `--ui-spec`, `--api-spec`, `--auto-decision`, `--material-decision`, `--risks`, `--open-questions-json`, `--preserve-owner`, `--backfill`, `--spec-json`, `--status`, `--approved-by`, `--to-assignee`, `--accept-remote-description`, `--force-overwrite`, `--create` | `team-config.json`, 既有 `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`, Jira `Story`（`draft` 指派 `pm`、`approved` 交接指派 `developer`、`--backfill` / `--preserve-owner` 保留既有 Owner／狀態／生命週期欄位並支援選填風險與 `Q-###`） |
+| `create-subtasks` | `team-dev` (`plan`, Station 2) | `--key`, `--tasks-json`, `--task`, `--assignee`, `--task-assignee`, `--proceed-at-risk` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json` (`tasks`), 建立含完整實作步驟／目標檔案／驗證指令之 Jira `Sub-task` 並依專長自動指派各子任務經辦人（Assignee） |
+| `complete-task` | `team-dev` (`implement`, Station 2) | `--key`, `--task-id`, `--commit`, `--files`, `--test-result`, `--root-cause`, `--solution` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`（支援多 ID、Dev Fast-Track、獨立 `Bug`、Git 自動偵測、`commit_message_warnings` 與 `bug_fix_warnings`）, Jira `Sub-task`/`Bug` 繁體中文打卡（含根因與解法）並同步關閉 Qase Defect |
+| `handoff` | `team-review` (Station 3a) | `--key`, `--from-role`, `--to-role`, `--to-assignee`, `--review-status`, `--commit`, `--summary`, `--findings-json`, `--target-status` | `team-config.json`, `active/<KEY>.json` | `.ai-workflow/active/<KEY>.json`（多人 `reviewer` 自動選取同儕、強制 HITL/SoD 旗標、`gated_by_deploy` 寫入 `qa_deploy_gate`）, Jira 狀態轉換、Assignee 指派與繁體中文 `@mention` 評論 |
+| `promote-qa` | `team-review` / `team-dev` (部署解耦) | `--key`, `--from-role`, `--tag`, `--environment`, `--note`, `--to-assignee` | `team-config.json`, `active/<KEY>.json` | 於 `qa_handoff_mode == "gated_by_deploy"` 部署 QA 環境後顯式解除 `qa_deploy_gate`、轉入 `in_qa` 並指派與 `@mention` QA |
+| `record-qa` | `team-qa` (`plan`/`verify`, Station 3b) | `--inspect`, `--key`, `--mode`, `--qa-owner`, `--to-assignee`, `--qa-backend`, `--qase-project-code`, `--qase-token`, `--qase-base-url`, `--qase-app-url`, `--qase-jira-type`, `--cases-json`, `--tc`, `--junit-xml`, `--results-json`, `--result`, `--tc-attach`, `--all-pass`, `--commit` | `team-config.json`, `active/<KEY>.json`, JUnit XML / JSON 報告 | `.ai-workflow/active/<KEY>.json` (`qa`, `handoffs`), `qa_identity_guardrail` 檢查、Jira 繁體中文測試計畫評論 / Qase 同步（含媒體附件與獨立報修驗證）與 `Ready for Release` 交接 |
 | `create-bug` | `team-qa` (`verify`/`report`, Station 3b) | `--key`, `--standalone`, `--adopt`, `--tc-id`, `--execution-type`, `--qa-backend`, `--ac-id`, `--to-assignee`, `--title`, `--severity`, `--steps`, `--expected`, `--actual`, `--attach`, `--commit` | `team-config.json`, `active/<KEY>.json` | 支援計畫內失敗、探索性額外問題（`TC-EXP-###`）與獨立線上報修單（`standalone_bug`），同步上傳 Jira 附件與 Qase Defect 並指派 `developer` |
-| `close-story` | `team-release` (Station 4) | `--key`, `--version`, `--commit`, `--notes` | `team-config.json`, `active/<KEY>.json` | 先執行 Jira 雙向對帳再驗證五大發佈閘門、按規模同步 `docs/manuals/<name>/` HTML 手冊、發佈繁體中文結案摘要、轉 `Done` 並**刪除 `.ai-workflow/active/<KEY>.json`** |
-| **系統編排技能** | `skills/system/run-workflow` | `run_workflow` 工具（`Script` / `ScriptPath`、`Args`、`Description`） | Python 動態編排腳本 | 透過 `agent`、`parallel`、`pipeline`、`phase`、`trajectory` 編排多代理平行展開與分階段匯總任務 |
+| `triage-bug` | `team-qa` (`triage`, Station 3b) | `--key`, `--bug-id`, `--resolution`, `--reason`, `--decided-by`, `--duplicate-of`, `--waive-tcs`, `--tc-disposition` | `team-config.json`, `active/<KEY>.json` | 記錄人工授權分診結論（`not-a-bug` / `wont-fix` / `duplicate` / `cannot-reproduce` / `fixed`）、同步 Jira `fields.resolution` 與狀態轉換、寫入可稽核 `waived`/`not-applicable` TC 處置或標記獨立 Bug `triage_closed: true` |
+| `close-story` | `team-release` (Station 4) | `--key`, `--version`, `--commit`, `--notes` | `team-config.json`, `active/<KEY>.json` | 先執行 Jira 雙向對帳再驗證五大發佈閘門（含經稽核豁免 TC 與風險揭露）、按規模同步 `docs/manuals/<name>/` HTML 手冊、傳遞同 Epic `resolved_depends_on_keys`、發佈繁體中文結案摘要、轉 `Done` 並**刪除 `.ai-workflow/active/<KEY>.json`** |
+| **系統編排技能** | `skills/system/run-workflow` | `run_workflow` 工具（`Script` / `ScriptPath`、`Args`、`Description`） | Python 動態編排腳本 | 透過 `agent`、`parallel`、`pipeline`、`phase`、`trajectory` 編排多代理平行展開與分階段匯總任務（不耦合至核心 `team-*`） |
 
 ### 13.2 附錄 B：視覺圖表與截圖資產驗收清單
 
@@ -969,8 +1039,8 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 | **本地暫存鷹架** | `.ai-workflow/active/<JIRA-KEY>.json` | 開發期間存放於本地且被 `.gitignore` 忽略之機器可讀狀態檔（同步備份於 Jira 隱藏屬性 `ai_workflow_state`），於 `close-story` 結案時自動刪除。 |
 | **1 對多多人角色池** | `roles.<role>.members` | 允許單一角色（如 `developer`、`reviewer`、`qa`）配置多位成員與專長標籤（`specialty`），支援子任務專長自動指派與同儕交叉審查。 |
 | **雙向對帳與描述防護** | `reconcile_story_with_jira` | 各站執行前自動將 Jira 網頁端人工新增/修改之 `Sub-task`、關聯 `Bug`、Assignee 與描述 `AC-###` 融合回本地，並防止意外覆寫人工描述變更。 |
-| **同人自動整併** | `auto-consolidated` | 當相鄰兩工作站負責人為同一人時，自動省略自我 `@mention` 通知並連貫推進下一站（若已設定 `jira_account_id` 仍確保單據不留空為 Unassigned）。 |
-| **跨人通知交接** | `jira-notification` | 當相鄰兩工作站負責人為不同人時，自動轉換 Jira 狀態、重新指派 Assignee 並發佈含 `@mention` 評論之交接模式。 |
+| **同人通知整併** | `auto-consolidated` | 當相鄰兩工作站負責人為同一人時，僅抑制自我 `@mention` 噪音並確保經辦人不留空，**絕不自動串接下一站**（`can_auto_chain_next_station: false`），須以一句簡短確認詢問使用者後停等授權。 |
+| **跨人通知交接與 Clean Stop** | `jira-notification` / `cross_person_clean_stop` | 當相鄰兩工作站負責人為不同人時，自動轉換 Jira 狀態、重新指派 Assignee 並發佈含 `@mention` 評論，接著強制執行 Clean Stop（嚴禁提示下一角色的站點指令）。 |
 | **AI 自審透明標記** | `self_reviewed_with_ai: true` | 當團隊無其他同儕審查員且未配置獨立審查員時，在審查紀錄與 Jira 評論中自動揭露由 AI 輔助完成三軸自審之稽核標記。 |
 | **候選版本錨點** | `candidate_commit` | 開發者透過 `complete-task` 最新打卡之 Git Commit SHA；發佈前必須與 `review.reviewed_commit` 及 `qa.tested_commit` 完全一致。 |
 | **HTML 常駐產品手冊** | `docs/manuals/<manual-name>/<manual-name>.html` | 由 `team-release` 按需求規模新建或增量維護之深色側欄單檔 HTML 產品/API 手冊（含相對路徑 `./screenshots/` 與 `./diagrams/`）。 |
@@ -978,7 +1048,7 @@ export JIRA_API_TOKEN="ATATT3xFfGF0..."
 
 ### 13.4 交付前品質檢查清單（Quality Checklist）
 
-- [x] **源碼 100% 對帳**：三層盤點表中的所有 8 個核心工作流技能、1 個系統編排技能（`run-workflow`）、13 個 `jira_sync.py` 子命令、所有 CLI 旗標、多人角色池設定與五大發佈閘門皆已在正文中完整說明，無任何遺漏模組。
+- [x] **源碼 100% 對帳**：三層盤點表中的所有 8 個核心工作流技能、1 個系統編排技能（`run-workflow`）、16 個 `jira_sync.py` 子命令、所有 CLI 旗標、多人角色池設定與五大發佈閘門皆已在正文中完整說明，無任何遺漏模組。
 - [x] **零空殼章節（Zero Image-Only Stubs）**：每一個含圖片的章節皆具備結構化參數規格表與具體操作步驟清單。
 - [x] **視覺圖表 100% 多模態驗收**：已使用讀圖工具逐張檢視全部 12 張 `.png` 圖表，確認排版清晰、繁體中文顯示正確、紅框與編號徽章（① ② ③）精準對齊。
 - [x] **圖說三要素齊全**：每張圖下方皆完整包含「用途、視覺焦點（對應標註序號 ① ② ③）、狀態變化」。
