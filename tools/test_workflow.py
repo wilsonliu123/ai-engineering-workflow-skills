@@ -4254,6 +4254,131 @@ class WorkflowTestSuite(unittest.TestCase):
             m = hardcoded_format_re.search(path.read_text(encoding="utf-8"))
             self.assertIsNone(m, f"Hardcoded conflicting commit format found in {path}: {m.group(0) if m else ''}")
 
+    def test_26_round1_review_regressions_p1_and_p2(self):
+        mod = self._load_jira_sync_module()
+
+        # P1-1: Boundary-aware Jira key matching (no prefix/substring collisions)
+        for pos in ("[AL-37]", "(AL-37)", "AL-37:", "AL-37,", "✨ AL-37 fix", "Refs: AL-37", "AL-37新增", "al-37"):
+            self.assertTrue(mod._contains_jira_key(pos, "AL-37"), f"Expected match for {pos!r}")
+        for neg in ("AL-371", "FOO-AL-37", "REAL-37", "AL-380", "AL-37-SUB-1"):
+            self.assertFalse(mod._contains_jira_key(neg, "AL-37"), f"Expected NO match for {neg!r}")
+        self.assertFalse(mod._contains_jira_key("AL-380", "AL-38"))
+        # _validate_commit_message must flag missing AL-37 when commit only has AL-371 / AL-37-SUB-1
+        w_coll = mod._validate_commit_message("✨ AL-371 Refs: AL-37-SUB-1", "AL-37", ["AL-38"], {})
+        self.assertTrue(any("AL-37" in w for w in w_coll), f"Expected missing AL-37 warning, got {w_coll}")
+        self.assertTrue(any("AL-38" in w for w in w_coll), f"Expected missing AL-38 warning, got {w_coll}")
+
+        # P1-2: Multi-line subject bypass & CRLF normalization & unanchored trailer
+        strict_cfg = {"commit_message_pattern": r"^(🐛|✨)\s+[A-Z]+-\d+\s+.+$"}
+        w_bypass = mod._validate_commit_message(
+            "bad subject AL-37 AL-38\n\n✨ AL-37 valid body line",
+            "AL-37",
+            ["AL-38"],
+            strict_cfg,
+        )
+        self.assertTrue(
+            any("commit_message_pattern" in w for w in w_bypass),
+            f"Expected subject-line mismatch warning on multiline bypass, got {w_bypass}",
+        )
+
+        crlf_cfg = {"commit_message_pattern": r"^✨ AL-\d+ [a-z]+$"}
+        w_crlf = mod._validate_commit_message("✨ AL-37 fix\r\n\r\nRefs: AL-38", "AL-37", ["AL-38"], crlf_cfg)
+        self.assertEqual(w_crlf, [], f"Expected clean CRLF pass, got {w_crlf}")
+
+        trailer_cfg = {"commit_message_pattern": r"Signed-off-by:"}
+        w_trailer = mod._validate_commit_message(
+            "✨ AL-37 AL-38 ok\n\nSigned-off-by: Alice <alice@team.io>",
+            "AL-37",
+            ["AL-38"],
+            trailer_cfg,
+        )
+        self.assertEqual(w_trailer, [], f"Expected unanchored trailer match to pass, got {w_trailer}")
+
+        # P1-3: description: null and files: [null, "", "src/a.py"] must never serialize literal "None"
+        # P2-3: bare "- " and "* " items in implementation_steps must be dropped
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(root, "init", "--project-key", "NULL")
+            run_cli(root, "sync-story", "--key", "NULL-1", "--title", "Null Safety", "--ac", "AC-001:ok", "--status", "approved")
+            null_tasks = [
+                {
+                    "id": "TASK-001",
+                    "title": "Null fields task",
+                    "description": None,
+                    "implementation_steps": ["- ", "* ", "  -  Real step", None, "-"],
+                    "ac_coverage": ["AC-001"],
+                    "files": [None, "", "src/a.py"],
+                    "verification": "pytest",
+                }
+            ]
+            sub_res = run_cli(root, "create-subtasks", "--key", "NULL-1", "--tasks-json", json.dumps(null_tasks))
+            self.assertEqual(sub_res.returncode, 0, sub_res.stderr)
+            st = json.loads((root / ".ai-workflow" / "active" / "NULL-1.json").read_text(encoding="utf-8"))
+            t = st["tasks"][0]
+            self.assertEqual(t["description"], "")
+            self.assertEqual(t["files"], ["src/a.py"])
+            self.assertEqual(t["implementation_steps"], ["Real step"])
+
+        # P1-4: Non-string commit_message_pattern (123, True, ["foo"]) emits config warning via load_team_config + _validate_commit_message
+        with tempfile.TemporaryDirectory() as tmp_cfg:
+            root_c = Path(tmp_cfg)
+            run_cli(root_c, "init", "--project-key", "TYP")
+            cfg_path = root_c / ".ai-workflow" / "team-config.json"
+            for bad_pat, expected_type in ((123, "int"), (True, "bool"), (["foo"], "list")):
+                cfg_data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                cfg_data["commit_message_pattern"] = bad_pat
+                cfg_path.write_text(json.dumps(cfg_data, indent=2) + "\n", encoding="utf-8")
+                loaded_cfg = mod.load_team_config(root_c)
+                self.assertEqual(loaded_cfg["commit_message_pattern"], bad_pat)
+                w_bad = mod._validate_commit_message("TYP-1 TYP-2 message", "TYP-1", ["TYP-2"], loaded_cfg)
+                self.assertTrue(
+                    any("expected string regex" in w and expected_type in w for w in w_bad),
+                    f"Expected non-string config warning for {bad_pat!r}, got {w_bad}",
+                )
+
+        # P2-1: Dev Fast-Track auto-created sub-task must NOT emit unavoidable missing-subtask warning
+        with tempfile.TemporaryDirectory() as tmp_ft:
+            root_ft = Path(tmp_ft)
+            subprocess.run(["git", "init"], cwd=str(root_ft), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "dev@team.io"], cwd=str(root_ft), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Dev"], cwd=str(root_ft), check=True, capture_output=True)
+            run_cli(root_ft, "init", "--project-key", "FT")
+            run_cli(root_ft, "sync-story", "--key", "FT-1", "--title", "Fast Track", "--ac", "AC-001:small", "--status", "approved")
+            (root_ft / "a.py").write_text("x = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "a.py"], cwd=str(root_ft), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "FT-1 implement small story"], cwd=str(root_ft), check=True, capture_output=True)
+            ft_res = run_cli(root_ft, "complete-task", "--key", "FT-1", "--task-id", "TASK-001", "--test-result", "pytest: 1 passed")
+            self.assertEqual(ft_res.returncode, 0, ft_res.stderr)
+            ft_out = json.loads(ft_res.stdout)
+            self.assertTrue(ft_out["fast_track"])
+            self.assertEqual(ft_out["commit_message_warnings"], [])
+
+        # P2-2: Word-bounded commit matching must NOT falsely extract "## Committee Members"
+        with tempfile.TemporaryDirectory() as tmp_cm:
+            root_cm = Path(tmp_cm)
+            agents_cm = root_cm / "AGENTS.md"
+            agents_cm.write_text(
+                "# Overview\n\n"
+                "## Committee Members\n- Alice, Bob\n\n"
+                "## Commit Format\n- Follow team rules.\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(run_cli(root_cm, "init", "--project-key", "CM").returncode, 0)
+            std_cm = (root_cm / "docs" / "shared" / "engineering-standards.md").read_text(encoding="utf-8")
+            trimmed_cm = agents_cm.read_text(encoding="utf-8")
+            self.assertIn("## Committee Members", trimmed_cm)
+            self.assertNotIn("## Committee Members", std_cm)
+            self.assertIn("## Commit Format", std_cm)
+            self.assertNotIn("## Commit Format", trimmed_cm)
+
+        # P2-4: README.md and team-init/SKILL.md doc polish
+        readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("5-check", readme_text)
+        self.assertIn("Git Commit/PR", readme_text)
+        init_skill_text = (SKILLS_DIR / "team-init" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("--commit-policy", init_skill_text)
+        self.assertIn("--commit-message-pattern", init_skill_text)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -109,7 +109,9 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   --role "<FOUNDER_ROLES_COMMA_SEPARATED>" \
   --name "<FOUNDER_NAME>" \
   --jira-email "<JIRA_EMAIL>" \
-  --jira-token "<JIRA_API_TOKEN>"
+  --jira-token "<JIRA_API_TOKEN>" \
+  [--commit-policy "confirm_before_commit|auto_on_test_pass"] \
+  [--commit-message-pattern '<OPTIONAL_REGEX>']
 
 # Option B: Full multi-person mapping upfront
 python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
@@ -118,10 +120,12 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   --jira-email "<JIRA_EMAIL>" \
   --jira-token "<JIRA_API_TOKEN>" \
   --roles-json '<JSON_MAPPING>' \
-  [--role-tokens-json '<ROLE_TOKENS_JSON>']
+  [--role-tokens-json '<ROLE_TOKENS_JSON>'] \
+  [--commit-policy "confirm_before_commit|auto_on_test_pass"] \
+  [--commit-message-pattern '<OPTIONAL_REGEX>']
 ```
 
-*(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`.)*
+*(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`. Optional `--commit-policy` defaults to `"confirm_before_commit"` — pause after local tests pass to wait for user confirmation before committing — or can opt in to `"auto_on_test_pass"`; optional `--commit-message-pattern` configures a non-blocking regex check in `complete-task`.)*
 
 What `jira_sync.py init` enforces automatically:
 - Creates or updates `.ai-workflow/team-config.json` (template: `references/team-config-template.json`) with confirmed `project_key`, `jira_base_url`, `roles` (strictly `name`, `email`, `jira_account_id` — never tokens), `status_mapping`, and `issue_type_mapping`.

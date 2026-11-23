@@ -418,7 +418,8 @@ def load_team_config(repo_root: Path) -> dict:
         merged = json.loads(json.dumps(DEFAULT_TEAM_CONFIG))
         merged.update(data)
         merged["commit_policy"] = get_effective_commit_policy(merged)
-        merged["commit_message_pattern"] = str(merged.get("commit_message_pattern") or "")
+        raw_pat = merged.get("commit_message_pattern")
+        merged["commit_message_pattern"] = "" if raw_pat is None else raw_pat
         merged["roles"] = {**DEFAULT_TEAM_CONFIG["roles"], **data.get("roles", {})}
         merged["status_mapping"] = {**DEFAULT_TEAM_CONFIG["status_mapping"], **data.get("status_mapping", {})}
         merged["issue_type_mapping"] = {
@@ -454,6 +455,13 @@ def _read_git_commit_message(repo_root: Path, commit_sha: str) -> str:
     return ""
 
 
+def _contains_jira_key(text: str, key: str) -> bool:
+    """Return True if text contains exact Jira issue key bounded against alphanumeric/hyphen neighbors."""
+    if not text or not key:
+        return False
+    return bool(re.search(rf"(?<![A-Za-z0-9-]){re.escape(key)}(?![A-Za-z0-9-])", text, re.IGNORECASE))
+
+
 def _validate_commit_message(commit_msg: str, story_key: str, subtask_keys: list, config: dict) -> list:
     """
     Perform strictly non-blocking commit message validation against optional team-config.json
@@ -461,30 +469,51 @@ def _validate_commit_message(commit_msg: str, story_key: str, subtask_keys: list
     Always returns a list of warning strings (empty list when clean or unavailable).
     """
     warnings = []
-    pattern = str((config or {}).get("commit_message_pattern") or "").strip()
+    raw_pattern = (config or {}).get("commit_message_pattern")
+    pattern = ""
     compiled = None
-    if pattern:
-        try:
-            compiled = re.compile(pattern, re.MULTILINE)
-        except re.error as exc:
-            warnings.append(
-                f"Invalid commit_message_pattern regex in team-config.json ({pattern!r}): {exc}"
-            )
+    if raw_pattern is not None and not isinstance(raw_pattern, str):
+        warnings.append(
+            f"Invalid commit_message_pattern in team-config.json: expected string regex, got {type(raw_pattern).__name__}"
+        )
+    elif isinstance(raw_pattern, str):
+        pattern = raw_pattern.strip()
+        if pattern:
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                warnings.append(
+                    f"Invalid commit_message_pattern regex in team-config.json ({pattern!r}): {exc}"
+                )
 
     msg = str(commit_msg or "").strip()
     if not msg:
         return warnings
 
-    if compiled is not None and not compiled.search(msg):
-        first_line = msg.splitlines()[0] if msg.splitlines() else msg
-        warnings.append(
-            f"Commit message '{first_line}' does not match configured commit_message_pattern "
-            f"({pattern!r}). Check docs/shared/engineering-standards.md §4 (or AGENTS.md)."
-        )
+    msg_norm = msg.replace("\r\n", "\n").replace("\r", "\n")
+    first_line = msg_norm.splitlines()[0] if msg_norm.splitlines() else ""
 
-    msg_lower = msg.lower()
+    if compiled is not None:
+        expects_multiline = (
+            "\\n" in pattern
+            or "\n" in pattern
+            or "(?s)" in pattern
+            or "(?m)" in pattern
+        )
+        if expects_multiline:
+            matched = bool(compiled.search(msg_norm))
+        else:
+            matched = bool(compiled.search(first_line))
+            if not matched and not pattern.lstrip().startswith(("^", r"\A")):
+                matched = bool(compiled.search(msg_norm))
+        if not matched:
+            warnings.append(
+                f"Commit message '{first_line}' does not match configured commit_message_pattern "
+                f"({pattern!r}). Check docs/shared/engineering-standards.md §4 (or AGENTS.md)."
+            )
+
     norm_story = str(story_key or "").strip()
-    if norm_story and norm_story.lower() not in msg_lower:
+    if norm_story and not _contains_jira_key(msg_norm, norm_story):
         warnings.append(
             f"Commit message is missing parent Jira Story key '{norm_story}'. "
             f"Include '{norm_story}' for Jira Development Panel traceability."
@@ -496,7 +525,7 @@ def _validate_commit_message(commit_msg: str, story_key: str, subtask_keys: list
         if not sub_key or sub_key.lower() in seen_sub:
             continue
         seen_sub.add(sub_key.lower())
-        if sub_key.lower() not in msg_lower:
+        if not _contains_jira_key(msg_norm, sub_key):
             warnings.append(
                 f"Commit message is missing Jira Sub-task key '{sub_key}'. "
                 f"Include both '{norm_story or '<STORY-KEY>'}' and '{sub_key}' so Jira Development Panel links commits to this Sub-task."
@@ -2996,7 +3025,6 @@ def extract_and_trim_agents_md(agents_path: Path, standards_path: Path) -> dict:
         "testing standard",
         "testing rule",
         "architecture rule",
-        "commit",
         "git commit",
         "commit message",
         "conventional commit",
@@ -3015,6 +3043,7 @@ def extract_and_trim_agents_md(agents_path: Path, standards_path: Path) -> dict:
     )
     standards_word_patterns = (
         re.compile(r"(?<![a-z0-9])pr(?![a-z0-9])", re.IGNORECASE),
+        re.compile(r"(?<![a-z0-9])commits?(?![a-z0-9])", re.IGNORECASE),
     )
 
     matches = _find_markdown_headings_outside_fences(agents_text)
@@ -5080,11 +5109,9 @@ def _normalize_implementation_steps(raw_steps) -> list:
         raw_items = [str(raw_steps)]
     cleaned = []
     for item in raw_items:
-        s = str(item or "").strip()
-        if not s:
+        if item is None:
             continue
-        if s.startswith("- ") or s.startswith("* "):
-            s = s[2:].strip()
+        s = re.sub(r"^\s*[-*]\s*", "", str(item)).strip()
         if s:
             cleaned.append(s)
     return cleaned
@@ -5097,8 +5124,8 @@ def _normalize_string_list(raw_val) -> list:
     if isinstance(raw_val, str):
         return [x.strip() for x in raw_val.split(",") if x.strip()]
     if isinstance(raw_val, list):
-        return [str(x).strip() for x in raw_val if str(x).strip()]
-    return [str(raw_val).strip()] if str(raw_val).strip() else []
+        return [str(x).strip() for x in raw_val if x is not None and str(x).strip()]
+    return [str(raw_val).strip()] if raw_val is not None and str(raw_val).strip() else []
 
 
 def format_subtask_description(
@@ -5261,7 +5288,8 @@ def cmd_create_subtasks(args) -> int:
         deps = [str(d).strip().upper() for d in (item.get("depends_on") or prev.get("depends_on") or []) if str(d).strip()]
         verif = item.get("verification") or prev.get("verification") or "Run automated tests"
         files = _normalize_string_list(item.get("files") if "files" in item else prev.get("files"))
-        desc_text = str(item.get("description") if "description" in item else (prev.get("description") or "")).strip()
+        raw_desc = item.get("description") if "description" in item else prev.get("description")
+        desc_text = str(raw_desc).strip() if raw_desc is not None else ""
         impl_steps = _normalize_implementation_steps(
             item.get("implementation_steps") if "implementation_steps" in item else prev.get("implementation_steps")
         )
@@ -5567,11 +5595,12 @@ def cmd_complete_task(args) -> int:
     ]
 
     completed_subtask_keys = []
-    for _, matched_item, item_kind in resolved_targets:
-        if item_kind == "task":
-            sk = str(matched_item.get("jira_subtask_key") or "").strip()
-            if sk and sk not in completed_subtask_keys:
-                completed_subtask_keys.append(sk)
+    if not fast_tracked:
+        for _, matched_item, item_kind in resolved_targets:
+            if item_kind == "task":
+                sk = str(matched_item.get("jira_subtask_key") or "").strip()
+                if sk and sk not in completed_subtask_keys:
+                    completed_subtask_keys.append(sk)
 
     commit_msg = _read_git_commit_message(repo_root, commit_sha)
     commit_message_warnings = _validate_commit_message(
