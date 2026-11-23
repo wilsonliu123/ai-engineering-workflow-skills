@@ -15,6 +15,7 @@
 - **Lightweight Non-Blocking Multi-Stage Release Reminders (`team-release`, `close-story`, `status`):**
   - Emitted strictly non-blocking `release_checklist_reminders` in `evaluate_story_next_step` (Station 4) and `close-story` whenever `delivery_pipeline` configures a `uat`/`staging` environment or a `production_branch` distinct from `integration_branch` (`[]` when unconfigured; never blocks `close-story` and introduces no UAT state machine).
 - **Verification & Backward Compatibility:** 100% backward compatible for projects without `delivery_pipeline`; expanded `tools/test_workflow.py` to 38 tests across 8 byte-identical skill bundles (`./tools/check_shared.sh` 8/8 OK).
+- **Training Slide Deck Sync (`docs/training-manual.pptx`):** Rebuilt and synced the scenario training presentation to `v1.6.0` (18 slides + refreshed `docs/ppt-assets/` dual-pane Chat+State visuals), covering `team-plan` / `epic-decompose`, strict HITL / SoD Clean Stop, `commit_policy`, `qa_handoff_mode` + `promote-qa` / `record-qa --deploy-ref`, `triage-bug`, `delivery_pipeline` alignment, 16 CLI subcommands, 8 skills, and 38 automated tests.
 
 ## v1.5.0 — 2026-11-23 — Existing-Story Spec Backfill & Platform-Neutral Epic Decomposition
 
