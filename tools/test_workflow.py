@@ -3867,6 +3867,393 @@ class WorkflowTestSuite(unittest.TestCase):
         release_md = (SKILLS_DIR / "team-release" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("explicit user authorization", release_md.lower())
 
+    def test_22_extract_agents_md_git_commit_pr_standards_and_no_false_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents_md = root / "AGENTS.md"
+            agents_md.write_text(
+                "# Project Overview\nBuild command: `pytest`\n\n"
+                "## Prerequisites\n- Python 3.11+\n\n"
+                "## Build Process\n- Run `make build`.\n\n"
+                "## Print Helpers\n- Use `logger.info` instead of raw print.\n\n"
+                "## Prototype Notes\n- Prototype fixtures live in `fixtures/`.\n\n"
+                "## Approval Flow\n- PM approves scope before dev.\n\n"
+                "## PR and Commit Notes\n- Use project commit template `<Emoji>  <KEY> <summary>`.\n\n"
+                "## PR Guidelines\n- Squash commits before merge.\n\n"
+                "## Pull Request Guidelines\n- Keep PR descriptions focused on Why/How/Tests.\n\n"
+                "## 提交與分支策略\n- 功能分支命名為 `feat/<key>-<slug>`。\n\n"
+                "## Conventional Commits\n- Optional note for libraries.\n",
+                encoding="utf-8",
+            )
+            res = run_cli(root, "init", "--project-key", "GIT")
+            self.assertEqual(res.returncode, 0, res.stderr)
+
+            std_text = (root / "docs" / "shared" / "engineering-standards.md").read_text(encoding="utf-8")
+            trimmed_agents = agents_md.read_text(encoding="utf-8")
+
+            # Git Commit & PR sections MUST be extracted into engineering-standards.md and removed from AGENTS.md
+            for expected in (
+                "## PR and Commit Notes",
+                "Use project commit template",
+                "## PR Guidelines",
+                "Squash commits before merge",
+                "## Pull Request Guidelines",
+                "Keep PR descriptions focused",
+                "## 提交與分支策略",
+                "功能分支命名",
+                "## Conventional Commits",
+            ):
+                self.assertIn(expected, std_text, f"Expected '{expected}' in engineering-standards.md")
+                self.assertNotIn(expected, trimmed_agents, f"Expected '{expected}' to be trimmed from AGENTS.md")
+
+            # Unrelated sections with 'pr' inside words MUST stay in AGENTS.md and NOT be extracted
+            for kept in (
+                "# Project Overview",
+                "## Prerequisites",
+                "## Build Process",
+                "## Print Helpers",
+                "## Prototype Notes",
+                "## Approval Flow",
+            ):
+                self.assertIn(kept, trimmed_agents, f"False match trimmed '{kept}' from AGENTS.md")
+                self.assertNotIn(kept, std_text, f"False match extracted '{kept}' into engineering-standards.md")
+
+        # When AGENTS.md has no standards sections, seeded engineering-standards.md MUST include §4 Git Commit & PR Standards
+        with tempfile.TemporaryDirectory() as tmp2:
+            root2 = Path(tmp2)
+            res2 = run_cli(root2, "init", "--project-key", "SEED")
+            self.assertEqual(res2.returncode, 0, res2.stderr)
+            seeded_std = (root2 / "docs" / "shared" / "engineering-standards.md").read_text(encoding="utf-8")
+            self.assertIn("## 4. Git Commit & PR Standards", seeded_std)
+
+    def test_23_create_subtasks_rich_description_and_backward_compatibility(self):
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+
+        server = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            jira_url = f"http://127.0.0.1:{port}"
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                roles = {
+                    r: {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"}
+                    for r in ("pm", "tech_lead", "developer", "reviewer", "qa", "release_manager")
+                }
+                self.assertEqual(
+                    run_cli(
+                        root, "init", "--project-key", "SUB", "--jira-url", jira_url,
+                        "--jira-email", "alice@team.io", "--jira-token", "tok-1",
+                        "--roles-json", json.dumps(roles),
+                    ).returncode,
+                    0,
+                )
+                self.assertEqual(
+                    run_cli(
+                        root, "sync-story", "--key", "SUB-1", "--title", "Rich Subtask Story",
+                        "--ac", "AC-001:First AC", "--ac", "AC-002:Second AC", "--ac", "AC-003:Third AC",
+                        "--status", "approved", "--create",
+                    ).returncode,
+                    0,
+                )
+
+                tasks_payload = [
+                    {
+                        "id": "TASK-001",
+                        "title": "Implement exporter core",
+                        "description": "Build **UTF-8** CSV streaming helper in `exporter.py`.",
+                        "implementation_steps": [
+                            "Create `CsvExporter` class with streaming writer",
+                            "Add boundary validation for empty datasets",
+                        ],
+                        "ac_coverage": ["AC-001"],
+                        "depends_on": [],
+                        "files": ["src/export/exporter.py", "tests/test_exporter.py"],
+                        "verification": "pytest tests/test_exporter.py",
+                    },
+                    {
+                        "id": "TASK-002",
+                        "title": "Wire export API route",
+                        "implementation_steps": "- Add `/api/export` route\n* Enforce authz guard\nReturn 403 on unauthorized",
+                        "ac_coverage": ["AC-002"],
+                        "depends_on": ["TASK-001"],
+                        "files": ["src/api/export.py"],
+                        "verification": "pytest tests/test_api_export.py",
+                    },
+                    {
+                        "id": "TASK-003",
+                        "title": "Minimal backward-compatible task",
+                        "ac_coverage": ["AC-003"],
+                        "depends_on": ["TASK-002"],
+                        "verification": "pytest tests/test_minimal.py",
+                    },
+                ]
+                sub_res = run_cli(
+                    root, "create-subtasks", "--key", "SUB-1",
+                    "--tasks-json", json.dumps(tasks_payload, ensure_ascii=False),
+                )
+                self.assertEqual(sub_res.returncode, 0, sub_res.stderr)
+                sub_out = json.loads(sub_res.stdout)
+                self.assertEqual(sub_out["commit_policy"], "confirm_before_commit")
+
+                # Verify JSON persistence
+                story_data = json.loads((root / ".ai-workflow" / "active" / "SUB-1.json").read_text(encoding="utf-8"))
+                t1, t2, t3 = story_data["tasks"]
+                self.assertEqual(t1["description"], "Build **UTF-8** CSV streaming helper in `exporter.py`.")
+                self.assertEqual(
+                    t1["implementation_steps"],
+                    ["Create `CsvExporter` class with streaming writer", "Add boundary validation for empty datasets"],
+                )
+                self.assertEqual(t1["files"], ["src/export/exporter.py", "tests/test_exporter.py"])
+                self.assertEqual(
+                    t2["implementation_steps"],
+                    ["Add `/api/export` route", "Enforce authz guard", "Return 403 on unauthorized"],
+                )
+                self.assertEqual(t3.get("implementation_steps", []), [])
+                self.assertEqual(t3.get("description", ""), "")
+                self.assertEqual(t3.get("files", []), [])
+
+                # Verify Jira Sub-task ADF descriptions
+                mod = self._load_jira_sync_module()
+                adf1 = MockJiraHandler.stored_issues[t1["jira_subtask_key"]]["fields"]["description"]
+                adf2 = MockJiraHandler.stored_issues[t2["jira_subtask_key"]]["fields"]["description"]
+                adf3 = MockJiraHandler.stored_issues[t3["jira_subtask_key"]]["fields"]["description"]
+                for adf in (adf1, adf2, adf3):
+                    self._assert_valid_adf_invariants(adf)
+
+                plain1 = mod._adf_to_plain_text(adf1)
+                self.assertIn("任務編號：TASK-001", plain1)
+                self.assertIn("AC-001", plain1)
+                self.assertIn("Build UTF-8 CSV streaming helper in exporter.py.", plain1)
+                self.assertIn("Create CsvExporter class with streaming writer", plain1)
+                self.assertIn("src/export/exporter.py", plain1)
+                self.assertIn("tests/test_exporter.py", plain1)
+                self.assertIn("pytest tests/test_exporter.py", plain1)
+                # Verify inline code marks exist for target files
+                adf1_json = json.dumps(adf1, ensure_ascii=False)
+                self.assertIn('"text": "src/export/exporter.py", "marks": [{"type": "code"}]', adf1_json)
+
+                # Verify string implementation_steps did NOT double-bullet
+                plain2 = mod._adf_to_plain_text(adf2)
+                self.assertIn("Add /api/export route", plain2)
+                self.assertNotIn("- - ", plain2)
+                self.assertNotIn("- * ", plain2)
+
+                # Backward-compatible minimal task omits empty Implementation Steps / Target Files headings
+                plain3 = mod._adf_to_plain_text(adf3)
+                self.assertIn("任務編號：TASK-003", plain3)
+                self.assertNotIn("Target Files", plain3)
+                self.assertNotIn("Implementation Steps", plain3)
+
+                # Verify English rendering via format_subtask_description
+                en_md = mod.format_subtask_description(
+                    t_id="TASK-009",
+                    task_dev={"name": "Alice", "email": "alice@team.io"},
+                    ac_cov=["AC-001"],
+                    deps=["TASK-001"],
+                    verif="pytest tests/test_en.py",
+                    zh=False,
+                    description="Implement `TokenGuard`.",
+                    implementation_steps=["Validate JWT signature", "Return 401 on expiry"],
+                    files=["src/auth/guard.py"],
+                )
+                en_adf = mod.JiraClient.text_to_adf(en_md)
+                self._assert_valid_adf_invariants(en_adf)
+                en_plain = mod._adf_to_plain_text(en_adf)
+                self.assertIn("Implementation Details & Steps", en_plain)
+                self.assertIn("Target Files", en_plain)
+                self.assertIn("src/auth/guard.py", en_plain)
+                self.assertIn("Validate JWT signature", en_plain)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_24_complete_task_commit_message_warnings_and_commit_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Initialize a real git repository
+            subprocess.run(["git", "init"], cwd=str(root), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "dev@team.io"], cwd=str(root), check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Dev"], cwd=str(root), check=True, capture_output=True)
+
+            roles = {
+                r: {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"}
+                for r in ("pm", "tech_lead", "developer", "reviewer", "qa", "release_manager")
+            }
+            self.assertEqual(
+                run_cli(root, "init", "--project-key", "CMT", "--roles-json", json.dumps(roles)).returncode,
+                0,
+            )
+
+            # Backward-compatibility: strip commit_policy from team-config.json to verify default is confirm_before_commit
+            cfg_path = root / ".ai-workflow" / "team-config.json"
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            self.assertEqual(cfg.get("commit_policy"), "confirm_before_commit")
+            self.assertEqual(cfg.get("commit_message_pattern"), "")
+            cfg.pop("commit_policy", None)
+            cfg.pop("commit_message_pattern", None)
+            cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+            self.assertEqual(
+                run_cli(
+                    root, "sync-story", "--key", "CMT-10", "--title", "Commit Governance",
+                    "--ac", "AC-001:First", "--ac", "AC-002:Second", "--ac", "AC-003:Third",
+                    "--ac", "AC-004:Fourth", "--status", "approved",
+                ).returncode,
+                0,
+            )
+            st_default = json.loads(run_cli(root, "status", "--key", "CMT-10").stdout)
+            self.assertEqual(st_default.get("commit_policy"), "confirm_before_commit")
+            self.assertTrue(st_default.get("requires_commit_confirmation"))
+
+            tasks = [
+                {"id": "TASK-001", "title": "T1", "ac_coverage": ["AC-001"], "verification": "pytest"},
+                {"id": "TASK-002", "title": "T2", "ac_coverage": ["AC-002"], "verification": "pytest"},
+                {"id": "TASK-003", "title": "T3", "ac_coverage": ["AC-003"], "verification": "pytest"},
+                {"id": "TASK-004", "title": "T4", "ac_coverage": ["AC-004"], "verification": "pytest"},
+            ]
+            sub_out = json.loads(
+                run_cli(root, "create-subtasks", "--key", "CMT-10", "--tasks-json", json.dumps(tasks)).stdout
+            )
+            self.assertEqual(sub_out.get("commit_policy"), "confirm_before_commit")
+            sub1 = sub_out["subtasks"][0]["jira_subtask_key"]  # CMT-10-SUB-1
+            sub2 = sub_out["subtasks"][1]["jira_subtask_key"]  # CMT-10-SUB-2
+            sub3 = sub_out["subtasks"][2]["jira_subtask_key"]  # CMT-10-SUB-3
+
+            # Configure commit_message_pattern & opt-in auto_on_test_pass
+            cfg["commit_policy"] = "auto_on_test_pass"
+            cfg["commit_message_pattern"] = r"^✨  [A-Z]+-\d+"
+            cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+            st_auto = json.loads(run_cli(root, "status", "--key", "CMT-10").stdout)
+            self.assertEqual(st_auto.get("commit_policy"), "auto_on_test_pass")
+            self.assertFalse(st_auto.get("requires_commit_confirmation"))
+
+            def _git_commit(filename: str, content: str, msg: str) -> str:
+                (root / filename).write_text(content, encoding="utf-8")
+                subprocess.run(["git", "add", filename], cwd=str(root), check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", msg], cwd=str(root), check=True, capture_output=True)
+                return subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"], cwd=str(root), check=True, capture_output=True, text=True
+                ).stdout.strip()
+
+            # Case 1: Clean commit matching pattern AND containing both Story & Sub-task keys (case-insensitive check)
+            sha1 = _git_commit("f1.py", "x = 1\n", f"✨  CMT-10 新增功能\n\nRefs: {sub1.lower()}")
+            c1 = run_cli(
+                root, "complete-task", "--key", "CMT-10", "--task-id", "TASK-001",
+                "--commit", sha1, "--test-result", "pytest: 1 passed",
+            )
+            self.assertEqual(c1.returncode, 0, c1.stderr)
+            c1_out = json.loads(c1.stdout)
+            self.assertEqual(c1_out["commit_policy"], "auto_on_test_pass")
+            self.assertEqual(c1_out["commit_message_warnings"], [])
+
+            # Case 2: Commit missing jira_subtask_key -> non-blocking warning!
+            sha2 = _git_commit("f2.py", "x = 2\n", "✨  CMT-10 只帶父票號")
+            c2 = run_cli(
+                root, "complete-task", "--key", "CMT-10", "--task-id", "TASK-002",
+                "--commit", sha2, "--test-result", "pytest: 1 passed",
+            )
+            self.assertEqual(c2.returncode, 0, c2.stderr)
+            c2_out = json.loads(c2.stdout)
+            self.assertEqual(len(c2_out["commit_message_warnings"]), 1)
+            self.assertIn(sub2, c2_out["commit_message_warnings"][0])
+
+            # Case 3: Commit failing pattern AND missing both keys -> non-blocking warnings for all 3!
+            sha3 = _git_commit("f3.py", "x = 3\n", "wip fix stuff")
+            c3 = run_cli(
+                root, "complete-task", "--key", "CMT-10", "--task-id", "TASK-003",
+                "--commit", sha3, "--test-result", "pytest: 1 passed",
+            )
+            self.assertEqual(c3.returncode, 0, c3.stderr)
+            c3_out = json.loads(c3.stdout)
+            joined_w3 = "\n".join(c3_out["commit_message_warnings"])
+            self.assertIn("commit_message_pattern", joined_w3)
+            self.assertIn("CMT-10", joined_w3)
+            self.assertIn(sub3, joined_w3)
+
+            # Case 4: Invalid regex in team-config.json -> safe config warning, never crashes!
+            cfg["commit_message_pattern"] = "[unclosed-regex("
+            cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+            sha4 = _git_commit("f4.py", "x = 4\n", f"CMT-10 {sub_out['subtasks'][3]['jira_subtask_key']} ok")
+            c4 = run_cli(
+                root, "complete-task", "--key", "CMT-10", "--task-id", "TASK-004",
+                "--commit", sha4, "--test-result", "pytest: 1 passed",
+            )
+            self.assertEqual(c4.returncode, 0, c4.stderr)
+            c4_out = json.loads(c4.stdout)
+            self.assertTrue(
+                any("invalid" in w.lower() or "regex" in w.lower() for w in c4_out["commit_message_warnings"]),
+                f"Expected invalid regex warning, got: {c4_out['commit_message_warnings']}",
+            )
+
+        # Case 5: Synthetic SHA in a non-git temp dir -> never crashes, returns empty warnings
+        with tempfile.TemporaryDirectory() as tmp_nogit:
+            root_ng = Path(tmp_nogit)
+            run_cli(root_ng, "init", "--project-key", "NG")
+            run_cli(root_ng, "sync-story", "--key", "NG-1", "--title", "NoGit", "--ac", "AC-001:ok", "--status", "approved")
+            c_ng = run_cli(
+                root_ng, "complete-task", "--key", "NG-1", "--task-id", "TASK-001",
+                "--commit", "synthetic999", "--files", "a.py", "--test-result", "ok",
+            )
+            self.assertEqual(c_ng.returncode, 0, c_ng.stderr)
+            c_ng_out = json.loads(c_ng.stdout)
+            self.assertEqual(c_ng_out["commit_message_warnings"], [])
+            self.assertEqual(c_ng_out["commit_policy"], "confirm_before_commit")
+
+    def test_25_v140_commit_and_subtask_governance_doc_consistency(self):
+        # 1. engineering-standards-template.md has §4 Git Commit & PR Standards
+        eng_tmpl = (SKILLS_DIR / "team-init" / "references" / "engineering-standards-template.md").read_text(encoding="utf-8")
+        self.assertIn("## 4. Git Commit & PR Standards", eng_tmpl)
+        self.assertIn("AGENTS.md", eng_tmpl)
+
+        # 2. team-config-template.json has backward-compatible commit_policy & commit_message_pattern
+        cfg_tmpl = json.loads((SKILLS_DIR / "team-init" / "references" / "team-config-template.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg_tmpl.get("commit_policy"), "confirm_before_commit")
+        self.assertEqual(cfg_tmpl.get("commit_message_pattern"), "")
+
+        # 3. common-workflow-governance.md documents commit_policy gate
+        gov_md = (SKILLS_DIR / "team-init" / "references" / "common-workflow-governance.md").read_text(encoding="utf-8")
+        self.assertIn("confirm_before_commit", gov_md)
+        self.assertIn("auto_on_test_pass", gov_md)
+
+        # 4. team-dev SKILL.md and dev-method.md document confirm_before_commit, implementation_steps, §4 & dual Jira keys
+        dev_skill = (SKILLS_DIR / "team-dev" / "SKILL.md").read_text(encoding="utf-8")
+        dev_method = (SKILLS_DIR / "team-dev" / "references" / "dev-method.md").read_text(encoding="utf-8")
+        for doc_name, text in (("team-dev/SKILL.md", dev_skill), ("team-dev/references/dev-method.md", dev_method)):
+            self.assertIn("confirm_before_commit", text, f"{doc_name} missing confirm_before_commit")
+            self.assertIn("auto_on_test_pass", text, f"{doc_name} missing auto_on_test_pass")
+            self.assertIn("implementation_steps", text, f"{doc_name} missing implementation_steps")
+            self.assertIn("<SUBTASK-KEY>", text, f"{doc_name} missing <SUBTASK-KEY>")
+            self.assertIn("<STORY-KEY>", text, f"{doc_name} missing <STORY-KEY>")
+            self.assertIn("engineering-standards.md", text, f"{doc_name} missing engineering-standards.md")
+
+        # 5. team-review SKILL.md and review-method.md include Axis 3 Commit Message check
+        rev_skill = (SKILLS_DIR / "team-review" / "SKILL.md").read_text(encoding="utf-8")
+        rev_method = (SKILLS_DIR / "team-review" / "references" / "review-method.md").read_text(encoding="utf-8")
+        for doc_name, text in (("team-review/SKILL.md", rev_skill), ("team-review/references/review-method.md", rev_method)):
+            self.assertIn("<SUBTASK-KEY>", text, f"{doc_name} missing <SUBTASK-KEY> commit check")
+            self.assertIn("commit", text.lower(), f"{doc_name} missing commit message review")
+
+        # 6. Crucial conflict-resolution guard: NEVER hardcode Conventional Commits or team-specific emoji template in generic skills
+        hardcoded_format_re = re.compile(
+            r"feat\(<scope>\):\s*\[<STORY-KEY>\]\[<SUBTASK-KEY>\]|🐛\s+AL-XXX|✨\s+AL-XXX",
+            re.IGNORECASE,
+        )
+        for path in (
+            SKILLS_DIR / "team-init" / "references" / "engineering-standards-template.md",
+            SKILLS_DIR / "team-dev" / "SKILL.md",
+            SKILLS_DIR / "team-dev" / "references" / "dev-method.md",
+            SKILLS_DIR / "team-review" / "SKILL.md",
+            SKILLS_DIR / "team-review" / "references" / "review-method.md",
+            SKILLS_DIR / "team-init" / "references" / "common-workflow-governance.md",
+        ):
+            m = hardcoded_format_re.search(path.read_text(encoding="utf-8"))
+            self.assertIsNone(m, f"Hardcoded conflicting commit format found in {path}: {m.group(0) if m else ''}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

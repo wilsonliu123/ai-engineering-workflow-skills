@@ -128,6 +128,8 @@ def _build_multipart_form_data(validated_files: list, field_name: str = "file") 
     chunks.append(f"--{boundary}--\r\n".encode("ascii"))
     return boundary, b"".join(chunks)
 
+VALID_COMMIT_POLICIES = ("confirm_before_commit", "auto_on_test_pass")
+
 DEFAULT_TEAM_CONFIG = {
     "version": "1.0",
     "project_key": "PROJ",
@@ -136,6 +138,8 @@ DEFAULT_TEAM_CONFIG = {
     "language": "zh-TW",
     "sync_mode": "auto",
     "notification_channel": "jira",
+    "commit_policy": "confirm_before_commit",
+    "commit_message_pattern": "",
     "roles": {
         "pm": {"name": "PM Owner", "email": "", "jira_account_id": ""},
         "tech_lead": {"name": "Tech Lead", "email": "", "jira_account_id": ""},
@@ -191,13 +195,18 @@ owner_role: Tech Lead
 ## 3. Security & Data Hygiene (安全與資料保護)
 - 嚴禁在程式碼、設定檔、日誌或版本控制中寫入 API Token、密碼或私鑰。
 - 所有外部輸入與跨邊界 API 必須執行格式驗證、權限檢查（AuthN/AuthZ）與輸出跳脫處理。
+
+## 4. Git Commit & PR Standards (Git 提交與 PR 規範)
+- 本節為專案 Git Commit 格式、語言、前綴/Emoji 與 Pull Request 慣例的唯一真相來源（Single Source of Truth；若尚未收斂，fallback 參照專案根目錄 `AGENTS.md`）。工作流技能不硬編碼單一格式，請在此明確維護貴團隊的 Commit 模板與 PR 規範。
+- **雙重 Jira 票號溯源（Dual Jira Key Traceability）**：無論專案採用何種 Commit 模板，只要該任務已建立 Jira Sub-task（`jira_subtask_key`），Commit 訊息必須同時包含父級 Story Key（`<STORY-KEY>`）與子任務 Key（`<SUBTASK-KEY>`）——若與專案標題格式相容則置於標題，否則置於 Commit 內文或 trailer——以確保 Jira Development Panel 能同時關聯至父 Story 與子任務。
+- **提交確認門禁（`commit_policy`）**：預設為 `.ai-workflow/team-config.json` 的 `"commit_policy": "confirm_before_commit"`（完成實作與本地測試後先停下回報並等待使用者確認再執行 `git commit` 與 `complete-task`）；僅在使用者明確授權或團隊顯式設定 `"auto_on_test_pass"` 時才自動提交。可選填 `"commit_message_pattern"`（正規表達式）啟用 `complete-task` 的非阻塞格式檢查提醒。
 """
 
 AGENTS_STANDARDS_POINTER_MARKER = "<!-- ai-workflow:engineering-standards-link -->"
 AGENTS_STANDARDS_POINTER_BLOCK = f"""{AGENTS_STANDARDS_POINTER_MARKER}
 ## Engineering Standards (工程標準規範)
 
-專案所有的編碼、架構、測試與安全規範已統一收斂至唯一權威來源：
+專案所有的編碼、架構、測試、安全與 Git Commit/PR 規範已統一收斂至唯一權威來源：
 - 請參閱 [`docs/shared/engineering-standards.md`](docs/shared/engineering-standards.md)
 - 請勿在本文件重複維護上述工程細則，以免規範分歧。
 {AGENTS_STANDARDS_POINTER_MARKER}
@@ -392,6 +401,14 @@ def save_jira_credentials(
     return cred_path
 
 
+def get_effective_commit_policy(config: dict) -> str:
+    """Return effective commit_policy, safely defaulting to 'confirm_before_commit'."""
+    raw = str((config or {}).get("commit_policy") or "").strip()
+    if raw in VALID_COMMIT_POLICIES:
+        return raw
+    return "confirm_before_commit"
+
+
 def load_team_config(repo_root: Path) -> dict:
     cfg_path = get_config_path(repo_root)
     if not cfg_path.exists():
@@ -400,6 +417,8 @@ def load_team_config(repo_root: Path) -> dict:
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
         merged = json.loads(json.dumps(DEFAULT_TEAM_CONFIG))
         merged.update(data)
+        merged["commit_policy"] = get_effective_commit_policy(merged)
+        merged["commit_message_pattern"] = str(merged.get("commit_message_pattern") or "")
         merged["roles"] = {**DEFAULT_TEAM_CONFIG["roles"], **data.get("roles", {})}
         merged["status_mapping"] = {**DEFAULT_TEAM_CONFIG["status_mapping"], **data.get("status_mapping", {})}
         merged["issue_type_mapping"] = {
@@ -413,6 +432,77 @@ def load_team_config(repo_root: Path) -> dict:
         return merged
     except Exception as exc:
         raise ValueError(f"Invalid team-config.json at {cfg_path}: {exc}") from exc
+
+
+def _read_git_commit_message(repo_root: Path, commit_sha: str) -> str:
+    """Safely read full commit message for commit_sha via git log; returns '' on error/unavailable."""
+    sha = str(commit_sha or "").strip()
+    if not sha or sha == "unknown" or sha.startswith("-"):
+        return ""
+    try:
+        res = subprocess.run(
+            ["git", "log", "-1", "--format=%B", sha, "--"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _validate_commit_message(commit_msg: str, story_key: str, subtask_keys: list, config: dict) -> list:
+    """
+    Perform strictly non-blocking commit message validation against optional team-config.json
+    `commit_message_pattern` regex and Jira Story / Sub-task key traceability.
+    Always returns a list of warning strings (empty list when clean or unavailable).
+    """
+    warnings = []
+    pattern = str((config or {}).get("commit_message_pattern") or "").strip()
+    compiled = None
+    if pattern:
+        try:
+            compiled = re.compile(pattern, re.MULTILINE)
+        except re.error as exc:
+            warnings.append(
+                f"Invalid commit_message_pattern regex in team-config.json ({pattern!r}): {exc}"
+            )
+
+    msg = str(commit_msg or "").strip()
+    if not msg:
+        return warnings
+
+    if compiled is not None and not compiled.search(msg):
+        first_line = msg.splitlines()[0] if msg.splitlines() else msg
+        warnings.append(
+            f"Commit message '{first_line}' does not match configured commit_message_pattern "
+            f"({pattern!r}). Check docs/shared/engineering-standards.md §4 (or AGENTS.md)."
+        )
+
+    msg_lower = msg.lower()
+    norm_story = str(story_key or "").strip()
+    if norm_story and norm_story.lower() not in msg_lower:
+        warnings.append(
+            f"Commit message is missing parent Jira Story key '{norm_story}'. "
+            f"Include '{norm_story}' for Jira Development Panel traceability."
+        )
+
+    seen_sub = set()
+    for raw_sub in subtask_keys or []:
+        sub_key = str(raw_sub or "").strip()
+        if not sub_key or sub_key.lower() in seen_sub:
+            continue
+        seen_sub.add(sub_key.lower())
+        if sub_key.lower() not in msg_lower:
+            warnings.append(
+                f"Commit message is missing Jira Sub-task key '{sub_key}'. "
+                f"Include both '{norm_story or '<STORY-KEY>'}' and '{sub_key}' so Jira Development Panel links commits to this Sub-task."
+            )
+
+    return warnings
 
 
 def _detect_git_head_commit(repo_root: Path) -> str:
@@ -2906,11 +2996,25 @@ def extract_and_trim_agents_md(agents_path: Path, standards_path: Path) -> dict:
         "testing standard",
         "testing rule",
         "architecture rule",
+        "commit",
+        "git commit",
+        "commit message",
+        "conventional commit",
+        "pull request",
+        "pr and commit",
+        "git workflow",
+        "git convention",
+        "branching",
         "規範",
         "安全",
         "測試標準",
         "編碼規範",
         "工程標準",
+        "提交",
+        "分支",
+    )
+    standards_word_patterns = (
+        re.compile(r"(?<![a-z0-9])pr(?![a-z0-9])", re.IGNORECASE),
     )
 
     matches = _find_markdown_headings_outside_fences(agents_text)
@@ -2933,7 +3037,11 @@ def extract_and_trim_agents_md(agents_path: Path, standards_path: Path) -> dict:
 
         section_body = agents_text[start:end]
         is_pointer_section = AGENTS_STANDARDS_POINTER_MARKER in section_body
-        if not is_pointer_section and any(k in title.lower() for k in standards_keywords):
+        title_lower = title.lower()
+        is_standards_heading = any(k in title_lower for k in standards_keywords) or any(
+            p.search(title) for p in standards_word_patterns
+        )
+        if not is_pointer_section and is_standards_heading:
             keep_ranges.append((last_idx, start))
             extracted_blocks.append(section_body.strip())
             last_idx = end
@@ -3693,6 +3801,10 @@ def cmd_init(args) -> int:
         cfg["jira_base_url"] = args.jira_url.strip().rstrip("/")
     if getattr(args, "language", None):
         cfg["language"] = args.language.strip()
+    if getattr(args, "commit_policy", None):
+        cfg["commit_policy"] = args.commit_policy.strip()
+    if getattr(args, "commit_message_pattern", None) is not None:
+        cfg["commit_message_pattern"] = args.commit_message_pattern.strip()
     if args.roles_json:
         custom_roles = load_json_arg(args.roles_json)
         if isinstance(custom_roles, dict):
@@ -3952,6 +4064,7 @@ def cmd_init(args) -> int:
         "project_key": cfg["project_key"],
         "jira_base_url": cfg.get("jira_base_url", ""),
         "jira_mode": "live" if client.is_live else "offline",
+        "commit_policy": get_effective_commit_policy(cfg),
         "credentials_configured": has_creds,
         "credentials_path": (
             str(cred_saved_path.relative_to(repo_root))
@@ -4338,9 +4451,12 @@ def cmd_status(args) -> int:
 
         story = load_active_story(repo_root, jira_key, client=client)
         rec = evaluate_story_next_step(story, config, standards_exists)
+        eff_commit_policy = get_effective_commit_policy(config)
         rec["initialized"] = True
         rec["standards_exists"] = standards_exists
         rec["story_found"] = True
+        rec["commit_policy"] = eff_commit_policy
+        rec["requires_commit_confirmation"] = eff_commit_policy == "confirm_before_commit"
         if rec.get("recommended_skill") == "team-qa":
             rec["qa_identity_guardrail"] = _build_qa_identity_guardrail(repo_root, config, story=story)
         if creds_missing:
@@ -4449,9 +4565,12 @@ def cmd_status(args) -> int:
 
     story = load_active_story(repo_root, active_files[0].stem, client=client, reconcile=True)
     rec = evaluate_story_next_step(story, config, standards_exists)
+    eff_commit_policy = get_effective_commit_policy(config)
     rec["initialized"] = True
     rec["standards_exists"] = standards_exists
     rec["story_found"] = True
+    rec["commit_policy"] = eff_commit_policy
+    rec["requires_commit_confirmation"] = eff_commit_policy == "confirm_before_commit"
     if rec.get("recommended_skill") == "team-qa":
         rec["qa_identity_guardrail"] = _build_qa_identity_guardrail(repo_root, config, story=story)
     if creds_missing:
@@ -4949,6 +5068,104 @@ def _resolve_task_developer(
     return resolve_story_role_person(config, story, "developer")
 
 
+def _normalize_implementation_steps(raw_steps) -> list:
+    """Normalize optional implementation_steps (list of strings or multi-line string) into clean list."""
+    if not raw_steps:
+        return []
+    if isinstance(raw_steps, str):
+        raw_items = raw_steps.splitlines()
+    elif isinstance(raw_steps, list):
+        raw_items = raw_steps
+    else:
+        raw_items = [str(raw_steps)]
+    cleaned = []
+    for item in raw_items:
+        s = str(item or "").strip()
+        if not s:
+            continue
+        if s.startswith("- ") or s.startswith("* "):
+            s = s[2:].strip()
+        if s:
+            cleaned.append(s)
+    return cleaned
+
+
+def _normalize_string_list(raw_val) -> list:
+    """Normalize a list of strings or comma-separated string into a clean list of non-empty strings."""
+    if not raw_val:
+        return []
+    if isinstance(raw_val, str):
+        return [x.strip() for x in raw_val.split(",") if x.strip()]
+    if isinstance(raw_val, list):
+        return [str(x).strip() for x in raw_val if str(x).strip()]
+    return [str(raw_val).strip()] if str(raw_val).strip() else []
+
+
+def format_subtask_description(
+    t_id: str,
+    task_dev: dict,
+    ac_cov: list,
+    deps: list,
+    verif: str,
+    zh: bool = True,
+    description: str = "",
+    implementation_steps: list = None,
+    files: list = None,
+) -> str:
+    """Render rich Markdown description for a Jira Sub-task (converted to ADF via text_to_adf)."""
+    desc_text = str(description or "").strip()
+    steps = _normalize_implementation_steps(implementation_steps)
+    file_list = _normalize_string_list(files)
+    verif_str = str(verif or "").strip()
+    verif_fmt = f"`{verif_str}`" if (verif_str and "`" not in verif_str) else verif_str
+
+    if zh:
+        lines = [
+            f"任務編號：{t_id}",
+            f"負責人：{format_person_badge('developer', task_dev)}",
+            f"涵蓋驗收條件：{', '.join(ac_cov) if ac_cov else '前置基礎建設 (Enabling work)'}",
+            f"前置依賴任務：{', '.join(deps) if deps else '無'}",
+        ]
+        if desc_text or steps:
+            lines.append("")
+            lines.append("### 實施說明與步驟 (Implementation Steps)")
+            if desc_text:
+                lines.append(desc_text)
+            for step in steps:
+                lines.append(f"- {step}")
+        if file_list:
+            lines.append("")
+            lines.append("### 目標檔案 (Target Files)")
+            for fpath in file_list:
+                lines.append(f"- `{fpath}`" if "`" not in fpath else f"- {fpath}")
+        if desc_text or steps or file_list:
+            lines.append("")
+        lines.append(f"驗證方式：{verif_fmt}")
+    else:
+        lines = [
+            f"Task ID: {t_id}",
+            f"Owner: {format_person_badge('developer', task_dev)}",
+            f"Covers AC: {', '.join(ac_cov) if ac_cov else 'Enabling work'}",
+            f"Depends on: {', '.join(deps) if deps else 'None'}",
+        ]
+        if desc_text or steps:
+            lines.append("")
+            lines.append("### Implementation Details & Steps")
+            if desc_text:
+                lines.append(desc_text)
+            for step in steps:
+                lines.append(f"- {step}")
+        if file_list:
+            lines.append("")
+            lines.append("### Target Files")
+            for fpath in file_list:
+                lines.append(f"- `{fpath}`" if "`" not in fpath else f"- {fpath}")
+        if desc_text or steps or file_list:
+            lines.append("")
+        lines.append(f"Verification: {verif_fmt}")
+    return "\n".join(lines)
+
+
 def cmd_create_subtasks(args) -> int:
     repo_root = Path(args.repo_root).resolve()
     config = load_team_config(repo_root)
@@ -5043,7 +5260,11 @@ def cmd_create_subtasks(args) -> int:
         ac_cov = item.get("ac_coverage") or prev.get("ac_coverage") or []
         deps = [str(d).strip().upper() for d in (item.get("depends_on") or prev.get("depends_on") or []) if str(d).strip()]
         verif = item.get("verification") or prev.get("verification") or "Run automated tests"
-        files = item.get("files") or prev.get("files") or []
+        files = _normalize_string_list(item.get("files") if "files" in item else prev.get("files"))
+        desc_text = str(item.get("description") if "description" in item else (prev.get("description") or "")).strip()
+        impl_steps = _normalize_implementation_steps(
+            item.get("implementation_steps") if "implementation_steps" in item else prev.get("implementation_steps")
+        )
 
         raw_item_ass = item.get("assignee")
         item_sel = (
@@ -5066,22 +5287,17 @@ def cmd_create_subtasks(args) -> int:
             prev_assignee=prev.get("assignee"),
         )
 
-        if zh:
-            desc_md = (
-                f"任務編號：{t_id}\n"
-                f"負責人：{format_person_badge('developer', task_dev)}\n"
-                f"涵蓋驗收條件：{', '.join(ac_cov) if ac_cov else '前置基礎建設 (Enabling work)'}\n"
-                f"前置依賴任務：{', '.join(deps) if deps else '無'}\n"
-                f"驗證方式：{verif}"
-            )
-        else:
-            desc_md = (
-                f"Task ID: {t_id}\n"
-                f"Owner: {format_person_badge('developer', task_dev)}\n"
-                f"Covers AC: {', '.join(ac_cov) if ac_cov else 'Enabling work'}\n"
-                f"Depends on: {', '.join(deps) if deps else 'None'}\n"
-                f"Verification: {verif}"
-            )
+        desc_md = format_subtask_description(
+            t_id=t_id,
+            task_dev=task_dev,
+            ac_cov=ac_cov,
+            deps=deps,
+            verif=verif,
+            zh=zh,
+            description=desc_text,
+            implementation_steps=impl_steps,
+            files=files,
+        )
 
         sub_key = prev.get("jira_subtask_key") or client.create_subtask(jira_key, f"[{t_id}] {title}", desc_md, idx)
         if task_dev.get("jira_account_id"):
@@ -5091,6 +5307,8 @@ def cmd_create_subtasks(args) -> int:
             "id": t_id,
             "jira_subtask_key": sub_key,
             "title": title,
+            "description": desc_text,
+            "implementation_steps": impl_steps,
             "ac_coverage": ac_cov,
             "depends_on": deps,
             "files": files,
@@ -5113,11 +5331,14 @@ def cmd_create_subtasks(args) -> int:
     story["tasks"] = normalized_tasks
     story["station"] = "dev"
     saved_path = save_active_story(repo_root, jira_key, story, client=client)
+    eff_commit_policy = get_effective_commit_policy(config)
     out = {
         "ok": True,
         "action": "create-subtasks",
         "jira_key": jira_key,
         "task_count": len(normalized_tasks),
+        "commit_policy": eff_commit_policy,
+        "requires_commit_confirmation": eff_commit_policy == "confirm_before_commit",
         "subtasks": [
             {
                 "id": t["id"],
@@ -5186,22 +5407,15 @@ def cmd_complete_task(args) -> int:
             for idx, tid in enumerate(task_like_ids, start=1):
                 norm_tid = tid.upper()
                 title = story.get("title") or "Implement Story"
-                if zh:
-                    desc_md = (
-                        f"任務編號：{norm_tid}\n"
-                        f"負責人：{format_person_badge('developer', acting_dev)}\n"
-                        f"涵蓋驗收條件：{', '.join(all_ac_ids)}\n"
-                        f"前置依賴任務：無\n"
-                        f"驗證方式：{test_result}"
-                    )
-                else:
-                    desc_md = (
-                        f"Task ID: {norm_tid}\n"
-                        f"Owner: {format_person_badge('developer', acting_dev)}\n"
-                        f"Covers AC: {', '.join(all_ac_ids)}\n"
-                        f"Depends on: None\n"
-                        f"Verification: {test_result}"
-                    )
+                desc_md = format_subtask_description(
+                    t_id=norm_tid,
+                    task_dev=acting_dev,
+                    ac_cov=all_ac_ids,
+                    deps=[],
+                    verif=test_result,
+                    zh=zh,
+                    files=changed_files,
+                )
                 sub_key = client.create_subtask(jira_key, f"[{norm_tid}] {title}", desc_md, idx)
                 if acting_dev.get("jira_account_id"):
                     safe_assign_issue(client, sub_key, acting_dev["jira_account_id"])
@@ -5352,6 +5566,22 @@ def cmd_complete_task(args) -> int:
         and f.get("status", "open") == "open"
     ]
 
+    completed_subtask_keys = []
+    for _, matched_item, item_kind in resolved_targets:
+        if item_kind == "task":
+            sk = str(matched_item.get("jira_subtask_key") or "").strip()
+            if sk and sk not in completed_subtask_keys:
+                completed_subtask_keys.append(sk)
+
+    commit_msg = _read_git_commit_message(repo_root, commit_sha)
+    commit_message_warnings = _validate_commit_message(
+        commit_msg=commit_msg,
+        story_key=jira_key,
+        subtask_keys=completed_subtask_keys,
+        config=config,
+    )
+    eff_commit_policy = get_effective_commit_policy(config)
+
     ready_for_review = (
         len(remaining_tasks) == 0
         and len(remaining_bugs) == 0
@@ -5367,6 +5597,8 @@ def cmd_complete_task(args) -> int:
         "kind": primary_kind,
         "fast_track": fast_tracked,
         "commit": commit_sha,
+        "commit_policy": eff_commit_policy,
+        "commit_message_warnings": commit_message_warnings,
         "changed_files": changed_files,
         "remaining_tasks": remaining_tasks,
         "remaining_bugs": remaining_bugs,
@@ -6898,6 +7130,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--role", help="Comma-separated role(s) owned by the current user (e.g. 'pm,tech_lead,developer'); leaves remaining roles unclaimed for teammates")
     p_init.add_argument("--specialty", default=None, help="Optional specialty tag for multi-member roles (e.g. 'backend', 'frontend', 'mobile', 'devops')")
     p_init.add_argument("--language", choices=["zh-TW", "en"], default=None, help="Default prose language for Jira comments and descriptions (default: zh-TW)")
+    p_init.add_argument("--commit-policy", choices=list(VALID_COMMIT_POLICIES), default=None, help="Commit confirmation policy ('confirm_before_commit' default or 'auto_on_test_pass' opt-in)")
+    p_init.add_argument("--commit-message-pattern", default=None, help="Optional regex for non-blocking commit message format validation in complete-task")
     p_init.add_argument("--name", help="Display name for the role(s) claimed via --role (auto-resolved from Jira /myself if omitted)")
     p_init.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for Jira URL, project key, account email, API token, and role mappings")
     p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")

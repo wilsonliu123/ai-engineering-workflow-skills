@@ -30,7 +30,7 @@ Read `references/common-workflow-governance.md` and `references/review-method.md
 Follow `references/review-method.md` to evaluate:
 1. **Axis 1 — Requirement & AC-by-AC Traceability:** Does the implementation satisfy **every single `AC-001..N`** (checked one by one against concrete functions/files and automated tests) without unapproved scope creep or missing boundary handling?
 2. **Axis 2 — Architecture & Design Conformance:** Does the code honor the Story's design summary, conditional UI states (`has_ui`), API contracts (`has_api`), and any referenced `docs/shared/adr/`?
-3. **Axis 3 — Engineering Standards & Security:** Are authz checks, input validation, injection/XSS protections, error handling, and automated test coverage sound?
+3. **Axis 3 — Engineering Standards, Security & Commit Message Compliance:** Are authz checks, input validation, injection/XSS protections, error handling, and automated test coverage sound? Also inspect candidate commit message(s) (`git log -1 --format=%B <candidate_commit>` / task commits) against `docs/shared/engineering-standards.md` §4 (fallback: project `AGENTS.md`) to verify adherence to the project's Commit template and inclusion of both `<STORY-KEY>` and `<SUBTASK-KEY>` whenever a Jira Sub-task exists (flag non-compliance as a `minor` finding or commit-amend recommendation without hardcoding any single format).
 4. **QA External Tool & Environment Hints:** In the handoff `--summary`, explicitly call out any scenarios that cannot be verified by local unit tests alone and require `external` tools (e.g., Playwright/Cypress E2E, Postman/Newman, Staging webhook/OAuth sandbox, JMeter) or `manual` visual checks in Station 3b (`team-qa`).
 
 Apply **"抓大放小"**:

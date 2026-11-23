@@ -12,7 +12,7 @@ Station 3a combines what was previously two separate documents (`dev-delivery.md
 2. **Three-Axis Verification (Code Review):**
    - **AC-by-AC Traceability:** Every `AC-001..N` explicitly mapped to implementing code locations and test cases (any unimplemented AC is an automatic `major` or `blocker` finding).
    - **Design Conformance:** Boundaries, API contracts, UI states, and data safety.
-   - **Standards & Security:** Compliance with `docs/shared/engineering-standards.md` (or `AGENTS.md` fallback).
+   - **Standards, Security & Commit Message Compliance (Axis 3):** Compliance with `docs/shared/engineering-standards.md` (or `AGENTS.md` fallback), including checking candidate commit message(s) (`git log -1 --format=%B <candidate_commit>` and completed task commits) against `docs/shared/engineering-standards.md` §4 (fallback: `AGENTS.md`) for project Commit format adherence and dual Jira key traceability (`<STORY-KEY>` + `<SUBTASK-KEY>` when a Jira Sub-task exists). Do not impose an unapproved generic commit format; flag project-standard deviations or missing `<SUBTASK-KEY>` as a `minor` finding or amend recommendation.
 
 ---
 
