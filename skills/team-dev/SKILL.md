@@ -49,9 +49,10 @@ If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-
    - **Priority 3 (Open Review Findings `REV-###`):** When `review.status == "changes-requested"`, remediate all open `blocker`/`major` findings in `review.findings` (such as `REV-001`).
 2. **Minimal Context Loading (Token & Focus Hygiene):**
    - Read **only**:
-     1. `AGENTS.md` and `docs/shared/engineering-standards.md`
+     1. `AGENTS.md`, `docs/shared/engineering-standards.md`, and `.ai-workflow/team-config.json` (`delivery_pipeline.integration_branch` when configured)
      2. The active item (`BUG-*`, `TASK-###`, or `REV-###`) and its linked `AC-*` / design section in `.ai-workflow/active/<JIRA-KEY>.json`
      3. The specific source and test files touched by this task.
+   - **Base Branch Alignment (`delivery_pipeline.integration_branch`):** When `delivery_pipeline.integration_branch` is configured in `.ai-workflow/team-config.json` (and surfaced by `jira_sync.py status` as `integration_branch` / `base_branch`), always cut feature branches from, diff against, and verify commits relative to `integration_branch` (falling back to `main`/`master` when unconfigured). Never auto-merge branches or auto-create deployment tags.
    - Do not load unrelated feature histories or full repository dumps.
 3. **Compose Specialist Craft Skills & Pass the Exit Gate:**
    - **Bring-Your-Own-Skill Hook:** `team-dev` orchestrates task selection, spec alignment, and Jira check-off — it does not replace domain coding skills. Before writing code, actively load and apply any matching specialist skill available in the developer's environment (for example TDD / evidence-first coding, frontend UI/UX design, React/Go/Python framework guidance, or testing patterns) or explicitly named by the developer, alongside `docs/shared/engineering-standards.md` (fallback: `AGENTS.md`).
@@ -59,7 +60,7 @@ If no mode is specified by the user, infer `plan` if `.ai-workflow/active/<JIRA-
      1. **Module reuse:** Existing project helpers, types, and config constants are reused without duplicate implementations or hardcoded environment values.
      2. **Red-to-Green boundary tests:** Automated tests verify both the happy path and at least one boundary/error case for every linked `AC-*` (including `TC-###` IDs in test names when planned).
      3. **Change-surface completeness:** `has_api`/`has_data` changes enforce AuthN/AuthZ, input validation, and transactional integrity; `has_ui` changes implement `Normal`, `Loading`, `Empty`, and `Error` states from `design.ui_spec`.
-     4. **Clean verification & static checks:** Both the verification test command and the repository's typecheck/linter command exit `0`.
+     4. **Clean verification & CI-mirrored local static checks:** Both the verification test command and the repository's CI-mirrored local lint/typecheck/test commands recorded in `docs/shared/engineering-standards.md` (e.g., `swiftlint`, `fastlane test`, `pytest`, `npm test`) exit `0` — this is especially critical when CI pipelines only run full tests on dedicated integration/tag branches rather than on feature MRs.
      5. **Commit Format Compliance & Dual Jira Key Traceability:** Before `git commit`, read `docs/shared/engineering-standards.md` §4 (fallback: project `AGENTS.md`) and strictly follow the project's declared Commit Message template and language conventions — never substitute an unapproved format. Whenever the task has a `jira_subtask_key`, include **both `<STORY-KEY>` and `<SUBTASK-KEY>`** in the commit message (in the subject if compatible with the project template, or in the commit body/trailer otherwise) so Jira's Development Panel links commits to both parent Story and Sub-task.
 4. **Stop & Escalate Conditions (Spec Gap Escalation Loop):**
    - Stop and ask the user if implementation uncovers a missing edge-case `AC-*`, requires contradicting an approved `AC-*`, breaks a public API contract, or introduces an unapproved destructive migration.

@@ -56,16 +56,16 @@ Follow this strict priority order (matching `jira_sync.py status`):
 | **6** | Code review requested changes (`review.status == "changes-requested"`) | `team-dev` (`implement` mode) | `developer` |
 | **7** | All `tasks` completed, `review.status != "approved"`, or `reviewed_commit != candidate_commit` | `team-review` | `reviewer` |
 | **8** | Review approved, but `qa.test_cases` (`TC-001..N`) not planned yet *(still allowed in parallel even when `awaiting_qa_deploy: true`)* | `team-qa` (`plan` mode) | `qa` |
-| **8b** | `qa_handoff_mode == "gated_by_deploy"`, Review approved, `TC-*` planned, and `awaiting_qa_deploy: true` (Jira still in `dev_done` / not yet `in_qa`) | **Wait for QA Deploy** (`CI/CD -> in_qa` + `pull`/`status`, or `jira_sync.py promote-qa --key <KEY>`) — gates `team-qa (verify)` | `developer` |
+| **8b** | `qa_handoff_mode == "gated_by_deploy"`, Review approved, `TC-*` planned, and `awaiting_qa_deploy: true` (Jira still in `dev_done` / not yet `in_qa`) | **Wait for QA Deploy** (`CI/CD -> in_qa` + `pull`/`status`, or `jira_sync.py promote-qa --key <KEY> --deploy-ref "<ref>"`; surfaces `qa_deploy_hint` when `delivery_pipeline.environments.qa` is configured, strictly keeping `can_auto_chain_next_station: false` and never auto-tagging/auto-merging) — gates `team-qa (verify)` | `developer` |
 | **9** | Review approved, QA deploy unblocked (if gated), & `TC-*` planned, but `qa.status != "passed"` or `tested_commit != candidate_commit` | `team-qa` (`verify` mode — surfaces `pending_automated_tcs`, `pending_external_tcs`, and `pending_manual_tcs`; use `team-qa` `triage` mode for human-authorized `Not a Bug`/`Won't Fix`/`Duplicate`/`Cannot Reproduce` bugs) | `qa` |
-| **10** | Spec approved + Tasks completed + Review approved + QA passed (all TCs `pass` or audited `waived`/`not-applicable`) + 0 open Bugs + commits aligned | `team-release` | `release_manager` |
+| **10** | Spec approved + Tasks completed + Review approved + QA passed (all TCs `pass` or audited `waived`/`not-applicable`) + 0 open Bugs + commits aligned | `team-release` *(surfaces non-blocking `release_checklist_reminders` when `delivery_pipeline` configures UAT or a distinct `production_branch`)* | `release_manager` |
 | **11** | Jira Story is already `Done` (`.ai-workflow/active/<JIRA-KEY>.json` removed) OR standalone Bug closed via Bug Triage (`triage_closed: true`) | No remaining action for this Story / Bug | — |
 
 ### 3. Parallel & fallback rules
 
 - **QA Plan Parallelism:** Once `team-spec` is approved, `team-qa` (`plan` mode) can run in parallel with `team-dev` (`plan` and `implement` modes). Development never blocks waiting for QA test case planning.
 - **Engineering Standards Fallback:** If `docs/shared/engineering-standards.md` is missing during `team-review`, note that `team-review` will fall back to `AGENTS.md` (or recommend `team-init` if the team wants to extract `docs/shared/engineering-standards.md` first).
-- **Candidate Commit Drift:** If product code changed (`candidate_commit` updated) after `team-review` or `team-qa` passed, flag the commit mismatch (`reviewed_commit` / `tested_commit` vs `candidate_commit`) and route back to `team-review` / `team-qa` (`verify` mode) before allowing `team-release`.
+- **Candidate Commit Drift & Integration Branch Context:** If product code changed (`candidate_commit` updated) after `team-review` or `team-qa` passed, flag the commit mismatch (`reviewed_commit` / `tested_commit` vs `candidate_commit`) and route back to `team-review` / `team-qa` (`verify` mode) before allowing `team-release`. When `delivery_pipeline.integration_branch` is configured in `.ai-workflow/team-config.json`, `status` exposes `integration_branch` and `base_branch` so `team-dev` and `team-review` branch and diff against the right integration branch.
 
 ## Output Format
 

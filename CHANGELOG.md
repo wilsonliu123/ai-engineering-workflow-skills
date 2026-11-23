@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.6.0 — 2026-11-23 — CI/CD Delivery Pipeline Alignment (Phase A)
+
+- **Optional `delivery_pipeline` Schema & Pure-Stdlib CI Auto-Detection (`team-init` / `jira_sync.py`):**
+  - Added optional `delivery_pipeline` block (`integration_branch`, `production_branch`, `environments`, `jira_deployment_sync`) with safe empty defaults in `team-config-template.json` and `DEFAULT_TEAM_CONFIG`, sanitized via `_sanitize_delivery_pipeline()` (strict git ref validation, `"branch"`/`"tag"` trigger allowlist, strict boolean parsing so `"false"`/`"0"`/`"no"` never evaluate truthy, and zero literal `"None"` leaks).
+  - Added pure-stdlib `_detect_ci_delivery_pipeline(repo_root)` scanning `.gitlab-ci.yml` and `.github/workflows/*.yml|*.yaml` (resilient to binary, invalid UTF-8, unreadable, or malformed files) to detect `deployment_tier` (`development`/`testing`/`staging`/`production`), branch/tag triggers (`qa-*`, `uat-*`, `release`/`develop`/`main`), `jira_deployment_sync`, deduplicated local lint/test check hints (`detected_ci_checks`), and `suggested_qa_handoff_mode` (`"gated_by_deploy"` when a dedicated QA/testing deploy trigger exists).
+  - Surfaced `detected_delivery_pipeline`, `detected_ci_checks`, and `suggested_qa_handoff_mode` in `init --inspect` and `init`, and added optional additive flags on `init` (`--integration-branch`, `--production-branch`, `--qa-tag-prefix`, `--uat-tag-prefix`, `--jira-deployment-sync`).
+- **Integration Branch Base-Branch Resolution (`team-dev`, `team-review`, `status`):**
+  - Added `_resolve_base_branch(repo_root, config)` honoring `delivery_pipeline.integration_branch` when configured (with graceful local-ref fallback to `main`/`master`) and wired it into `_detect_git_changed_files` and `status` (`integration_branch` / `base_branch` exposed only when configured).
+  - Updated `team-dev` (including CI-mirrored local lint/test checks in the 5-check exit gate) and `team-review` to branch from and diff against `integration_branch` when configured.
+- **QA Deploy Ref Traceability & Natural-Language `qa_deploy_hint` (`promote-qa`, `record-qa`, `status`):**
+  - Added `--deploy-ref` (alongside `--environment`) on `promote-qa` and `--deploy-ref` on `record-qa --mode verify`, persisting `deploy_ref`/`environment` on `story["qa_deploy_gate"]` and `verified_deploy_ref` on `story["qa"]` (inheriting from aligned `qa_deploy_gate.deploy_ref` when omitted, rendering valid ADF in Jira comments, preserving/updating metadata cleanly on idempotent `promote-qa` without duplicate Jira mutations, and clearing stale `deploy_ref`/`environment` on new `candidate_commit` review cycles).
+  - Added `qa_deploy_hint` in `evaluate_story_next_step` when `awaiting_qa_deploy` with configured `delivery_pipeline.environments.qa` (tag or branch trigger), strictly upholding `can_auto_chain_next_station: false`, `requires_user_confirmation_for_next_station: true`, and zero AI auto-tagging/auto-merging.
+- **Lightweight Non-Blocking Multi-Stage Release Reminders (`team-release`, `close-story`, `status`):**
+  - Emitted strictly non-blocking `release_checklist_reminders` in `evaluate_story_next_step` (Station 4) and `close-story` whenever `delivery_pipeline` configures a `uat`/`staging` environment or a `production_branch` distinct from `integration_branch` (`[]` when unconfigured; never blocks `close-story` and introduces no UAT state machine).
+- **Verification & Backward Compatibility:** 100% backward compatible for projects without `delivery_pipeline`; expanded `tools/test_workflow.py` to 37 tests across 8 byte-identical skill bundles (`./tools/check_shared.sh` 8/8 OK).
+
 ## v1.5.0 — 2026-11-23 — Existing-Story Spec Backfill & Platform-Neutral Epic Decomposition
 
 - **Existing-Story Backfill Mode & `has_data` Clarification (PR #17, Issue #2 scoped):**
