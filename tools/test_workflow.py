@@ -6474,6 +6474,26 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertEqual(r_no_inject.returncode, 0, r_no_inject.stderr)
                 self.assertNotIn("qa_deploy_gate", json.loads((active_dir / "PRB-2.json").read_text(encoding="utf-8")))
 
+                # P1-R2-1: Nested spec.spec_status="approved" / "APPROVED" rejected with exit 1 & zero writes;
+                # nested spec.spec_status="draft" stripped from story["spec"] and preserves top-level approved status
+                for bad_nested in ('{"spec":{"spec_status":"approved"}}', '{"spec":{"spec_status":"APPROVED"}}'):
+                    MockJiraHandler.requests_log.clear()
+                    before_prb2 = (active_dir / "PRB-2.json").read_text(encoding="utf-8")
+                    r_bad_nested = run_cli(root, "sync-story", "--key", "PRB-2", "--backfill", "--spec-json", bad_nested)
+                    self.assertNotEqual(r_bad_nested.returncode, 0)
+                    self.assertEqual(MockJiraHandler.requests_log, [])
+                    self.assertEqual((active_dir / "PRB-2.json").read_text(encoding="utf-8"), before_prb2)
+
+                r_nested_draft = run_cli(
+                    root, "sync-story", "--key", "PRB-1", "--backfill",
+                    "--spec-json", '{"spec":{"spec_status":"draft","risks":"Nested draft test"}}',
+                )
+                self.assertEqual(r_nested_draft.returncode, 0, r_nested_draft.stderr)
+                prb1_after_nested = json.loads((active_dir / "PRB-1.json").read_text(encoding="utf-8"))
+                self.assertEqual(prb1_after_nested["spec_status"], "approved")
+                self.assertNotIn("spec_status", prb1_after_nested.get("spec") or {})
+                self.assertEqual((prb1_after_nested.get("spec") or {}).get("risks"), "Nested draft test")
+
                 # P2-6: Standalone --preserve-owner --status approved emits backfill_stage="spec_approved"
                 (active_dir / "PRB-PO.json").write_text(json.dumps({
                     "jira_key": "PRB-PO",

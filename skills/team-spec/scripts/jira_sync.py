@@ -6343,7 +6343,15 @@ def cmd_sync_story(args) -> int:
             print(f"ERROR: Malformed --spec-json: {exc}", file=sys.stderr)
             return 1
         if isinstance(spec_payload, dict):
-            if backfill_mode and str(spec_payload.get("spec_status") or "").strip().lower() == "approved":
+            nested_spec_status = (
+                spec_payload["spec"].get("spec_status")
+                if isinstance(spec_payload.get("spec"), dict)
+                else None
+            )
+            if backfill_mode and (
+                str(spec_payload.get("spec_status") or "").strip().lower() == "approved"
+                or str(nested_spec_status or "").strip().lower() == "approved"
+            ):
                 print(
                     "ERROR: --backfill cannot approve a spec (spec_status='approved' in --spec-json is rejected).",
                     file=sys.stderr,
@@ -6477,10 +6485,14 @@ def cmd_sync_story(args) -> int:
         sp_spec = sp_copy.pop("spec", None)
         story.update(sp_copy)
         if isinstance(sp_spec, dict):
+            sp_spec_clean = dict(sp_spec)
+            if preserve_owner:
+                for protected_k in _PRESERVED_LIFECYCLE_FIELDS:
+                    sp_spec_clean.pop(protected_k, None)
             story_spec = story.setdefault("spec", {}) if isinstance(story.get("spec"), dict) else {}
             if not isinstance(story.get("spec"), dict):
                 story["spec"] = story_spec
-            story_spec.update(sp_spec)
+            story_spec.update(sp_spec_clean)
         if preserve_owner:
             for pf in _PRESERVED_LIFECYCLE_FIELDS:
                 if pf in preserved_snapshot:
