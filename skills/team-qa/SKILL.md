@@ -123,7 +123,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . record-qa --inspect [--key "
        [--attach "<path/to/screenshot.png>" --attach "<path/to/trace.webm>"] \
        [--commit "<tested-commit-sha>"]
      ```
-     `create-bug` validates attachment safety (`<= 32 MiB`, non-empty, rejects credential files), links the Bug to `<JIRA-KEY>`, uploads all media evidence to the **Jira `Bug` ticket's Attachments** (`POST /rest/api/3/issue/{bugKey}/attachments`), **and when `qa_test_backend == "qase"`, also syncs those media attachments to Qase** (`POST /v1/attachment/{code}` -> Qase Test Run Result & Qase Defect `POST /v1/defect/{code}`, deduplicating cached hashes). It then traces `tc_id -> ac_id -> TASK-###` to assign the `Bug` directly to the owning Developer, transitions the Story back to `In Progress`, and notifies that developer with `@mention` in Traditional Chinese so `$team-dev` (`implement` mode) can fix it.
+     `create-bug` validates attachment safety (`<= 32 MiB`, non-empty, rejects credential files), links the Bug to `<JIRA-KEY>`, uploads all media evidence to the **Jira `Bug` ticket's Attachments** (`POST /rest/api/3/issue/{bugKey}/attachments`), **and when `qa_test_backend == "qase"`, also syncs those media attachments to Qase** (`POST /v1/attachment/{code}` -> Qase Test Run Result & Qase Defect `POST /v1/defect/{code}`, deduplicating cached hashes). It then traces `tc_id -> ac_id -> TASK-###` to assign the `Bug` directly to the owning Developer, transitions the Story back to `In Progress`, and notifies that developer with `@mention` in Traditional Chinese so `$team-dev` (`implement` mode) can fix it. Enforce the same SoD handoff rule (`qa -> developer`): if `same_person: false` (`cross_person_clean_stop: true`), report the filed Bug and handoff target (`to_person` / `target_jira_status`) and perform **Clean Stop** without prompting `/team-dev`; if `same_person: true`, ask one short question whether to proceed to `$team-dev` and **STOP**.
    - **If All Tests Pass (`qa_status: "passed"` and 0 open Bugs):**
      `record-qa --mode verify` automatically records the verification results (creating a Qase Test Run, submitting bulk results, completing the Run, and resolving any standalone-bug Qase Defect when `qa_test_backend == "qase"`, or posting the full AC/TC table when `qa_test_backend == "jira-comment"`) and executes a role-aware handoff to `release_manager` (`can_auto_chain_next_station: false`, `requires_user_confirmation_for_next_station: true`):
      - **Different person (`qa` != `release_manager`, `same_person: false`, `cross_person_clean_stop: true`, `next_station_prompt_allowed: false`):** Transitions to `Ready for Release` + `@mention`s `release_manager`. Enforce **Clean Stop** — report the QA pass summary and handoff target (`to_person` / `target_jira_status`) and **strictly forbid** prompting or suggesting `/team-release` or `close-story`.
@@ -149,7 +149,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
   --actual "<Actual observed behavior>" \
   [--attach "<path/to/screenshot.png>"]
 ```
-- Automatically appends `TC-EXP-001` (`TC-EXP-002`, ...) with `result: "fail"` (syncing the new case to the Story's Qase Suite if `qa_test_backend == "qase"`), creates the linked Jira `Bug` + Qase Defect + media attachments, and hands `<STORY-KEY>` back to `developer`. `<STORY-KEY>` cannot close until both the Bug is fixed and `TC-EXP-001` passes in `verify`!
+- Automatically appends `TC-EXP-001` (`TC-EXP-002`, ...) with `result: "fail"` (syncing the new case to the Story's Qase Suite if `qa_test_backend == "qase"`), creates the linked Jira `Bug` + Qase Defect + media attachments, and hands `<STORY-KEY>` back to `developer` (enforcing **Clean Stop** without prompting `/team-dev` when `same_person: false`, or asking one short question and stopping when `same_person: true`). `<STORY-KEY>` cannot close until both the Bug is fixed and `TC-EXP-001` passes in `verify`!
 
 ### Path B: Standalone Production / User-Reported Bug (No Parent Story)
 When a user, CS, or ops inspection reports a production bug outside any active Story, file a **new** standalone Jira `Bug` (or `--adopt` an **existing** Jira `Bug` ticket such as `AP-88` while keeping its original reporter description 100% intact):
@@ -173,7 +173,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
   --key "<EXISTING-BUG-KEY>" \
   [--attach "<path/to/extra-evidence.png>"]
 ```
-- Initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`), **skips `team-spec` and creates zero redundant Jira `Sub-task`s**, assigns `<BUG-KEY>` to `developer` (`In Progress`), and flows cleanly through **`team-dev (implement)` $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` $\rightarrow$ `team-release` (`close-story`)**!
+- Initializes `.ai-workflow/active/<BUG-KEY>.json` (`issue_kind: "standalone_bug"`), **skips `team-spec` and creates zero redundant Jira `Sub-task`s**, assigns `<BUG-KEY>` to `developer` (`In Progress`), and flows cleanly through **`team-dev (implement)` $\rightarrow$ `team-review` $\rightarrow$ `team-qa (verify)` $\rightarrow$ `team-release` (`close-story`)** (enforcing **Clean Stop** without prompting `/team-dev` when `same_person: false`, or asking one short question and stopping when `same_person: true`)!
 
 ## Red Flags — STOP
 
@@ -182,6 +182,6 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . create-bug \
 - Writing `QASE_API_TOKEN` or `JIRA_API_TOKEN` into Git-tracked `.ai-workflow/team-config.json` (tokens belong exclusively in gitignored `.ai-workflow/credentials.json`).
 - Marking a test `pass` (or running `--all-pass`) without actual test execution evidence or explicit human QA confirmation.
 - Autonomously invoking `record-qa` or `close-story` immediately after fixing a user-reported bug/tweak (`Stop & Yield on Fix` violation), or auto-chaining into `$team-release` without explicit user authorization.
-- Prompting `/team-release` when `same_person == false` (`cross_person_clean_stop: true`).
+- Prompting `/team-release` or `/team-dev` when `same_person == false` (`cross_person_clean_stop: true`).
 - Asking the human one message per test case just to choose `automated` vs. `manual`.
 - Recommending `team-release` while any `TC-*` is `fail`, `blocked`, `not-executed`, or while any `Bug` is `open`.

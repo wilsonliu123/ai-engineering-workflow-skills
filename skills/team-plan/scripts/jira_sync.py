@@ -2674,19 +2674,27 @@ def _build_qa_identity_guardrail(repo_root: Path, config: dict, story: dict = No
     """Compare current local actor against explicitly configured roles.qa for Station 3b SoD Entry Identity Guardrail."""
     actor = _resolve_local_actor_identity(repo_root, config)
     claimed_qa = [m for m in resolve_role_members(config, "qa") if _is_member_claimed("qa", m)]
-    if isinstance(story, dict):
+    if not claimed_qa and isinstance(story, dict):
         ro_qa = (story.get("role_owners") or {}).get("qa")
         if isinstance(ro_qa, dict) and _is_member_claimed("qa", ro_qa):
-            if not any(is_same_person(ro_qa, qm) for qm in claimed_qa):
-                claimed_qa.append(_normalize_member_dict("qa", ro_qa))
+            claimed_qa.append(_normalize_member_dict("qa", ro_qa))
 
     qa_role_claimed = len(claimed_qa) > 0
+    identifiers_comparable = True
     if not qa_role_claimed:
         actor_matches_qa = False if actor is not None else None
     elif actor is None:
         actor_matches_qa = None
     else:
-        actor_matches_qa = any(is_same_person(actor, qm) for qm in claimed_qa)
+        identifiers_comparable = (
+            bool(actor.get("roles"))
+            or bool(actor.get("jira_account_id"))
+            or any(bool(qm.get("email")) for qm in claimed_qa)
+        )
+        if identifiers_comparable:
+            actor_matches_qa = any(is_same_person(actor, qm) for qm in claimed_qa)
+        else:
+            actor_matches_qa = None
 
     story_devs = []
     if isinstance(story, dict):
@@ -2702,8 +2710,11 @@ def _build_qa_identity_guardrail(repo_root: Path, config: dict, story: dict = No
         story_devs = [m for m in resolve_role_members(config, "developer") if _is_member_claimed("developer", m)]
     actor_is_story_developer = bool(actor is not None and any(is_same_person(actor, d) for d in story_devs))
 
-    identity_mismatch = bool(qa_role_claimed and actor is not None and not actor_matches_qa)
-    warning = ""
+    identity_mismatch = bool(qa_role_claimed and actor is not None and actor_matches_qa is False)
+    if qa_role_claimed and actor is not None and not identifiers_comparable:
+        warning = None
+    else:
+        warning = ""
     if identity_mismatch:
         qa_labels = ", ".join(
             f"{q.get('name') or 'qa'} ({q.get('email')})" if q.get("email") else str(q.get("name") or "qa")
@@ -5332,8 +5343,20 @@ def cmd_complete_task(args) -> int:
 
     remaining_tasks = [t["id"] for t in (story.get("tasks") or []) if t.get("status") != "completed"]
     remaining_bugs = [b.get("bug_key") for b in (story.get("bugs") or []) if b.get("status") not in ("completed", "closed")]
+    remaining_review_findings = [
+        f.get("id") for f in ((review or {}).get("findings") or [])
+        if isinstance(review, dict)
+        and review.get("status") == "changes-requested"
+        and isinstance(f, dict)
+        and f.get("severity") in ("blocker", "major")
+        and f.get("status", "open") == "open"
+    ]
 
-    ready_for_review = len(remaining_tasks) == 0 and len(remaining_bugs) == 0
+    ready_for_review = (
+        len(remaining_tasks) == 0
+        and len(remaining_bugs) == 0
+        and len(remaining_review_findings) == 0
+    )
     saved_path = save_active_story(repo_root, jira_key, story, client=client)
     out = {
         "ok": True,
@@ -5347,6 +5370,7 @@ def cmd_complete_task(args) -> int:
         "changed_files": changed_files,
         "remaining_tasks": remaining_tasks,
         "remaining_bugs": remaining_bugs,
+        "remaining_review_findings": remaining_review_findings,
         "ready_for_review": ready_for_review,
         "active_file": str(saved_path.relative_to(repo_root)),
     }
@@ -5564,7 +5588,13 @@ def _inspect_qa_state(repo_root: Path, config: dict, story: dict = None) -> dict
         else f"QA test backend is already remembered as '{qa_backend}'. Proceed using '{qa_backend}' automatically."
     )
     if guardrail["identity_mismatch"]:
-        base_instruction = f"{guardrail['warning']} {base_instruction}"
+        if qa_backend:
+            base_instruction = (
+                f"{guardrail['warning']} STOP and wait for explicit user confirmation before running QA "
+                f"(QA test backend is already remembered as '{qa_backend}'; do not re-ask backend choice once confirmed)."
+            )
+        else:
+            base_instruction = f"{guardrail['warning']} Also {base_instruction}"
     return {
         "ok": True,
         "action": "qa-inspect",

@@ -3669,6 +3669,72 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertFalse(qa_out["handoff"]["next_station_prompt_allowed"])
             self.assertFalse(qa_out["qa_identity_guardrail"]["identity_mismatch"])
 
+            # P1-1 regression: when qa_test_backend is already remembered AND identity_mismatch is True,
+            # agent_instruction must NOT say "Proceed using" and MUST instruct STOP.
+            insp_bob_after_backend = json.loads(
+                run_cli(root, "record-qa", "--inspect", "--key", "SOD-1", env_override=bob_env).stdout
+            )
+            self.assertTrue(insp_bob_after_backend["qa_backend_configured"])
+            self.assertTrue(insp_bob_after_backend["qa_identity_guardrail"]["identity_mismatch"])
+            self.assertNotIn("Proceed using", insp_bob_after_backend["agent_instruction"])
+            self.assertIn("STOP", insp_bob_after_backend["agent_instruction"])
+
+            # P1-2 regression: stale story.role_owners.qa (Bob) must NOT widen authoritative team-config roles.qa (Carol)
+            sod1_path = root / ".ai-workflow" / "active" / "SOD-1.json"
+            sod1_data = json.loads(sod1_path.read_text(encoding="utf-8"))
+            sod1_data.setdefault("role_owners", {})["qa"] = {
+                "name": "Bob",
+                "email": "bob@team.io",
+                "jira_account_id": "acc-bob",
+            }
+            sod1_path.write_text(json.dumps(sod1_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            insp_bob_stale_ro = json.loads(
+                run_cli(root, "record-qa", "--inspect", "--key", "SOD-1", env_override=bob_env).stdout
+            )
+            self.assertTrue(insp_bob_stale_ro["qa_identity_guardrail"]["identity_mismatch"])
+            self.assertFalse(insp_bob_stale_ro["qa_identity_guardrail"]["actor_matches_qa"])
+
+            # P1-4 regression: completing REV-001 while REV-002 (major, open) remains must report ready_for_review=False
+            # without prematurely emitting next-station governance flags; completing REV-002 sets ready_for_review=True.
+            findings_two = [
+                {"id": "REV-001", "severity": "major", "axis": "code", "location": "a.py", "observation": "Fix 1", "status": "open"},
+                {"id": "REV-002", "severity": "major", "axis": "security", "location": "a.py", "observation": "Fix 2", "status": "open"},
+            ]
+            ho_chg = run_cli(
+                root, "handoff", "--key", "SOD-1",
+                "--review-status", "changes-requested", "--commit", "aaa1111",
+                "--summary", "Two major issues",
+                "--findings-json", json.dumps(findings_two),
+            )
+            self.assertEqual(ho_chg.returncode, 0, ho_chg.stderr)
+
+            ct_rev1 = json.loads(
+                run_cli(
+                    root, "complete-task", "--key", "SOD-1", "--task-id", "REV-001",
+                    "--commit", "aaa2222", "--files", "a.py", "--test-result", "ok",
+                ).stdout
+            )
+            self.assertFalse(ct_rev1["ready_for_review"])
+            self.assertEqual(ct_rev1["remaining_review_findings"], ["REV-002"])
+            self.assertNotIn("same_person", ct_rev1)
+            self.assertNotIn("cross_person_clean_stop", ct_rev1)
+            self.assertNotIn("next_station_prompt_allowed", ct_rev1)
+
+            ct_rev2 = json.loads(
+                run_cli(
+                    root, "complete-task", "--key", "SOD-1", "--task-id", "REV-002",
+                    "--commit", "aaa3333", "--files", "a.py", "--test-result", "ok",
+                ).stdout
+            )
+            self.assertTrue(ct_rev2["ready_for_review"])
+            self.assertEqual(ct_rev2["remaining_review_findings"], [])
+            self.assertFalse(ct_rev2["same_person"])
+            self.assertFalse(ct_rev2["can_auto_chain_next_station"])
+            self.assertTrue(ct_rev2["requires_user_confirmation_for_next_station"])
+            self.assertTrue(ct_rev2["cross_person_clean_stop"])
+            self.assertFalse(ct_rev2["next_station_prompt_allowed"])
+            self.assertEqual(ct_rev2["next_station_owner"], "Alice")
+
         # Part B: Same-person / Solo team (reviewer == qa == developer == Alice)
         with tempfile.TemporaryDirectory() as tmp2:
             root2 = Path(tmp2)
@@ -3725,15 +3791,54 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertFalse(guard_u["qa_role_claimed"])
             self.assertFalse(guard_u["identity_mismatch"])
 
+        # Part D (P1-3 regression): accountId-only roles.qa without email
+        with tempfile.TemporaryDirectory() as tmp4:
+            root4 = Path(tmp4)
+            roles_acct_only_qa = {
+                "pm": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "tech_lead": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "developer": {"name": "Bob", "email": "bob@team.io", "jira_account_id": "acc-bob"},
+                "reviewer": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                "qa": {"name": "Carol", "email": "", "jira_account_id": "acc-carol"},
+                "release_manager": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+            }
+            self.assertEqual(
+                run_cli(root4, "init", "--project-key", "ACCT", "--roles-json", json.dumps(roles_acct_only_qa)).returncode,
+                0,
+            )
+            # Carol has email-only local credentials and holds no other configured role -> uncomparable offline
+            insp_carol_uncomp = json.loads(
+                run_cli(root4, "record-qa", "--inspect", env_override={"JIRA_EMAIL": "carol@team.io"}).stdout
+            )
+            guard_c_uncomp = insp_carol_uncomp["qa_identity_guardrail"]
+            self.assertTrue(guard_c_uncomp["qa_role_claimed"])
+            self.assertIsNone(guard_c_uncomp["actor_matches_qa"])
+            self.assertFalse(guard_c_uncomp["identity_mismatch"])
+            self.assertFalse(guard_c_uncomp["requires_explicit_confirmation"])
+            self.assertIsNone(guard_c_uncomp["warning"])
+
+            # Bob matches roles.developer with acc-bob -> comparable via accountId -> confirmed mismatch!
+            insp_bob_comp = json.loads(
+                run_cli(root4, "record-qa", "--inspect", env_override={"JIRA_EMAIL": "bob@team.io"}).stdout
+            )
+            guard_b_comp = insp_bob_comp["qa_identity_guardrail"]
+            self.assertTrue(guard_b_comp["qa_role_claimed"])
+            self.assertFalse(guard_b_comp["actor_matches_qa"])
+            self.assertTrue(guard_b_comp["identity_mismatch"])
+            self.assertTrue(guard_b_comp["requires_explicit_confirmation"])
+
     def test_21_governance_docs_no_auto_chain_and_sod_boundaries(self):
         forbidden_re = re.compile(
-            r"proactively\s+(?:auto-?)?chain|auto-chaining\s+is\s+authorized|same-person\s+chaining",
+            r"proactively\s+(?:auto-?)?chain|auto-chaining\s+is\s+authorized|same-person\s+chaining|自動連貫推進|自動銜接|主動銜接",
             re.IGNORECASE,
         )
         files_to_scan = [REPO_ROOT / "README.md"]
         for s in EXPECTED_SKILLS:
             files_to_scan.append(SKILLS_DIR / s / "SKILL.md")
             files_to_scan.extend((SKILLS_DIR / s / "references").glob("*.md"))
+            openai_yaml = SKILLS_DIR / s / "agents" / "openai.yaml"
+            if openai_yaml.exists():
+                files_to_scan.append(openai_yaml)
 
         for path in files_to_scan:
             text = path.read_text(encoding="utf-8")
