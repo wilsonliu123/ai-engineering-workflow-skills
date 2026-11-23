@@ -4294,8 +4294,18 @@ class WorkflowTestSuite(unittest.TestCase):
         )
         self.assertEqual(w_trailer, [], f"Expected unanchored trailer match to pass, got {w_trailer}")
 
+        # P2-R2-1: Scoped inline multiline/dotall flag (e.g. ^(?s:...)) evaluates against msg_norm
+        scoped_cfg = {"commit_message_pattern": r"^(?s:feat:.*Signed-off-by:)"}
+        w_scoped = mod._validate_commit_message(
+            "feat: AL-37 AL-38 add feature\n\nSigned-off-by: Alice <alice@team.io>",
+            "AL-37",
+            ["AL-38"],
+            scoped_cfg,
+        )
+        self.assertEqual(w_scoped, [], f"Expected scoped inline (?s:...) multiline match to pass, got {w_scoped}")
+
         # P1-3: description: null and files: [null, "", "src/a.py"] must never serialize literal "None"
-        # P2-3: bare "- " and "* " items in implementation_steps must be dropped
+        # P2-3 & P1-R2-1: bare "- "/"* "/"-"/"*" dropped, while "**Step 1**: ..." and "--dry-run flag" preserved intact
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             run_cli(root, "init", "--project-key", "NULL")
@@ -4305,7 +4315,16 @@ class WorkflowTestSuite(unittest.TestCase):
                     "id": "TASK-001",
                     "title": "Null fields task",
                     "description": None,
-                    "implementation_steps": ["- ", "* ", "  -  Real step", None, "-"],
+                    "implementation_steps": [
+                        "**Step 1**: Create `foo()`",
+                        "- **Step 2**: Add tests",
+                        "--dry-run flag",
+                        "- ",
+                        "* ",
+                        "-",
+                        "*",
+                        None,
+                    ],
                     "ac_coverage": ["AC-001"],
                     "files": [None, "", "src/a.py"],
                     "verification": "pytest",
@@ -4317,7 +4336,31 @@ class WorkflowTestSuite(unittest.TestCase):
             t = st["tasks"][0]
             self.assertEqual(t["description"], "")
             self.assertEqual(t["files"], ["src/a.py"])
-            self.assertEqual(t["implementation_steps"], ["Real step"])
+            self.assertEqual(
+                t["implementation_steps"],
+                ["**Step 1**: Create `foo()`", "**Step 2**: Add tests", "--dry-run flag"],
+            )
+            rendered_md = mod.format_subtask_description(
+                t_id=t["id"],
+                task_dev={"name": "Alice", "email": "alice@team.io"},
+                ac_cov=t["ac_coverage"],
+                deps=[],
+                verif=t["verification"],
+                zh=True,
+                description=t["description"],
+                implementation_steps=t["implementation_steps"],
+                files=t["files"],
+            )
+            self.assertIn("- **Step 1**: Create `foo()`", rendered_md)
+            self.assertIn("- **Step 2**: Add tests", rendered_md)
+            self.assertIn("- --dry-run flag", rendered_md)
+            rendered_adf = mod.JiraClient.text_to_adf(rendered_md)
+            self._assert_valid_adf_invariants(rendered_adf)
+            rendered_adf_json = json.dumps(rendered_adf, ensure_ascii=False)
+            self.assertIn('"text": "Step 1", "marks": [{"type": "strong"}]', rendered_adf_json)
+            self.assertIn('"text": "Step 2", "marks": [{"type": "strong"}]', rendered_adf_json)
+            self.assertIn('"text": "foo()", "marks": [{"type": "code"}]', rendered_adf_json)
+            self.assertIn('"text": "--dry-run flag"', rendered_adf_json)
 
         # P1-4: Non-string commit_message_pattern (123, True, ["foo"]) emits config warning via load_team_config + _validate_commit_message
         with tempfile.TemporaryDirectory() as tmp_cfg:

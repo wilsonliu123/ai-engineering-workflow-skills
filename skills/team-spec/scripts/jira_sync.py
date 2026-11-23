@@ -499,6 +499,8 @@ def _validate_commit_message(commit_msg: str, story_key: str, subtask_keys: list
             or "\n" in pattern
             or "(?s)" in pattern
             or "(?m)" in pattern
+            or bool(compiled.flags & (re.MULTILINE | re.DOTALL))
+            or bool(re.search(r"\(\?[aiLmsux]*[ms]", pattern))
         )
         if expects_multiline:
             matched = bool(compiled.search(msg_norm))
@@ -5111,7 +5113,7 @@ def _normalize_implementation_steps(raw_steps) -> list:
     for item in raw_items:
         if item is None:
             continue
-        s = re.sub(r"^\s*[-*]\s*", "", str(item)).strip()
+        s = re.sub(r"^\s*[-*](?:\s+|$)", "", str(item)).strip()
         if s:
             cleaned.append(s)
     return cleaned
