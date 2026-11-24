@@ -7701,7 +7701,7 @@ class WorkflowTestSuite(unittest.TestCase):
             def close(self):
                 captured_ssl["closed"] = True
 
-        with mock.patch("http.client.HTTPSConnection", _FakeHTTPSConn):
+        with mock.patch.object(mod, "_VerifiedTLSConnection", _FakeHTTPSConn):
             st, hdrs, body_b = mod._http_request("https://api.example.com/v1/ping?x=1", method="GET", timeout=12)
         self.assertEqual(st, 200)
         self.assertEqual(body_b, b'{"ok":true}')
@@ -7936,6 +7936,206 @@ class WorkflowTestSuite(unittest.TestCase):
             srv_a.server_close()
             srv_b.shutdown()
             srv_b.server_close()
+
+    def test_40_issue23_verified_tls_connection(self):
+        """Issue #23 (Part 1): pure-stdlib _VerifiedTLSConnection replaces HTTPSConnection with leak-free verified TLS."""
+        import ast
+        import http.client
+        import ssl
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("jira_sync_issue23", str(JIRA_SYNC))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # 1. Static invariants: pure stdlib, zero HTTPSConnection, zero nosemgrep
+        src_text = JIRA_SYNC.read_text(encoding="utf-8")
+        self.assertNotIn("HTTPSConnection", src_text)
+        self.assertNotIn("nosemgrep", src_text)
+        tree = ast.parse(src_text)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
+                    if hasattr(sys, "stdlib_module_names"):
+                        self.assertIn(top, sys.stdlib_module_names, f"Non-stdlib import: {alias.name}")
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                top = node.module.split(".")[0]
+                if hasattr(sys, "stdlib_module_names"):
+                    self.assertIn(top, sys.stdlib_module_names, f"Non-stdlib import: {node.module}")
+
+        # 2. Class contract: subclasses HTTPConnection, default_port == 443, verified default SSLContext
+        self.assertTrue(issubclass(mod._VerifiedTLSConnection, http.client.HTTPConnection))
+        self.assertEqual(mod._VerifiedTLSConnection.default_port, 443)
+        self.assertEqual(mod._VerifiedTLSConnection.default_port, http.client.HTTPS_PORT)
+
+        default_conn = mod._VerifiedTLSConnection("example.com")
+        self.assertEqual(default_conn.port, 443)
+        self.assertIsInstance(default_conn._context, ssl.SSLContext)
+        self.assertEqual(default_conn._context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(default_conn._context.check_hostname)
+
+        # 3. connect() wraps socket with server_hostname == self.host (and self._tunnel_host when tunneled)
+        class _FakeRawSocket:
+            def __init__(self, fail_close=False):
+                self.closed = False
+                self.close_calls = 0
+                self.fail_close = fail_close
+
+            def setsockopt(self, *args, **kwargs):
+                pass
+
+            def close(self):
+                self.close_calls += 1
+                self.closed = True
+                if self.fail_close:
+                    raise OSError("close failed")
+
+        wrapped_sentinel = object()
+        wrap_calls = []
+
+        class _FakeContext:
+            def __init__(self, fail_exc=None):
+                self.fail_exc = fail_exc
+
+            def wrap_socket(self, sock, server_hostname=None):
+                wrap_calls.append((sock, server_hostname))
+                if self.fail_exc is not None:
+                    raise self.fail_exc
+                return wrapped_sentinel
+
+        # 3a. Direct host connect
+        raw_direct = _FakeRawSocket()
+        conn_direct = mod._VerifiedTLSConnection("jira.example.com", context=_FakeContext())
+        conn_direct._create_connection = lambda addr, timeout, src: raw_direct
+        conn_direct.connect()
+        self.assertIs(conn_direct.sock, wrapped_sentinel)
+        self.assertEqual(wrap_calls[-1], (raw_direct, "jira.example.com"))
+        self.assertFalse(raw_direct.closed)
+
+        # 3b. Tunneled host connect uses _tunnel_host as SNI server_hostname
+        raw_tunnel = _FakeRawSocket()
+        conn_tunnel = mod._VerifiedTLSConnection("proxy.internal", port=8080, context=_FakeContext())
+        conn_tunnel._create_connection = lambda addr, timeout, src: raw_tunnel
+        conn_tunnel._tunnel_host = "target.example.com"
+        conn_tunnel._tunnel = lambda: None
+        conn_tunnel.connect()
+        self.assertIs(conn_tunnel.sock, wrapped_sentinel)
+        self.assertEqual(wrap_calls[-1], (raw_tunnel, "target.example.com"))
+        self.assertFalse(raw_tunnel.closed)
+
+        # 4. Zero socket leak when wrap_socket raises ssl.SSLError (including when raw close also errors)
+        for fail_close in (False, True):
+            raw_fail = _FakeRawSocket(fail_close=fail_close)
+            conn_fail = mod._VerifiedTLSConnection(
+                "badcert.example.com",
+                context=_FakeContext(fail_exc=ssl.SSLError("CERTIFICATE_VERIFY_FAILED")),
+            )
+            conn_fail._create_connection = lambda addr, timeout, src, s=raw_fail: s
+            with self.assertRaises(ssl.SSLError) as ssl_ctx:
+                conn_fail.connect()
+            self.assertIn("CERTIFICATE_VERIFY_FAILED", str(ssl_ctx.exception))
+            self.assertIsNone(conn_fail.sock)
+            self.assertTrue(raw_fail.closed)
+            self.assertEqual(raw_fail.close_calls, 1)
+
+        # 5. _http_request("https://example.com/rest/api") uses _VerifiedTLSConnection with verified
+        #    default SSL context and preserves scheme/host/CRLF/redirect/credential-stripping checks
+        recorded_hops = []
+
+        class _StubResp:
+            def __init__(self, status, headers, body):
+                self.status = status
+                self._headers = headers
+                self._body = body
+
+            def getheaders(self):
+                return list(self._headers)
+
+            def getheader(self, name, default=None):
+                for k, v in self._headers:
+                    if k.lower() == name.lower():
+                        return v
+                return default
+
+            def read(self):
+                return self._body
+
+        class _RecordingTLSConn:
+            def __init__(self, host, port=None, timeout=None, context=None):
+                self.entry = {
+                    "host": host,
+                    "port": port,
+                    "timeout": timeout,
+                    "context": context,
+                    "closed": False,
+                }
+                recorded_hops.append(self.entry)
+
+            def request(self, method, target, body=None, headers=None):
+                self.entry["method"] = method
+                self.entry["target"] = target
+                self.entry["headers"] = dict(headers or {})
+
+            def getresponse(self):
+                if self.entry["host"] == "example.com" and self.entry["target"] == "/rest/redir":
+                    return _StubResp(302, [("Location", "https://other.example.com/final")], b"")
+                return _StubResp(200, [("Content-Type", "application/json")], b'{"ok":true}')
+
+            def close(self):
+                self.entry["closed"] = True
+
+        with mock.patch.object(mod, "_VerifiedTLSConnection", _RecordingTLSConn):
+            # 5a. Direct HTTPS call
+            st, _, body = mod._http_request("https://example.com/rest/api", method="GET", timeout=9)
+            self.assertEqual(st, 200)
+            self.assertEqual(body, b'{"ok":true}')
+            hop0 = recorded_hops[-1]
+            self.assertEqual(hop0["host"], "example.com")
+            self.assertIsNone(hop0["port"])
+            self.assertEqual(hop0["target"], "/rest/api")
+            self.assertEqual(hop0["timeout"], 9)
+            self.assertTrue(hop0["closed"])
+            self.assertIsInstance(hop0["context"], ssl.SSLContext)
+            self.assertEqual(hop0["context"].verify_mode, ssl.CERT_REQUIRED)
+            self.assertTrue(hop0["context"].check_hostname)
+
+            # 5b. Cross-origin HTTPS redirect strips credentials and keeps verified TLS on every hop
+            recorded_hops.clear()
+            st_r, _, body_r = mod._http_request(
+                "https://example.com/rest/redir",
+                headers={
+                    "Authorization": "Basic secret-cred",
+                    "Token": "qase-secret",
+                    "X-Safe": "keep",
+                },
+            )
+            self.assertEqual(st_r, 200)
+            self.assertEqual(body_r, b'{"ok":true}')
+            self.assertEqual(len(recorded_hops), 2)
+            self.assertIn("Authorization", recorded_hops[0]["headers"])
+            self.assertNotIn("Authorization", recorded_hops[1]["headers"])
+            self.assertNotIn("Token", recorded_hops[1]["headers"])
+            self.assertEqual(recorded_hops[1]["headers"].get("X-Safe"), "keep")
+            for hop in recorded_hops:
+                self.assertTrue(hop["closed"])
+                self.assertIsInstance(hop["context"], ssl.SSLContext)
+                self.assertEqual(hop["context"].verify_mode, ssl.CERT_REQUIRED)
+                self.assertTrue(hop["context"].check_hostname)
+
+            # 5c. Scheme / host / CRLF guards still reject before opening any TLS connection
+            recorded_hops.clear()
+            for bad_url in (
+                "file:///etc/passwd",
+                "ftp://example.com/a",
+                "https:///missing-host",
+                "https://example.com/rest/api\r\nX-Evil: 1",
+            ):
+                with self.assertRaises(ValueError):
+                    mod._http_request(bad_url)
+            with self.assertRaises(ValueError):
+                mod._http_request("https://example.com/rest/api", headers={"X-Test": "bad\r\nInject: 1"})
+            self.assertEqual(recorded_hops, [])
 
 
 if __name__ == "__main__":

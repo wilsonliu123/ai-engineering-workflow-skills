@@ -34,6 +34,7 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -1899,6 +1900,49 @@ def _validate_http_url(url: str) -> tuple:
     return scheme, hostname, port, effective_port, target
 
 
+class _VerifiedTLSConnection(http.client.HTTPConnection):
+    """Pure-stdlib TLS-wrapped HTTPConnection enforcing ssl.create_default_context()."""
+
+    default_port = http.client.HTTPS_PORT
+
+    def __init__(
+        self,
+        host,
+        port=None,
+        timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address=None,
+        blocksize=8192,
+        *,
+        context=None,
+    ):
+        super().__init__(
+            host,
+            port=port,
+            timeout=timeout,
+            source_address=source_address,
+            blocksize=blocksize,
+        )
+        self._context = context if context is not None else ssl.create_default_context()
+
+    def connect(self):
+        super().connect()
+        server_hostname = self._tunnel_host if self._tunnel_host else self.host
+        try:
+            self.sock = self._context.wrap_socket(
+                self.sock,
+                server_hostname=server_hostname,
+            )
+        except BaseException:
+            raw_sock = self.sock
+            self.sock = None
+            if raw_sock is not None:
+                try:
+                    raw_sock.close()
+                except OSError:
+                    pass
+            raise
+
+
 def _http_request(
     url: str,
     method: str = "GET",
@@ -1952,7 +1996,7 @@ def _http_request(
 
     while True:
         if scheme == "https":
-            conn = http.client.HTTPSConnection(
+            conn = _VerifiedTLSConnection(
                 hostname,
                 port=port,
                 timeout=timeout,
