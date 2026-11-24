@@ -27,19 +27,18 @@ import base64
 import datetime
 import getpass
 import hashlib
+import http.client
 import json
 import math
 import mimetypes
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -1849,6 +1848,179 @@ def resolve_acting_person(config: dict, role: str, client=None, story: dict = No
     return resolve_story_role_person(config, story, role)
 
 
+_HTTP_METHOD_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9!#$%&'*+\-.^_`|~]*\Z")
+_HTTP_HEADER_NAME_RE = re.compile(r"\A[A-Za-z0-9!#$%&'*+\-.^_`|~]+\Z")
+_SENSITIVE_REDIRECT_HEADERS = frozenset({
+    "authorization",
+    "token",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+})
+_BODY_HEADERS = frozenset({
+    "content-length",
+    "content-type",
+    "transfer-encoding",
+})
+
+
+def _validate_http_url(url: str) -> tuple:
+    """
+    Validate an HTTP(S) URL strictly and return (scheme, hostname, port, effective_port, target).
+    Rejects non-http(s) schemes (e.g. file://, ftp://, gopher://), missing hostnames,
+    invalid ports, and control/whitespace characters to prevent scheme abuse and request splitting.
+    """
+    if not isinstance(url, str) or not url:
+        raise ValueError("HTTP request URL must be a non-empty string.")
+    if any(ord(ch) < 0x20 or ord(ch) >= 0x7F or ch.isspace() for ch in url):
+        raise ValueError("HTTP request URL contains invalid control, whitespace, or non-ASCII characters.")
+    parsed = urllib.parse.urlsplit(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Disallowed URL scheme '{scheme or '<empty>'}'. Only http and https are allowed.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("HTTP request URL must not contain embedded userinfo credentials.")
+    if "\\" in parsed.netloc:
+        raise ValueError("HTTP request URL authority must not contain backslashes.")
+    hostname = parsed.hostname
+    if not hostname or any(ch.isspace() for ch in hostname):
+        raise ValueError("HTTP request URL must include a non-empty hostname.")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"Invalid port in HTTP request URL: {exc}") from exc
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError(f"HTTP request URL port out of range: {port}")
+    effective_port = port if port is not None else (443 if scheme == "https" else 80)
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    target = f"{path}?{parsed.query}" if parsed.query else path
+    return scheme, hostname, port, effective_port, target
+
+
+def _http_request(
+    url: str,
+    method: str = "GET",
+    headers: dict = None,
+    body=None,
+    timeout: float = 15,
+    max_redirects: int = 5,
+) -> tuple:
+    """
+    Execute an HTTP/HTTPS request strictly via stdlib http.client (zero urllib dynamic opener use).
+    Validates scheme (http/https only), hostname, port, method, and headers (preventing CR/LF
+    injection without leaking secret header values), enforces TLS certificate & hostname
+    verification via ssl.create_default_context(), and follows safe redirects up to max_redirects
+    while re-validating each hop and stripping sensitive credentials across origins.
+
+    Returns (status_code: int, response_headers: dict[str, str], response_body: bytes).
+    """
+    if max_redirects < 0:
+        raise ValueError("max_redirects must be non-negative.")
+    if not isinstance(method, str) or not _HTTP_METHOD_RE.match(method):
+        raise ValueError("Invalid HTTP method.")
+    cur_method = method.upper()
+
+    if body is None:
+        cur_body = None
+    elif isinstance(body, (bytes, bytearray)):
+        cur_body = bytes(body)
+    elif isinstance(body, str):
+        cur_body = body.encode("utf-8")
+    else:
+        raise TypeError(f"Unsupported HTTP request body type: {type(body).__name__}")
+
+    cur_headers = {}
+    for k, v in (headers or {}).items():
+        if not isinstance(k, str) or not _HTTP_HEADER_NAME_RE.match(k):
+            raise ValueError("Invalid HTTP header name.")
+        v_str = str(v)
+        if any((ord(ch) < 0x20 and ch != "\t") or ord(ch) == 0x7F for ch in v_str):
+            raise ValueError(f"Invalid control character in HTTP header '{k}'.")
+        try:
+            v_str.encode("latin-1")
+        except UnicodeEncodeError:
+            raise ValueError("Invalid HTTP header value.") from None
+        cur_headers[k] = v_str
+
+    current_url = url
+    scheme, hostname, port, effective_port, target = _validate_http_url(current_url)
+    current_origin = (scheme, hostname.lower(), effective_port)
+    seen_hops = {(cur_method, current_origin, target)}
+    redirects_followed = 0
+
+    while True:
+        if scheme == "https":
+            conn = http.client.HTTPSConnection(
+                hostname,
+                port=port,
+                timeout=timeout,
+                context=ssl.create_default_context(),
+            )
+        else:
+            conn = http.client.HTTPConnection(hostname, port=port, timeout=timeout)
+        try:
+            conn.request(cur_method, target, body=cur_body, headers=cur_headers)
+            resp = conn.getresponse()
+            status = resp.status
+            resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+            location = resp.getheader("Location")
+            raw_bytes = resp.read()
+        finally:
+            conn.close()
+
+        if status in (301, 302, 303, 307, 308) and location is not None:
+            if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in location):
+                raise ValueError("HTTP redirect Location header contains invalid control characters.")
+            loc_clean = location.strip()
+            if not loc_clean:
+                return status, resp_headers, raw_bytes
+            if redirects_followed >= max_redirects:
+                raise RuntimeError(f"HTTP redirect limit ({max_redirects}) exceeded.")
+
+            next_url = urllib.parse.urljoin(current_url, loc_clean)
+            next_scheme, next_host, next_port, next_eff_port, next_target = _validate_http_url(next_url)
+            next_origin = (next_scheme, next_host.lower(), next_eff_port)
+
+            next_method = cur_method
+            next_body = cur_body
+            next_headers = {k: v for k, v in cur_headers.items() if k.lower() != "host"}
+
+            if status == 303 and next_method not in ("GET", "HEAD"):
+                next_method = "GET"
+                next_body = None
+                next_headers = {k: v for k, v in next_headers.items() if k.lower() not in _BODY_HEADERS}
+            elif status in (301, 302) and next_method == "POST":
+                next_method = "GET"
+                next_body = None
+                next_headers = {k: v for k, v in next_headers.items() if k.lower() not in _BODY_HEADERS}
+
+            if next_origin != current_origin:
+                next_headers = {
+                    k: v for k, v in next_headers.items()
+                    if k.lower() not in _SENSITIVE_REDIRECT_HEADERS
+                }
+
+            hop_key = (next_method, next_origin, next_target)
+            if hop_key in seen_hops:
+                raise RuntimeError("HTTP redirect loop detected.")
+            seen_hops.add(hop_key)
+
+            redirects_followed += 1
+            current_url = next_url
+            scheme, hostname, port, effective_port, target = (
+                next_scheme, next_host, next_port, next_eff_port, next_target
+            )
+            current_origin = next_origin
+            cur_method = next_method
+            cur_body = next_body
+            cur_headers = next_headers
+            continue
+
+        return status, resp_headers, raw_bytes
+
+
 class JiraClient:
     """Dependency-free Jira REST API v3 client with per-role & per-member credential resolution and local/offline fallback."""
 
@@ -1950,16 +2122,15 @@ class JiraClient:
     def _request(self, method: str, path: str, payload: dict = None):
         url = f"{self.base_url}{path}"
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        req = urllib.request.Request(url, data=body, headers=self._headers(), method=method)
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                raw = resp.read().decode("utf-8")
-                return json.loads(raw) if raw.strip() else {}
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Jira API {method} {path} failed with HTTP {exc.code}: {err_body}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Jira API {method} {path} connection error: {exc.reason}") from exc
+            status, _, raw_bytes = _http_request(url, method=method, headers=self._headers(), body=body, timeout=15)
+        except (OSError, http.client.HTTPException) as exc:
+            raise RuntimeError(f"Jira API {method} {path} connection error: {exc}") from exc
+        if not (200 <= status < 300):
+            err_body = raw_bytes.decode("utf-8", errors="replace")
+            raise RuntimeError(f"Jira API {method} {path} failed with HTTP {status}: {err_body}")
+        raw = raw_bytes.decode("utf-8")
+        return json.loads(raw) if raw.strip() else {}
 
     def verify_connection(self) -> dict:
         """Verify Jira REST API v3 credentials via GET /rest/api/3/myself."""
@@ -2677,16 +2848,15 @@ class JiraClient:
             "X-Atlassian-Token": "no-check",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
         }
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read().decode("utf-8")
-                parsed = json.loads(raw) if raw.strip() else []
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Jira API POST {path} failed with HTTP {exc.code}: {err_body}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Jira API POST {path} connection error: {exc.reason}") from exc
+            status, _, raw_bytes = _http_request(url, method="POST", headers=headers, body=body, timeout=30)
+        except (OSError, http.client.HTTPException) as exc:
+            raise RuntimeError(f"Jira API POST {path} connection error: {exc}") from exc
+        if not (200 <= status < 300):
+            err_body = raw_bytes.decode("utf-8", errors="replace")
+            raise RuntimeError(f"Jira API POST {path} failed with HTTP {status}: {err_body}")
+        raw = raw_bytes.decode("utf-8")
+        parsed = json.loads(raw) if raw.strip() else []
 
         items = parsed if isinstance(parsed, list) else []
         out = []
@@ -2781,21 +2951,20 @@ class QaseClient:
     def _request(self, method: str, path: str, payload: dict = None) -> dict:
         url = f"{self.base_url}{path}"
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        req = urllib.request.Request(url, data=body, headers=self._headers(), method=method)
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                raw = resp.read().decode("utf-8")
-                parsed = json.loads(raw) if raw.strip() else {}
-                if isinstance(parsed, dict) and parsed.get("status") is False:
-                    raise RuntimeError(
-                        f"Qase API {method} {path} returned status=false: {parsed.get('errorMessage') or parsed}"
-                    )
-                return parsed
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Qase API {method} {path} failed with HTTP {exc.code}: {err_body}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Qase API {method} {path} connection error: {exc.reason}") from exc
+            status, _, raw_bytes = _http_request(url, method=method, headers=self._headers(), body=body, timeout=15)
+        except (OSError, http.client.HTTPException) as exc:
+            raise RuntimeError(f"Qase API {method} {path} connection error: {exc}") from exc
+        if not (200 <= status < 300):
+            err_body = raw_bytes.decode("utf-8", errors="replace")
+            raise RuntimeError(f"Qase API {method} {path} failed with HTTP {status}: {err_body}")
+        raw = raw_bytes.decode("utf-8")
+        parsed = json.loads(raw) if raw.strip() else {}
+        if isinstance(parsed, dict) and parsed.get("status") is False:
+            raise RuntimeError(
+                f"Qase API {method} {path} returned status=false: {parsed.get('errorMessage') or parsed}"
+            )
+        return parsed
 
     @staticmethod
     def _automation_code(exec_type: str) -> int:
@@ -2953,20 +3122,19 @@ class QaseClient:
                 "Accept": "application/json",
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
             }
-            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    raw = resp.read().decode("utf-8")
-                    parsed = json.loads(raw) if raw.strip() else {}
-                    if isinstance(parsed, dict) and parsed.get("status") is False:
-                        raise RuntimeError(
-                            f"Qase API POST {path} returned status=false: {parsed.get('errorMessage') or parsed}"
-                        )
-            except urllib.error.HTTPError as exc:
-                err_body = exc.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"Qase API POST {path} failed with HTTP {exc.code}: {err_body}") from exc
-            except urllib.error.URLError as exc:
-                raise RuntimeError(f"Qase API POST {path} connection error: {exc.reason}") from exc
+                status, _, raw_bytes = _http_request(url, method="POST", headers=headers, body=body, timeout=30)
+            except (OSError, http.client.HTTPException) as exc:
+                raise RuntimeError(f"Qase API POST {path} connection error: {exc}") from exc
+            if not (200 <= status < 300):
+                err_body = raw_bytes.decode("utf-8", errors="replace")
+                raise RuntimeError(f"Qase API POST {path} failed with HTTP {status}: {err_body}")
+            raw = raw_bytes.decode("utf-8")
+            parsed = json.loads(raw) if raw.strip() else {}
+            if isinstance(parsed, dict) and parsed.get("status") is False:
+                raise RuntimeError(
+                    f"Qase API POST {path} returned status=false: {parsed.get('errorMessage') or parsed}"
+                )
 
             res_items = (parsed.get("result") or []) if isinstance(parsed, dict) else []
             for idx, vf in enumerate(uncached):
@@ -8828,31 +8996,217 @@ def cmd_promote_qa(args) -> int:
 # Subcommand 7: record-qa (Station 3b: team-qa plan & verify modes)
 # ---------------------------------------------------------------------------
 
+_XML_PREDEFINED_ENTITIES = {
+    "amp": "&",
+    "lt": "<",
+    "gt": ">",
+    "quot": '"',
+    "apos": "'",
+}
+_XML_ENTITY_RE = re.compile(r"&(#x[0-9A-Fa-f]+|#[0-9]+|[A-Za-z_][A-Za-z0-9._-]*);")
+_XML_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.:-]*")
+_XML_CLOSE_TAG_RE = re.compile(r"</([A-Za-z_][A-Za-z0-9_.:-]*)[ \t\r\n]*>")
+_XML_ATTR_START_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.:-]*)[ \t\r\n]*=[ \t\r\n]*([\"'])")
+_XML_WS_RE = re.compile(r"[ \t\r\n]*")
+
+
+def _unescape_xml_entities(value: str) -> str:
+    """Decode only the 5 predefined XML 1.0 entities and valid numeric character references (single-pass, no DTD)."""
+    def _replace(match: re.Match) -> str:
+        token = match.group(1)
+        if token in _XML_PREDEFINED_ENTITIES:
+            return _XML_PREDEFINED_ENTITIES[token]
+        if token.startswith("#x"):
+            digits = token[2:].lstrip("0") or "0"
+            if len(digits) <= 6:
+                cp = int(digits, 16)
+                if 1 <= cp <= 0x10FFFF and not (0xD800 <= cp <= 0xDFFF):
+                    return chr(cp)
+            return match.group(0)
+        if token.startswith("#"):
+            digits = token[1:].lstrip("0") or "0"
+            if len(digits) <= 7:
+                cp = int(digits, 10)
+                if 1 <= cp <= 0x10FFFF and not (0xD800 <= cp <= 0xDFFF):
+                    return chr(cp)
+            return match.group(0)
+        return match.group(0)
+
+    return _XML_ENTITY_RE.sub(_replace, value)
+
+
 def parse_junit_xml_results(xml_path: Path) -> dict:
     """
-    Parse JUnit XML into {TC-ID: 'pass'|'fail'|'not-executed'}.
-    Uses worst-outcome precedence (fail > not-executed > pass) when multiple
+    Safely parse JUnit XML into {TC-ID: 'pass'|'fail'|'not-executed'} using pure Python 3 stdlib
+    without native XML/DTD/expat libraries (immune to XXE and Billion Laughs entity expansion).
+    Rejects DTD/ENTITY declarations and malformed XML cleanly with ValueError.
+    Uses worst-outcome precedence (fail > blocked > not-executed > pass) when multiple
     <testcase> elements (e.g. parameterized tests) reference the same TC-ID,
     and extracts all TC-### identifiers present in a testcase label.
     """
-    root = ET.parse(xml_path).getroot()
+    path_obj = Path(xml_path)
+    raw_bytes = path_obj.read_bytes()
+    try:
+        text = raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Invalid UTF-8 encoding in JUnit XML '{path_obj}': {exc}") from exc
+    if "\x00" in text:
+        raise ValueError(f"Malformed JUnit XML '{path_obj}': NUL byte is not allowed in XML.")
+
     precedence = {"fail": 3, "blocked": 2, "not-executed": 1, "pass": 0}
     results = {}
-    for case in root.iter("testcase"):
-        label = f"{case.get('classname') or ''} {case.get('name') or ''}"
-        tc_ids = re.findall(r"(?<![A-Za-z0-9])TC-\d{3,}(?![0-9])", label)
-        if not tc_ids:
-            continue
-        if case.find("failure") is not None or case.find("error") is not None:
-            st = "fail"
-        elif case.find("skipped") is not None:
-            st = "not-executed"
-        else:
-            st = "pass"
+
+    def _record(tc_ids: list, status: str) -> None:
         for tc_id in tc_ids:
             prev = results.get(tc_id)
-            if prev is None or precedence[st] > precedence[prev]:
-                results[tc_id] = st
+            if prev is None or precedence[status] > precedence[prev]:
+                results[tc_id] = status
+
+    n = len(text)
+    pos = 0
+    stack = []
+    testcase_stack = []
+    saw_root = False
+    root_closed = False
+
+    while pos < n:
+        lt = text.find("<", pos)
+        text_chunk = text[pos:lt] if lt != -1 else text[pos:]
+        if not stack and text_chunk.strip():
+            raise ValueError(f"Malformed JUnit XML '{path_obj}': unexpected content outside root element.")
+        if lt == -1:
+            break
+
+        if text.startswith("<!--", lt):
+            end = text.find("-->", lt + 4)
+            if end == -1:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': unterminated comment.")
+            pos = end + 3
+            continue
+
+        if text.startswith("<![CDATA[", lt):
+            if not stack:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': CDATA section outside root element.")
+            end = text.find("]]>", lt + 9)
+            if end == -1:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': unterminated CDATA section.")
+            pos = end + 3
+            continue
+
+        if text.startswith("<!", lt):
+            raise ValueError(f"Unsafe JUnit XML '{path_obj}': DTD and entity declarations are forbidden.")
+
+        if text.startswith("<?", lt):
+            end = text.find("?>", lt + 2)
+            if end == -1:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': unterminated processing instruction.")
+            pos = end + 2
+            continue
+
+        if text.startswith("</", lt):
+            m_close = _XML_CLOSE_TAG_RE.match(text, lt)
+            if not m_close:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': invalid closing tag.")
+            close_name = m_close.group(1)
+            if not stack or stack[-1] != close_name:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': mismatched closing tag </{close_name}>.")
+            closing_depth = len(stack)
+            stack.pop()
+            if testcase_stack and testcase_stack[-1]["depth"] == closing_depth:
+                tc_frame = testcase_stack.pop()
+                if tc_frame["has_fail"]:
+                    st = "fail"
+                elif tc_frame["has_skipped"]:
+                    st = "not-executed"
+                else:
+                    st = "pass"
+                _record(tc_frame["tc_ids"], st)
+            if not stack:
+                root_closed = True
+            pos = m_close.end()
+            continue
+
+        if root_closed:
+            raise ValueError(f"Malformed JUnit XML '{path_obj}': multiple root elements.")
+        m_name = _XML_NAME_RE.match(text, lt + 1)
+        if not m_name:
+            raise ValueError(f"Malformed JUnit XML '{path_obj}': invalid start tag.")
+        tag_name = m_name.group(0)
+        cur = m_name.end()
+        attrs = {}
+        self_closing = False
+
+        while True:
+            ws_start = cur
+            m_ws = _XML_WS_RE.match(text, cur)
+            cur = m_ws.end()
+            if cur >= n:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': unterminated start tag <{tag_name}>.")
+            if text.startswith("/>", cur):
+                self_closing = True
+                cur += 2
+                break
+            if text[cur] == ">":
+                self_closing = False
+                cur += 1
+                break
+            if cur == ws_start:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': missing whitespace before attribute in <{tag_name}>.")
+            m_attr = _XML_ATTR_START_RE.match(text, cur)
+            if not m_attr:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': invalid attribute syntax in <{tag_name}>.")
+            attr_name = m_attr.group(1)
+            quote = m_attr.group(2)
+            val_start = m_attr.end()
+            val_end = text.find(quote, val_start)
+            if val_end == -1:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': unterminated attribute value in <{tag_name}>.")
+            raw_val = text[val_start:val_end]
+            if "<" in raw_val:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': unescaped '<' in attribute value.")
+            if attr_name in attrs:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': duplicate attribute '{attr_name}' in <{tag_name}>.")
+            attrs[attr_name] = _unescape_xml_entities(raw_val)
+            cur = val_end + 1
+
+        saw_root = True
+        local_name = tag_name.rsplit(":", 1)[-1]
+
+        if local_name == "testcase":
+            label = f"{attrs.get('classname') or ''} {attrs.get('name') or ''}"
+            tc_ids = re.findall(r"(?<![A-Za-z0-9])TC-\d{3,}(?![0-9])", label)
+            if self_closing:
+                if tc_ids:
+                    _record(tc_ids, "pass")
+                if not stack:
+                    root_closed = True
+            else:
+                stack.append(tag_name)
+                testcase_stack.append({
+                    "depth": len(stack),
+                    "tc_ids": tc_ids,
+                    "has_fail": False,
+                    "has_skipped": False,
+                })
+        else:
+            if testcase_stack and len(stack) == testcase_stack[-1]["depth"]:
+                if local_name in ("failure", "error"):
+                    testcase_stack[-1]["has_fail"] = True
+                elif local_name == "skipped":
+                    testcase_stack[-1]["has_skipped"] = True
+            if self_closing:
+                if not stack:
+                    root_closed = True
+            else:
+                stack.append(tag_name)
+
+        pos = cur
+
+    if not saw_root:
+        raise ValueError(f"Malformed JUnit XML '{path_obj}': empty document or missing root element.")
+    if stack:
+        raise ValueError(f"Malformed JUnit XML '{path_obj}': unclosed tag <{stack[-1]}>.")
+
     return results
 
 def _inspect_qa_state(repo_root: Path, config: dict, story: dict = None) -> dict:
