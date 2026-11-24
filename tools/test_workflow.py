@@ -7593,6 +7593,8 @@ class WorkflowTestSuite(unittest.TestCase):
                 b'<testsuite><testcase name="TC-001"></testsuite>',
                 b'<testsuite><testcase name="TC-001"></testcase><extra/>',
                 b'<testsuite><testcase name="TC-001"><system-out><![CDATA[unterminated</system-out></testcase></testsuite>',
+                b'<testsuite><testcase name="TC-001" name="TC-002"/></testsuite>',
+                b'<testsuite><testcase name="TC-001\x00"/></testsuite>',
                 b"\xff\xfe\x00\x01",
             ]
             for idx, raw in enumerate(malformed_samples):
@@ -7631,22 +7633,40 @@ class WorkflowTestSuite(unittest.TestCase):
             "http://example.com/path\nX-Injected: yes",
             "http://example.com/path\x00null",
             "http://example.com/has space",
+            "http://user:SUPER_SECRET_PASS@example.com/path",
+            "http://example.com\\@evil.com/x",
+            "http://example.com\\evil.com/x",
+            "http://127.0.0.1:80/path/中文",
             "",
         ):
-            with self.assertRaises(ValueError, msg=f"Bad URL must be rejected: {bad_url!r}"):
+            with self.assertRaises(ValueError, msg=f"Bad URL must be rejected: {bad_url!r}") as url_ctx:
                 mod._http_request(bad_url)
+            self.assertNotIn("SUPER_SECRET_PASS", str(url_ctx.exception))
 
-        for bad_method in ("", "GET\r\nEvil: 1", "POST /x HTTP/1.1", "GET\x00"):
-            with self.assertRaises(ValueError, msg=f"Bad method must be rejected: {bad_method!r}"):
+        for bad_method in ("", "GET\n", "GET\r\nEvil: 1", "POST /x HTTP/1.1", "GET\x00"):
+            with self.assertRaises(ValueError, msg=f"Bad method must be rejected: {bad_method!r}") as meth_ctx:
                 mod._http_request("http://127.0.0.1/ok", method=bad_method)
+            self.assertEqual(str(meth_ctx.exception), "Invalid HTTP method.")
 
         secret_val = "SUPER_SECRET_TOKEN_XYZ\r\nInjected: 1"
         with self.assertRaises(ValueError) as hdr_ctx:
             mod._http_request("http://127.0.0.1/ok", headers={"Authorization": secret_val})
         self.assertNotIn("SUPER_SECRET_TOKEN_XYZ", str(hdr_ctx.exception))
 
-        with self.assertRaises(ValueError):
-            mod._http_request("http://127.0.0.1/ok", headers={"Bad\r\nKey": "val"})
+        for bad_hdr_name, bad_hdr_val in (
+            ("Bad\r\nKey", "val"),
+            ("X-Test\n", "1"),
+            ("Authorization\n", "Bearer SUPER_SECRET_HDR_VAL"),
+        ):
+            with self.assertRaises(ValueError) as hname_ctx:
+                mod._http_request("http://127.0.0.1/ok", headers={bad_hdr_name: bad_hdr_val})
+            self.assertEqual(str(hname_ctx.exception), "Invalid HTTP header name.")
+            self.assertNotIn("SUPER_SECRET_HDR_VAL", str(hname_ctx.exception))
+
+        with self.assertRaises(ValueError) as non_latin_ctx:
+            mod._http_request("http://127.0.0.1/ok", headers={"X-Test": "SUPER_SECRET_值"})
+        self.assertEqual(str(non_latin_ctx.exception), "Invalid HTTP header value.")
+        self.assertNotIn("SUPER_SECRET", str(non_latin_ctx.exception))
 
         # 3b. HTTPS uses ssl.create_default_context() with certificate & hostname verification
         captured_ssl = {}

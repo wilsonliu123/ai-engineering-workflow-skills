@@ -1848,8 +1848,8 @@ def resolve_acting_person(config: dict, role: str, client=None, story: dict = No
     return resolve_story_role_person(config, story, role)
 
 
-_HTTP_METHOD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9!#$%&'*+\-.^_`|~]*$")
-_HTTP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$")
+_HTTP_METHOD_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9!#$%&'*+\-.^_`|~]*\Z")
+_HTTP_HEADER_NAME_RE = re.compile(r"\A[A-Za-z0-9!#$%&'*+\-.^_`|~]+\Z")
 _SENSITIVE_REDIRECT_HEADERS = frozenset({
     "authorization",
     "token",
@@ -1872,12 +1872,16 @@ def _validate_http_url(url: str) -> tuple:
     """
     if not isinstance(url, str) or not url:
         raise ValueError("HTTP request URL must be a non-empty string.")
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F or ch.isspace() for ch in url):
-        raise ValueError("HTTP request URL contains invalid control or whitespace characters.")
+    if any(ord(ch) < 0x20 or ord(ch) >= 0x7F or ch.isspace() for ch in url):
+        raise ValueError("HTTP request URL contains invalid control, whitespace, or non-ASCII characters.")
     parsed = urllib.parse.urlsplit(url)
     scheme = (parsed.scheme or "").lower()
     if scheme not in ("http", "https"):
         raise ValueError(f"Disallowed URL scheme '{scheme or '<empty>'}'. Only http and https are allowed.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("HTTP request URL must not contain embedded userinfo credentials.")
+    if "\\" in parsed.netloc:
+        raise ValueError("HTTP request URL authority must not contain backslashes.")
     hostname = parsed.hostname
     if not hostname or any(ch.isspace() for ch in hostname):
         raise ValueError("HTTP request URL must include a non-empty hostname.")
@@ -1934,6 +1938,10 @@ def _http_request(
         v_str = str(v)
         if any((ord(ch) < 0x20 and ch != "\t") or ord(ch) == 0x7F for ch in v_str):
             raise ValueError(f"Invalid control character in HTTP header '{k}'.")
+        try:
+            v_str.encode("latin-1")
+        except UnicodeEncodeError:
+            raise ValueError("Invalid HTTP header value.") from None
         cur_headers[k] = v_str
 
     current_url = url
@@ -9042,6 +9050,8 @@ def parse_junit_xml_results(xml_path: Path) -> dict:
         text = raw_bytes.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise ValueError(f"Invalid UTF-8 encoding in JUnit XML '{path_obj}': {exc}") from exc
+    if "\x00" in text:
+        raise ValueError(f"Malformed JUnit XML '{path_obj}': NUL byte is not allowed in XML.")
 
     precedence = {"fail": 3, "blocked": 2, "not-executed": 1, "pass": 0}
     results = {}
@@ -9154,6 +9164,8 @@ def parse_junit_xml_results(xml_path: Path) -> dict:
             raw_val = text[val_start:val_end]
             if "<" in raw_val:
                 raise ValueError(f"Malformed JUnit XML '{path_obj}': unescaped '<' in attribute value.")
+            if attr_name in attrs:
+                raise ValueError(f"Malformed JUnit XML '{path_obj}': duplicate attribute '{attr_name}' in <{tag_name}>.")
             attrs[attr_name] = _unescape_xml_entities(raw_val)
             cur = val_end + 1
 
