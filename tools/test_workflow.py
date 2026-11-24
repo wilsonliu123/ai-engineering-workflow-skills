@@ -8004,13 +8004,33 @@ class WorkflowTestSuite(unittest.TestCase):
             mod._VerifiedTLSConnection("example.com", context=no_host_ctx)
 
         if hasattr(ssl, "TLSVersion"):
-            for weak_ver in (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1):
+            for weak_ver in (
+                ssl.TLSVersion.MINIMUM_SUPPORTED,
+                ssl.TLSVersion.TLSv1,
+                ssl.TLSVersion.TLSv1_1,
+            ):
                 weak_tls_ctx = ssl.create_default_context()
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", DeprecationWarning)
                     weak_tls_ctx.minimum_version = weak_ver
                 with self.assertRaises(ValueError):
                     mod._VerifiedTLSConnection("example.com", context=weak_tls_ctx)
+
+        # 2c. Default context ALPN http/1.1 fallback when set_alpn_protocols raises NotImplementedError
+        alpn_calls = []
+
+        class _NoAlpnContext:
+            minimum_version = ssl.TLSVersion.TLSv1_2 if hasattr(ssl, "TLSVersion") else 0
+
+            def set_alpn_protocols(self, protocols):
+                alpn_calls.append(list(protocols))
+                raise NotImplementedError("ALPN not supported")
+
+        no_alpn_ctx = _NoAlpnContext()
+        with mock.patch.object(mod.ssl, "create_default_context", return_value=no_alpn_ctx):
+            alpn_conn = mod._VerifiedTLSConnection("example.com")
+        self.assertIs(alpn_conn._context, no_alpn_ctx)
+        self.assertEqual(alpn_calls, [["http/1.1"]])
 
         # 3. connect() wraps socket with server_hostname == self.host (and self._tunnel_host when tunneled)
         class _FakeRawSocket:
@@ -8196,6 +8216,15 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertEqual(v6_conn.host, expected_host)
                 self.assertEqual(v6_conn.port, 443)
                 self.assertEqual(wrap_calls[-1], (raw_v6, expected_host))
+
+            # 5c-ii. Emitted Host headers for IPv6 default (443) vs non-default (8443) ports
+            v6_default_hdr_conn = mod._VerifiedTLSConnection("::1", port=443, context=_FakeContext())
+            v6_default_hdr_conn.putrequest("GET", "/rest/api")
+            self.assertIn(b"Host: [::1]", v6_default_hdr_conn._buffer)
+
+            v6_custom_hdr_conn = mod._VerifiedTLSConnection("::1", port=8443, context=_FakeContext())
+            v6_custom_hdr_conn.putrequest("GET", "/rest/api")
+            self.assertIn(b"Host: [::1]:8443", v6_custom_hdr_conn._buffer)
 
             # 5d. Scheme / host / CRLF guards still reject before opening any TLS connection
             recorded_hops.clear()

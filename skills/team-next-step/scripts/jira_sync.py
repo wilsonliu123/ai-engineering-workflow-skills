@@ -1937,10 +1937,10 @@ class _VerifiedTLSConnection(http.client.HTTPConnection):
                     raise ValueError(
                         "TLS context must require certificate verification and hostname checks."
                     )
-                if hasattr(ssl, "TLSVersion") and context.minimum_version in (
-                    ssl.TLSVersion.SSLv3,
-                    ssl.TLSVersion.TLSv1,
-                    ssl.TLSVersion.TLSv1_1,
+                if (
+                    hasattr(ssl, "TLSVersion")
+                    and context.minimum_version < ssl.TLSVersion.TLSv1_2
+                    and context.minimum_version != ssl.TLSVersion.MAXIMUM_SUPPORTED
                 ):
                     raise ValueError("TLS context must require TLS 1.2 or higher.")
             self._context = context
