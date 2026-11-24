@@ -7479,6 +7479,444 @@ class WorkflowTestSuite(unittest.TestCase):
             st_after = json.loads(st_file.read_text(encoding="utf-8"))
             self.assertNotIn("verified_deploy_ref", st_after["qa"])
 
+    def test_39_issue21_sast_remediation(self):
+        """Issue #21 SAST remediation: safe stdlib JUnit XML parser & http.client _http_request."""
+        import ast
+        import ssl
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("jira_sync_issue21", str(JIRA_SYNC))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # ------------------------------------------------------------------
+        # 1. Pure-stdlib AST & static security invariants on jira_sync.py
+        # ------------------------------------------------------------------
+        src_text = JIRA_SYNC.read_text(encoding="utf-8")
+        tree = ast.parse(src_text)
+        imported_modules = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported_modules.add(alias.name)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_modules.add(node.module)
+
+        for forbidden in ("xml", "xml.etree", "xml.etree.ElementTree", "xml.dom", "xml.sax", "xml.parsers", "urllib.request", "urllib.error"):
+            self.assertNotIn(forbidden, imported_modules, f"Forbidden import remains: {forbidden}")
+        for mod_name in imported_modules:
+            top = mod_name.split(".")[0]
+            self.assertNotEqual(top, "xml", f"Any xml.* import is forbidden: {mod_name}")
+            if hasattr(sys, "stdlib_module_names"):
+                self.assertIn(top, sys.stdlib_module_names, f"Non-stdlib import detected: {mod_name}")
+        self.assertNotIn("urlopen(", src_text)
+        self.assertNotIn("urlretrieve(", src_text)
+
+        # ------------------------------------------------------------------
+        # 2. Hardened pure-stdlib JUnit XML parser (parse_junit_xml_results)
+        # ------------------------------------------------------------------
+        with tempfile.TemporaryDirectory() as tmp:
+            tdir = Path(tmp)
+
+            # 2a. Full functional parity: pass, fail, error, skipped, self-closing,
+            #     multi-TC, precedence, comments, CDATA, '>' in attrs, namespaces, entities, BOM
+            rich_xml = (
+                "\ufeff"
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                "<!-- <testcase name='TC-999'><failure/></testcase> -->\n"
+                '<ns:testsuites xmlns:ns="urn:junit">\n'
+                '  <ns:testsuite name="suite1">\n'
+                '    <ns:testcase classname="pkg.mod" name="test_pass_TC-001"/>\n'
+                '    <ns:testcase classname="pkg.mod" name="test_pass_comments_TC-002">\n'
+                '      <!-- <failure message="fake comment failure"/> -->\n'
+                '      <system-out><![CDATA[<failure>fake cdata failure</failure><error/>]]></system-out>\n'
+                '      <system-err><![CDATA[<skipped/>]]></system-err>\n'
+                '      <properties><failure message="non-direct child"/></properties>\n'
+                '    </ns:testcase>\n'
+                '    <ns:testcase classname="pkg.mod" name="test_fail_cdata_TC-003">\n'
+                '      <ns:failure message="expected a &gt; b &amp; c &lt; d"><![CDATA[AssertionError: <a> != <b>]]></ns:failure>\n'
+                '    </ns:testcase>\n'
+                '    <ns:testcase classname="pkg.mod" name="test_error_TC-004">\n'
+                '      <error message="x > y"/>\n'
+                '    </ns:testcase>\n'
+                '    <ns:testcase classname=\'pkg.mod\' name=\'test_skip_TC-005\'>\n'
+                '      <skipped message="env missing"/>\n'
+                '    </ns:testcase>\n'
+                '    <ns:testcase classname="TC-006" name="multi TC-007 &amp; &#65;&#x42; &#9999999999999999999999999; &quot;q&quot; &apos;s&apos; x > y"/>\n'
+                '    <ns:testcase classname="pkg" name="TC-008[1]"><skipped/></ns:testcase>\n'
+                '    <ns:testcase classname="pkg" name="TC-008[2]"/>\n'
+                '    <ns:testcase classname="pkg" name="TC-009[1]"/>\n'
+                '    <ns:testcase classname="pkg" name="TC-009[2]"><skipped/></ns:testcase>\n'
+                '    <ns:testcase classname="pkg" name="TC-009[3]"><failure message="boom"/></ns:testcase>\n'
+                '    <ns:testcase classname="pkg" name="TC-010"><skipped/><failure/></ns:testcase>\n'
+                '    <ns:testcase classname="pkg" name="no_tc_id_here"/>\n'
+                '  </ns:testsuite>\n'
+                '</ns:testsuites>\n'
+            )
+            rich_path = tdir / "rich.xml"
+            rich_path.write_text(rich_xml, encoding="utf-8")
+            parsed = mod.parse_junit_xml_results(rich_path)
+            self.assertEqual(
+                parsed,
+                {
+                    "TC-001": "pass",
+                    "TC-002": "pass",
+                    "TC-003": "fail",
+                    "TC-004": "fail",
+                    "TC-005": "not-executed",
+                    "TC-006": "pass",
+                    "TC-007": "pass",
+                    "TC-008": "not-executed",
+                    "TC-009": "fail",
+                    "TC-010": "fail",
+                },
+            )
+
+            # 2b. XXE / DOCTYPE / Billion Laughs payloads MUST be rejected (fail-closed)
+            xxe_payloads = [
+                '<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><testsuite><testcase name="TC-001 &xxe;"/></testsuite>',
+                '<!DOCTYPE lolz [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;&lol;">]><testsuite><testcase name="TC-001 &lol2;"/></testsuite>',
+                '<!DOCTYPE testsuite SYSTEM "http://127.0.0.1/evil.dtd"><testsuite><testcase name="TC-001"/></testsuite>',
+            ]
+            for idx, payload in enumerate(xxe_payloads):
+                p = tdir / f"xxe_{idx}.xml"
+                p.write_text(payload, encoding="utf-8")
+                with self.assertRaises(ValueError, msg=f"XXE payload #{idx} must be rejected"):
+                    mod.parse_junit_xml_results(p)
+
+            # 2c. Malformed / truncated / empty / non-UTF-8 files raise clean ValueError
+            malformed_samples = [
+                b"",
+                b"   \n\t  ",
+                b"not xml at all",
+                b'<testsuite><testcase name="TC-001"',
+                b'<testsuite><testcase name="TC-001"></testsuite>',
+                b'<testsuite><testcase name="TC-001"></testcase><extra/>',
+                b'<testsuite><testcase name="TC-001"><system-out><![CDATA[unterminated</system-out></testcase></testsuite>',
+                b"\xff\xfe\x00\x01",
+            ]
+            for idx, raw in enumerate(malformed_samples):
+                p = tdir / f"bad_{idx}.xml"
+                p.write_bytes(raw)
+                with self.assertRaises(ValueError, msg=f"Malformed XML #{idx} must raise ValueError"):
+                    mod.parse_junit_xml_results(p)
+
+            # 2d. CLI record-qa --junit-xml fails closed on XXE XML
+            cli_root = tdir / "cli_repo"
+            cli_root.mkdir()
+            self.assertEqual(run_cli(cli_root, "init", "--project-key", "SEC").returncode, 0)
+            self.assertEqual(run_cli(cli_root, "sync-story", "--key", "SEC-1", "--title", "Sec", "--ac", "AC-001:Ok", "--status", "approved").returncode, 0)
+            self.assertEqual(run_cli(cli_root, "complete-task", "--key", "SEC-1", "--task-id", "TASK-001", "--commit", "c1", "--files", "a.py", "--test-result", "ok").returncode, 0)
+            self.assertEqual(run_cli(cli_root, "handoff", "--key", "SEC-1", "--review-status", "approved", "--commit", "c1").returncode, 0)
+            self.assertEqual(run_cli(cli_root, "record-qa", "--key", "SEC-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Ok").returncode, 0)
+            xxe_cli = run_cli(cli_root, "record-qa", "--key", "SEC-1", "--mode", "verify", "--commit", "c1", "--junit-xml", str(tdir / "xxe_0.xml"))
+            self.assertNotEqual(xxe_cli.returncode, 0)
+            self.assertIn("ERROR:", xxe_cli.stderr)
+
+        # ------------------------------------------------------------------
+        # 3. Hardened pure-stdlib _http_request validation & redirect safety
+        # ------------------------------------------------------------------
+        # 3a. Disallowed schemes, missing hostname, invalid port, CR/LF/NUL injection
+        for bad_url in (
+            "file:///etc/passwd",
+            "FILE:///etc/passwd",
+            "ftp://example.com/file.txt",
+            "gopher://127.0.0.1:70/_test",
+            "data:text/plain;base64,SGVsbG8=",
+            "//example.com/no-scheme",
+            "http:///missing-host",
+            "https://:443/missing-host",
+            "http://example.com:99999/bad-port",
+            "http://example.com/path\r\nX-Injected: yes",
+            "http://example.com/path\nX-Injected: yes",
+            "http://example.com/path\x00null",
+            "http://example.com/has space",
+            "",
+        ):
+            with self.assertRaises(ValueError, msg=f"Bad URL must be rejected: {bad_url!r}"):
+                mod._http_request(bad_url)
+
+        for bad_method in ("", "GET\r\nEvil: 1", "POST /x HTTP/1.1", "GET\x00"):
+            with self.assertRaises(ValueError, msg=f"Bad method must be rejected: {bad_method!r}"):
+                mod._http_request("http://127.0.0.1/ok", method=bad_method)
+
+        secret_val = "SUPER_SECRET_TOKEN_XYZ\r\nInjected: 1"
+        with self.assertRaises(ValueError) as hdr_ctx:
+            mod._http_request("http://127.0.0.1/ok", headers={"Authorization": secret_val})
+        self.assertNotIn("SUPER_SECRET_TOKEN_XYZ", str(hdr_ctx.exception))
+
+        with self.assertRaises(ValueError):
+            mod._http_request("http://127.0.0.1/ok", headers={"Bad\r\nKey": "val"})
+
+        # 3b. HTTPS uses ssl.create_default_context() with certificate & hostname verification
+        captured_ssl = {}
+
+        class _DummyResp:
+            status = 200
+
+            def getheaders(self):
+                return [("Content-Type", "application/json")]
+
+            def getheader(self, name, default=None):
+                return "application/json" if name.lower() == "content-type" else default
+
+            def read(self):
+                return b'{"ok":true}'
+
+        class _FakeHTTPSConn:
+            def __init__(self, host, port=None, timeout=None, context=None):
+                captured_ssl["host"] = host
+                captured_ssl["port"] = port
+                captured_ssl["timeout"] = timeout
+                captured_ssl["context"] = context
+                captured_ssl["closed"] = False
+
+            def request(self, method, target, body=None, headers=None):
+                captured_ssl["method"] = method
+                captured_ssl["target"] = target
+
+            def getresponse(self):
+                return _DummyResp()
+
+            def close(self):
+                captured_ssl["closed"] = True
+
+        with mock.patch("http.client.HTTPSConnection", _FakeHTTPSConn):
+            st, hdrs, body_b = mod._http_request("https://api.example.com/v1/ping?x=1", method="GET", timeout=12)
+        self.assertEqual(st, 200)
+        self.assertEqual(body_b, b'{"ok":true}')
+        self.assertEqual(captured_ssl["host"], "api.example.com")
+        self.assertEqual(captured_ssl["target"], "/v1/ping?x=1")
+        self.assertEqual(captured_ssl["timeout"], 12)
+        self.assertTrue(captured_ssl["closed"])
+        self.assertIsInstance(captured_ssl["context"], ssl.SSLContext)
+        self.assertEqual(captured_ssl["context"].verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(captured_ssl["context"].check_hostname)
+
+        # 3c. Real local HTTP servers for GET/POST/PUT/204/404/500/multipart + redirects
+        received_b = []
+
+        class ServerBHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def do_GET(self):
+                received_b.append({
+                    "method": "GET",
+                    "path": self.path,
+                    "headers": {k.lower(): v for k, v in self.headers.items()},
+                })
+                payload = json.dumps({"server": "B", "path": self.path}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        srv_b = HTTPServer(("127.0.0.1", 0), ServerBHandler)
+        port_b = srv_b.server_address[1]
+        tb = threading.Thread(target=srv_b.serve_forever, daemon=True)
+        tb.start()
+
+        received_a = []
+
+        class ServerAHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass
+
+            def _read_body(self):
+                clen = int(self.headers.get("Content-Length") or "0")
+                return self.rfile.read(clen) if clen else b""
+
+            def _send_json(self, code, obj, extra_headers=None):
+                data = json.dumps(obj).encode("utf-8") if obj is not None else b""
+                self.send_response(code)
+                if extra_headers:
+                    for hk, hv in extra_headers.items():
+                        self.send_header(hk, hv)
+                if obj is not None:
+                    self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                if data:
+                    self.wfile.write(data)
+
+            def do_GET(self):
+                received_a.append({
+                    "method": "GET",
+                    "path": self.path,
+                    "headers": {k.lower(): v for k, v in self.headers.items()},
+                })
+                if self.path == "/same-origin-redir":
+                    self._send_json(302, None, {"Location": "/same-origin-final"})
+                elif self.path == "/same-origin-final":
+                    self._send_json(200, {"ok": True, "auth": self.headers.get("Authorization", ""), "token": self.headers.get("Token", "")})
+                elif self.path == "/cross-origin-redir":
+                    self._send_json(302, None, {"Location": f"http://127.0.0.1:{port_b}/landed"})
+                elif self.path == "/evil-file-redir":
+                    self._send_json(302, None, {"Location": "file:///etc/passwd"})
+                elif self.path == "/evil-ftp-redir":
+                    self._send_json(302, None, {"Location": "ftp://attacker.example/secret"})
+                elif self.path == "/loop-a":
+                    self._send_json(302, None, {"Location": "/loop-b"})
+                elif self.path == "/loop-b":
+                    self._send_json(302, None, {"Location": "/loop-a"})
+                elif self.path.startswith("/chain/"):
+                    hop = int(self.path.rsplit("/", 1)[-1])
+                    self._send_json(302, None, {"Location": f"/chain/{hop + 1}"})
+                elif self.path == "/no-content":
+                    self.send_response(204)
+                    self.end_headers()
+                elif self.path == "/rest/api/3/issue/MISS-1":
+                    self._send_json(404, {"errorMessages": ["Issue Does Not Exist"]})
+                elif self.path == "/rest/api/3/myself":
+                    self._send_json(500, {"error": "Internal Error"})
+                elif self.path == "/v1/case/PROJ":
+                    self._send_json(200, {"status": False, "errorMessage": "Invalid project"})
+                else:
+                    self._send_json(200, {"path": self.path})
+
+            def do_POST(self):
+                raw = self._read_body()
+                received_a.append({
+                    "method": "POST",
+                    "path": self.path,
+                    "body": raw,
+                    "headers": {k.lower(): v for k, v in self.headers.items()},
+                })
+                if self.path == "/post-302":
+                    self._send_json(302, None, {"Location": "/same-origin-final"})
+                elif self.path == "/post-307":
+                    self._send_json(307, None, {"Location": "/post-307-target"})
+                elif self.path == "/post-307-target":
+                    self._send_json(200, {"echo": raw.decode("utf-8", errors="replace"), "method": "POST"})
+                elif self.path == "/rest/api/3/issue/DEMO-1/attachments":
+                    self._send_json(200, [{"id": "att-1", "filename": "shot.png", "size": 10, "mimeType": "image/png", "content": "http://example/att-1"}])
+                elif self.path == "/v1/attachment/QA":
+                    self._send_json(200, {"status": True, "result": [{"hash": "h123", "url": "http://example/h123"}]})
+                else:
+                    self._send_json(201, {"created": True})
+
+            def do_PUT(self):
+                raw = self._read_body()
+                received_a.append({"method": "PUT", "path": self.path, "body": raw})
+                self.send_response(204)
+                self.end_headers()
+
+        srv_a = HTTPServer(("127.0.0.1", 0), ServerAHandler)
+        port_a = srv_a.server_address[1]
+        ta = threading.Thread(target=srv_a.serve_forever, daemon=True)
+        ta.start()
+
+        try:
+            base_a = f"http://127.0.0.1:{port_a}"
+
+            # 204 No Content
+            st_204, _, body_204 = mod._http_request(f"{base_a}/no-content", method="GET")
+            self.assertEqual(st_204, 204)
+            self.assertEqual(body_204, b"")
+
+            # Same-origin redirect preserves Authorization & Token
+            st_same, _, body_same = mod._http_request(
+                f"{base_a}/same-origin-redir",
+                headers={"Authorization": "Basic abc", "Token": "tok123"},
+            )
+            self.assertEqual(st_same, 200)
+            same_json = json.loads(body_same.decode("utf-8"))
+            self.assertEqual(same_json["auth"], "Basic abc")
+            self.assertEqual(same_json["token"], "tok123")
+
+            # POST -> 302 downgrades to GET with no body
+            st_p302, _, body_p302 = mod._http_request(
+                f"{base_a}/post-302",
+                method="POST",
+                headers={"Content-Type": "application/json", "Authorization": "Basic abc"},
+                body=b'{"x":1}',
+            )
+            self.assertEqual(st_p302, 200)
+            self.assertEqual(received_a[-1]["method"], "GET")
+            self.assertNotIn("content-type", received_a[-1]["headers"])
+
+            # POST -> 307 preserves POST method & body
+            st_p307, _, body_p307 = mod._http_request(
+                f"{base_a}/post-307",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body=b'{"keep":true}',
+            )
+            self.assertEqual(st_p307, 200)
+            self.assertEqual(json.loads(body_p307.decode("utf-8")), {"echo": '{"keep":true}', "method": "POST"})
+
+            # Cross-origin redirect MUST strip Authorization, Token, Cookie, Proxy-Authorization
+            st_cross, _, _ = mod._http_request(
+                f"{base_a}/cross-origin-redir",
+                headers={
+                    "Authorization": "Basic secret",
+                    "Token": "qase-secret",
+                    "Cookie": "sid=secret",
+                    "Proxy-Authorization": "Basic proxy-secret",
+                    "X-Custom-Safe": "keep-me",
+                },
+            )
+            self.assertEqual(st_cross, 200)
+            self.assertEqual(len(received_b), 1)
+            b_hdrs = received_b[0]["headers"]
+            for stripped in ("authorization", "token", "cookie", "proxy-authorization"):
+                self.assertNotIn(stripped, b_hdrs, f"Sensitive header {stripped} leaked across origin!")
+            self.assertEqual(b_hdrs.get("x-custom-safe"), "keep-me")
+
+            # Redirect to file:// or ftp:// MUST raise ValueError
+            with self.assertRaises(ValueError):
+                mod._http_request(f"{base_a}/evil-file-redir")
+            with self.assertRaises(ValueError):
+                mod._http_request(f"{base_a}/evil-ftp-redir")
+
+            # Redirect loop and max_redirects cap MUST raise RuntimeError
+            with self.assertRaises(RuntimeError):
+                mod._http_request(f"{base_a}/loop-a")
+            with self.assertRaises(RuntimeError):
+                mod._http_request(f"{base_a}/chain/0", max_redirects=3)
+
+            # JiraClient._request 404 / 500 / 204 & upload_attachments via _http_request
+            jc = mod.JiraClient({"jira_base_url": base_a}, offline=False)
+            jc.email = "dev@team.io"
+            jc.api_token = "tok"
+            jc.offline = False
+
+            with self.assertRaises(RuntimeError) as ctx_404:
+                jc._request("GET", "/rest/api/3/issue/MISS-1")
+            self.assertIn("HTTP 404", str(ctx_404.exception))
+
+            with self.assertRaises(RuntimeError) as ctx_500:
+                jc._request("GET", "/rest/api/3/myself")
+            self.assertIn("HTTP 500", str(ctx_500.exception))
+
+            self.assertEqual(jc._request("PUT", "/rest/api/3/issue/DEMO-1", {"fields": {}}), {})
+
+            with tempfile.TemporaryDirectory() as att_tmp:
+                shot = Path(att_tmp) / "shot.png"
+                shot.write_bytes(b"\x89PNG\r\n\x1a\n00")
+                vfs = mod.validate_attachment_files([str(shot)])
+                jira_atts = jc.add_attachments("DEMO-1", vfs)
+                self.assertEqual(jira_atts[0]["id"], "att-1")
+
+                # QaseClient._request & upload_attachments via _http_request
+                qc = mod.QaseClient({"qase": {"project_code": "QA", "base_url": f"{base_a}/v1"}}, offline=False)
+                qc.api_token = "qtok"
+                qc.has_credentials = True
+                with self.assertRaises(RuntimeError) as ctx_qase:
+                    qc._request("GET", "/case/PROJ")
+                self.assertIn("status=false", str(ctx_qase.exception))
+
+                hashes, recs, _ = qc.upload_attachments(vfs)
+                self.assertEqual(hashes, ["h123"])
+                self.assertEqual(recs[0]["hash"], "h123")
+        finally:
+            srv_a.shutdown()
+            srv_a.server_close()
+            srv_b.shutdown()
+            srv_b.server_close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
