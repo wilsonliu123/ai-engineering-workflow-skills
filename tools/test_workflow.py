@@ -7683,12 +7683,13 @@ class WorkflowTestSuite(unittest.TestCase):
             def read(self):
                 return b'{"ok":true}'
 
-        class _FakeHTTPSConn:
+        class _FakeHTTPSConn(mod._VerifiedTLSConnection):
             def __init__(self, host, port=None, timeout=None, context=None):
-                captured_ssl["host"] = host
-                captured_ssl["port"] = port
-                captured_ssl["timeout"] = timeout
-                captured_ssl["context"] = context
+                super().__init__(host, port=port, timeout=timeout, context=context)
+                captured_ssl["host"] = self.host
+                captured_ssl["port"] = self.port
+                captured_ssl["timeout"] = self.timeout
+                captured_ssl["context"] = self._context
                 captured_ssl["closed"] = False
 
             def request(self, method, target, body=None, headers=None):
@@ -7941,7 +7942,10 @@ class WorkflowTestSuite(unittest.TestCase):
         """Issue #23 (Part 1): pure-stdlib _VerifiedTLSConnection replaces HTTPSConnection with leak-free verified TLS."""
         import ast
         import http.client
+        import shutil
+        import socket
         import ssl
+        import warnings
         from unittest import mock
 
         spec = importlib.util.spec_from_file_location("jira_sync_issue23", str(JIRA_SYNC))
@@ -7964,7 +7968,7 @@ class WorkflowTestSuite(unittest.TestCase):
                 if hasattr(sys, "stdlib_module_names"):
                     self.assertIn(top, sys.stdlib_module_names, f"Non-stdlib import: {node.module}")
 
-        # 2. Class contract: subclasses HTTPConnection, default_port == 443, verified default SSLContext
+        # 2. Class contract: subclasses HTTPConnection, default_port == 443, verified default SSLContext >= TLS 1.2
         self.assertTrue(issubclass(mod._VerifiedTLSConnection, http.client.HTTPConnection))
         self.assertEqual(mod._VerifiedTLSConnection.default_port, 443)
         self.assertEqual(mod._VerifiedTLSConnection.default_port, http.client.HTTPS_PORT)
@@ -7974,6 +7978,39 @@ class WorkflowTestSuite(unittest.TestCase):
         self.assertIsInstance(default_conn._context, ssl.SSLContext)
         self.assertEqual(default_conn._context.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(default_conn._context.check_hostname)
+        if hasattr(ssl, "TLSVersion"):
+            self.assertGreaterEqual(default_conn._context.minimum_version, ssl.TLSVersion.TLSv1_2)
+
+        # 2b. Reject weakened ssl.SSLContext instances (CERT_NONE, CERT_OPTIONAL, check_hostname=False, TLS < 1.2)
+        unverified_ctx = ssl._create_unverified_context()
+        with self.assertRaises(ValueError):
+            mod._VerifiedTLSConnection("example.com", context=unverified_ctx)
+
+        cert_none_ctx = ssl.create_default_context()
+        cert_none_ctx.check_hostname = False
+        cert_none_ctx.verify_mode = ssl.CERT_NONE
+        with self.assertRaises(ValueError):
+            mod._VerifiedTLSConnection("example.com", context=cert_none_ctx)
+
+        cert_opt_ctx = ssl.create_default_context()
+        cert_opt_ctx.check_hostname = False
+        cert_opt_ctx.verify_mode = ssl.CERT_OPTIONAL
+        with self.assertRaises(ValueError):
+            mod._VerifiedTLSConnection("example.com", context=cert_opt_ctx)
+
+        no_host_ctx = ssl.create_default_context()
+        no_host_ctx.check_hostname = False
+        with self.assertRaises(ValueError):
+            mod._VerifiedTLSConnection("example.com", context=no_host_ctx)
+
+        if hasattr(ssl, "TLSVersion"):
+            for weak_ver in (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1):
+                weak_tls_ctx = ssl.create_default_context()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    weak_tls_ctx.minimum_version = weak_ver
+                with self.assertRaises(ValueError):
+                    mod._VerifiedTLSConnection("example.com", context=weak_tls_ctx)
 
         # 3. connect() wraps socket with server_hostname == self.host (and self._tunnel_host when tunneled)
         class _FakeRawSocket:
@@ -8024,7 +8061,7 @@ class WorkflowTestSuite(unittest.TestCase):
         self.assertEqual(wrap_calls[-1], (raw_tunnel, "target.example.com"))
         self.assertFalse(raw_tunnel.closed)
 
-        # 4. Zero socket leak when wrap_socket raises ssl.SSLError (including when raw close also errors)
+        # 4. Zero socket leak when wrap_socket raises ssl.SSLError or KeyboardInterrupt (BaseException)
         for fail_close in (False, True):
             raw_fail = _FakeRawSocket(fail_close=fail_close)
             conn_fail = mod._VerifiedTLSConnection(
@@ -8039,8 +8076,20 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertTrue(raw_fail.closed)
             self.assertEqual(raw_fail.close_calls, 1)
 
+        raw_kbi = _FakeRawSocket()
+        conn_kbi = mod._VerifiedTLSConnection(
+            "interrupt.example.com",
+            context=_FakeContext(fail_exc=KeyboardInterrupt("aborted handshake")),
+        )
+        conn_kbi._create_connection = lambda addr, timeout, src: raw_kbi
+        with self.assertRaises(KeyboardInterrupt):
+            conn_kbi.connect()
+        self.assertIsNone(conn_kbi.sock)
+        self.assertTrue(raw_kbi.closed)
+        self.assertEqual(raw_kbi.close_calls, 1)
+
         # 5. _http_request("https://example.com/rest/api") uses _VerifiedTLSConnection with verified
-        #    default SSL context and preserves scheme/host/CRLF/redirect/credential-stripping checks
+        #    default SSL context, effective_port, IPv6 safety, and preserves scheme/host/CRLF/redirect checks
         recorded_hops = []
 
         class _StubResp:
@@ -8061,13 +8110,14 @@ class WorkflowTestSuite(unittest.TestCase):
             def read(self):
                 return self._body
 
-        class _RecordingTLSConn:
+        class _RecordingTLSConn(mod._VerifiedTLSConnection):
             def __init__(self, host, port=None, timeout=None, context=None):
+                super().__init__(host, port=port, timeout=timeout, context=context)
                 self.entry = {
-                    "host": host,
-                    "port": port,
-                    "timeout": timeout,
-                    "context": context,
+                    "host": self.host,
+                    "port": self.port,
+                    "timeout": self.timeout,
+                    "context": self._context,
                     "closed": False,
                 }
                 recorded_hops.append(self.entry)
@@ -8086,19 +8136,21 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.entry["closed"] = True
 
         with mock.patch.object(mod, "_VerifiedTLSConnection", _RecordingTLSConn):
-            # 5a. Direct HTTPS call
+            # 5a. Direct HTTPS call uses effective_port 443 and verified default SSLContext >= TLS 1.2
             st, _, body = mod._http_request("https://example.com/rest/api", method="GET", timeout=9)
             self.assertEqual(st, 200)
             self.assertEqual(body, b'{"ok":true}')
             hop0 = recorded_hops[-1]
             self.assertEqual(hop0["host"], "example.com")
-            self.assertIsNone(hop0["port"])
+            self.assertEqual(hop0["port"], 443)
             self.assertEqual(hop0["target"], "/rest/api")
             self.assertEqual(hop0["timeout"], 9)
             self.assertTrue(hop0["closed"])
             self.assertIsInstance(hop0["context"], ssl.SSLContext)
             self.assertEqual(hop0["context"].verify_mode, ssl.CERT_REQUIRED)
             self.assertTrue(hop0["context"].check_hostname)
+            if hasattr(ssl, "TLSVersion"):
+                self.assertGreaterEqual(hop0["context"].minimum_version, ssl.TLSVersion.TLSv1_2)
 
             # 5b. Cross-origin HTTPS redirect strips credentials and keeps verified TLS on every hop
             recorded_hops.clear()
@@ -8119,11 +8171,33 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertEqual(recorded_hops[1]["headers"].get("X-Safe"), "keep")
             for hop in recorded_hops:
                 self.assertTrue(hop["closed"])
+                self.assertEqual(hop["port"], 443)
                 self.assertIsInstance(hop["context"], ssl.SSLContext)
                 self.assertEqual(hop["context"].verify_mode, ssl.CERT_REQUIRED)
                 self.assertTrue(hop["context"].check_hostname)
 
-            # 5c. Scheme / host / CRLF guards still reject before opening any TLS connection
+            # 5c. Default-port IPv6 HTTPS URLs preserve unbracketed host, port 443, and SNI server_hostname
+            for ipv6_url, expected_host in (
+                ("https://[::1]/rest/api", "::1"),
+                ("https://[2001:db8::a]/rest/api", "2001:db8::a"),
+            ):
+                recorded_hops.clear()
+                st_v6, _, _ = mod._http_request(ipv6_url, method="GET", timeout=7)
+                self.assertEqual(st_v6, 200)
+                self.assertEqual(len(recorded_hops), 1)
+                self.assertEqual(recorded_hops[0]["host"], expected_host)
+                self.assertEqual(recorded_hops[0]["port"], 443)
+                self.assertEqual(recorded_hops[0]["target"], "/rest/api")
+
+                raw_v6 = _FakeRawSocket()
+                v6_conn = mod._VerifiedTLSConnection(expected_host, port=443, context=_FakeContext())
+                v6_conn._create_connection = lambda addr, timeout, src, s=raw_v6: s
+                v6_conn.connect()
+                self.assertEqual(v6_conn.host, expected_host)
+                self.assertEqual(v6_conn.port, 443)
+                self.assertEqual(wrap_calls[-1], (raw_v6, expected_host))
+
+            # 5d. Scheme / host / CRLF guards still reject before opening any TLS connection
             recorded_hops.clear()
             for bad_url in (
                 "file:///etc/passwd",
@@ -8136,6 +8210,99 @@ class WorkflowTestSuite(unittest.TestCase):
             with self.assertRaises(ValueError):
                 mod._http_request("https://example.com/rest/api", headers={"X-Test": "bad\r\nInject: 1"})
             self.assertEqual(recorded_hops, [])
+
+        # 5e. Default-port IPv6 HTTP URL preserves host "::1" and port 80
+        recorded_http_v6 = []
+
+        class _RecordingHTTPConn(http.client.HTTPConnection):
+            def __init__(self, host, port=None, timeout=None):
+                super().__init__(host, port=port, timeout=timeout)
+                self.entry = {"host": self.host, "port": self.port, "closed": False}
+                recorded_http_v6.append(self.entry)
+
+            def request(self, method, target, body=None, headers=None):
+                self.entry["target"] = target
+
+            def getresponse(self):
+                return _StubResp(200, [("Content-Type", "application/json")], b'{"v6":true}')
+
+            def close(self):
+                self.entry["closed"] = True
+
+        with mock.patch("http.client.HTTPConnection", _RecordingHTTPConn):
+            st_hv6, _, body_hv6 = mod._http_request("http://[::1]/rest/api", method="GET", timeout=7)
+        self.assertEqual(st_hv6, 200)
+        self.assertEqual(body_hv6, b'{"v6":true}')
+        self.assertEqual(len(recorded_http_v6), 1)
+        self.assertEqual(recorded_http_v6[0]["host"], "::1")
+        self.assertEqual(recorded_http_v6[0]["port"], 80)
+        self.assertEqual(recorded_http_v6[0]["target"], "/rest/api")
+        self.assertTrue(recorded_http_v6[0]["closed"])
+
+        # 6. Real loopback TLS rejection test against an untrusted self-signed certificate
+        if shutil.which("openssl"):
+            with tempfile.TemporaryDirectory() as tls_tmp:
+                cert_file = Path(tls_tmp) / "selfsigned.crt"
+                key_file = Path(tls_tmp) / "selfsigned.key"
+                gen = subprocess.run(
+                    [
+                        "openssl",
+                        "req",
+                        "-x509",
+                        "-newkey",
+                        "rsa:2048",
+                        "-keyout",
+                        str(key_file),
+                        "-out",
+                        str(cert_file),
+                        "-days",
+                        "1",
+                        "-nodes",
+                        "-subj",
+                        "/CN=127.0.0.1",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                self.assertEqual(gen.returncode, 0)
+
+                srv_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                srv_ctx.load_cert_chain(certfile=str(cert_file), keyfile=str(key_file))
+
+                listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                listener.settimeout(5)
+                tls_port = listener.getsockname()[1]
+
+                def _serve_once():
+                    try:
+                        client_sock, _ = listener.accept()
+                        try:
+                            with srv_ctx.wrap_socket(client_sock, server_side=True) as tls_sock:
+                                tls_sock.recv(1024)
+                        except (ssl.SSLError, OSError):
+                            pass
+                        finally:
+                            try:
+                                client_sock.close()
+                            except OSError:
+                                pass
+                    except OSError:
+                        pass
+
+                t_srv = threading.Thread(target=_serve_once, daemon=True)
+                t_srv.start()
+                try:
+                    live_conn = mod._VerifiedTLSConnection("127.0.0.1", port=tls_port, timeout=5)
+                    with self.assertRaises(ssl.SSLCertVerificationError):
+                        live_conn.connect()
+                    self.assertIsNone(live_conn.sock)
+                finally:
+                    listener.close()
+                    t_srv.join(timeout=5)
 
 
 if __name__ == "__main__":

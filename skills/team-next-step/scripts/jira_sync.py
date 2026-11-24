@@ -1922,7 +1922,28 @@ class _VerifiedTLSConnection(http.client.HTTPConnection):
             source_address=source_address,
             blocksize=blocksize,
         )
-        self._context = context if context is not None else ssl.create_default_context()
+        if context is None:
+            ctx = ssl.create_default_context()
+            if hasattr(ssl, "TLSVersion") and ctx.minimum_version < ssl.TLSVersion.TLSv1_2:
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            try:
+                ctx.set_alpn_protocols(["http/1.1"])
+            except (AttributeError, NotImplementedError):
+                pass
+            self._context = ctx
+        else:
+            if isinstance(context, ssl.SSLContext):
+                if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+                    raise ValueError(
+                        "TLS context must require certificate verification and hostname checks."
+                    )
+                if hasattr(ssl, "TLSVersion") and context.minimum_version in (
+                    ssl.TLSVersion.SSLv3,
+                    ssl.TLSVersion.TLSv1,
+                    ssl.TLSVersion.TLSv1_1,
+                ):
+                    raise ValueError("TLS context must require TLS 1.2 or higher.")
+            self._context = context
 
     def connect(self):
         super().connect()
@@ -1998,12 +2019,11 @@ def _http_request(
         if scheme == "https":
             conn = _VerifiedTLSConnection(
                 hostname,
-                port=port,
+                port=effective_port,
                 timeout=timeout,
-                context=ssl.create_default_context(),
             )
         else:
-            conn = http.client.HTTPConnection(hostname, port=port, timeout=timeout)
+            conn = http.client.HTTPConnection(hostname, port=effective_port, timeout=timeout)
         try:
             conn.request(cur_method, target, body=cur_body, headers=cur_headers)
             resp = conn.getresponse()
