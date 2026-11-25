@@ -1,36 +1,36 @@
 ---
 name: team-init
-description: Use when onboarding a repository to the team's AI engineering workflow, when .ai-workflow/team-config.json or .ai-workflow/credentials.json is missing or needs updating, when configuring role-to-person mappings, Jira URL, account email, or API token, or when extracting and deduplicating docs/shared/engineering-standards.md from AGENTS.md.
+description: Use when onboarding a repository to the team's AI engineering workflow, when .ai-workflow/team-config.json or local Jira credentials (env vars or ~/.config/ai-workflow/credentials/) are missing or need updating, when configuring role-to-person mappings, Jira URL, account email, or API token, or when extracting and deduplicating docs/shared/engineering-standards.md from AGENTS.md.
 ---
 
 # Team Init (Project, Jira Credentials & Role Initialization)
 
 ## Overview
 
-Initialize a repository for the 4-station Jira-centered small-team workflow through an **interactive inquiry-first flow**. Before writing any configuration, confirm the project's **Jira Base URL & Project Key**, **Jira Account Email & API Token** (stored in gitignored `.ai-workflow/credentials.json` with `0600` permissions), and **Role-to-Person Mappings** (`pm`, `tech_lead`, `developer`, `reviewer`, `qa`, `release_manager`), then extract and deduplicate `docs/shared/engineering-standards.md` from `AGENTS.md`.
+Initialize a repository for the 4-station Jira-centered small-team workflow through an **interactive inquiry-first flow**. Before writing any configuration, confirm the project's **Jira Base URL & Project Key**, **Jira Account Email & API Token** (preferring runtime environment variables `JIRA_EMAIL` / `JIRA_API_TOKEN` or out-of-repo user config under `~/.config/ai-workflow/credentials/` with `0600` permissions; legacy gitignored `.ai-workflow/credentials.json` remains 100% backward-compatible), and **Role-to-Person Mappings** (`pm`, `tech_lead`, `developer`, `reviewer`, `qa`, `release_manager`), then extract and deduplicate `docs/shared/engineering-standards.md` from `AGENTS.md`.
 
 Read `references/common-workflow-governance.md` for the authoritative asset boundary and multi-role handoff rules.
 
 ## When to Use
 
 - Onboarding a new or existing repository to the `ai-engineering-workflow` skill suite (`init` mode).
-- **Collaborator Auth Mode (`auth` mode):** When a teammate has just `git clone`d an already-initialized repository (`.ai-workflow/team-config.json` exists with `jira_base_url`, while `.ai-workflow/credentials.json` is gitignored and missing on their machine), or when `$team-next-step` returns `requires_member_auth: true`.
+- **Collaborator Auth Mode (`auth` mode):** When a teammate has just `git clone`d an already-initialized repository (`.ai-workflow/team-config.json` exists with `jira_base_url`, while local credentials are not yet configured on their machine), or when `$team-next-step` returns `requires_member_auth: true`.
 - `team-next-step` or any station skill reports that `.ai-workflow/team-config.json` is missing.
 - Configuring or updating the Jira project URL (`jira_base_url`), Jira account email (`JIRA_EMAIL`), or API token (`JIRA_API_TOKEN`).
 - Adding, changing, or consolidating team members and their accounts across roles (`pm`, `tech_lead`, `developer`, `reviewer`, `qa`, `release_manager`).
 - Extracting engineering rules from `AGENTS.md` into `docs/shared/engineering-standards.md` so the two files never diverge.
 
 **When NOT to use:**
-- Routine per-feature work when `.ai-workflow/team-config.json`, `.ai-workflow/credentials.json`, and `docs/shared/engineering-standards.md` are already configured (use `team-spec` or `team-next-step`).
+- Routine per-feature work when `.ai-workflow/team-config.json`, local Jira credentials, and `docs/shared/engineering-standards.md` are already configured (use `team-spec` or `team-next-step`).
 
 ## Quick Reference
 
 | Output / Target | Purpose | Committed to Git? |
 |---|---|---|
 | `.ai-workflow/team-config.json` | Project key, Jira base URL, optional Scrum `jira_board_id`, status/issue-type mapping, and role-to-person mapping (`name`, `email`, `jira_account_id`) | **Yes** |
-| `.ai-workflow/credentials.json` | Local Jira authentication credentials (`jira_base_url`, `jira_email`, `jira_api_token`, `chmod 0600`) auto-loaded by `jira_sync.py` | **No (Gitignored)** |
+| `~/.config/ai-workflow/credentials/<repo-id>.json` *(or env vars)* | Default out-of-repo local Jira/Qase credentials (`0700` dir, `0600` atomic write, shared across Git worktrees; eliminates Gitleaks hits inside the repo). Pure env-var auth (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `QASE_API_TOKEN` with `--credential-store env`) writes zero files. Legacy `.ai-workflow/credentials.json` remains backward-compatible. | **No (Out of Repo)** |
 | `.ai-workflow/bin/jira_sync.py` | Project-local unified CLI wrapper (works even when skills are installed globally) | **Yes** |
-| `.gitignore` | Ignores `.ai-workflow/active/`, `.ai-workflow/credentials.json`, and `.ai-workflow/.env` | **Yes** |
+| `.gitignore` | Defense-in-depth ignore entries for `.ai-workflow/active/`, legacy `.ai-workflow/credentials.json`, and `.ai-workflow/.env` | **Yes** |
 | `docs/shared/engineering-standards.md` | Canonical repository-wide engineering, testing, security, and Git Commit/PR standards (§1–§4) | **Yes** |
 | `AGENTS.md` | Trimmed of duplicated standards; links to `docs/shared/engineering-standards.md` | **Yes** |
 
@@ -43,13 +43,19 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 ## Workflow
 
 ### Fast Path for Collaborators Cloning an Existing Repo (`auth` Mode — Progressive & Multi-Member Role Pools)
-When `.ai-workflow/team-config.json` **already exists** with a configured `jira_base_url` and a teammate clones the repo without local `.ai-workflow/credentials.json` (for example, `status` reported `requires_member_auth: true`):
-1. Run `python3 .ai-workflow/bin/jira_sync.py --repo-root . auth --inspect` to view `claimed_roles` (including multi-member `members` pools), `unclaimed_roles`, and whether `qase_required` is `true`.
+When `.ai-workflow/team-config.json` **already exists** with a configured `jira_base_url` and a teammate clones the repo without local Jira credentials (for example, `status` reported `requires_member_auth: true`):
+1. Run `python3 .ai-workflow/bin/jira_sync.py --repo-root . auth --inspect` to view `claimed_roles` (including multi-member `members` pools), `unclaimed_roles`, `credential_source`, and whether `qase_required` is `true`.
 2. **STOP and show the current role board** (which roles already have member(s) vs. still in `unclaimed_roles`), then ask this collaborator:
    - **請問您負責哪一個（或哪幾個）角色？**（例如 `developer`、`qa`、`reviewer,qa`；同一角色支援多人共擔，預設會**追加（append）**至該角色的 `members` 成員池而不會覆蓋既有成員；若有多位 RD，可選填專長 `--specialty backend|frontend|mobile|devops` 以利子任務自動分派。）
-   - **請問您的個人 Jira Email 與 Jira API Token 為何？**（顯示名稱選填，系統可透過 `/rest/api/3/myself` 自動帶入；若認領 `qa` 且 `qase_required: true`，請一併提供 **Qase API Token**。）
-3. Run:
+   - **請問您偏好使用純環境變數（`JIRA_EMAIL` + `JIRA_API_TOKEN`，零本地 Token 檔案）或由本機工具安全存放在 Repo 外部（`~/.config/ai-workflow/credentials/`，權限 `0600`）？**（顯示名稱選填，系統可透過 `/rest/api/3/myself` 自動帶入；若認領 `qa` 且 `qase_required: true`，請一併提供或設定 **Qase API Token / `QASE_API_TOKEN`**。）
+3. Run either **Pure Env-Var Auth** (preferred when secrets come from shell/direnv/1Password/CI; writes ZERO files) or **Out-of-Repo User Store Auth** (default when passing `--jira-token`):
    ```bash
+   # Option 1 (Preferred — Pure Env-Var Auth, zero token file written):
+   python3 .ai-workflow/bin/jira_sync.py --repo-root . auth \
+     --role "<CLAIMED_ROLES_COMMA_SEPARATED>" \
+     --credential-store env
+
+   # Option 2 (Default local persistence — stored OUTSIDE repo under ~/.config/ai-workflow/credentials/, mode 0600):
    python3 .ai-workflow/bin/jira_sync.py --repo-root . auth \
      --role "<CLAIMED_ROLES_COMMA_SEPARATED>" \
      [--specialty "<backend|frontend|mobile|devops>"] \
@@ -59,11 +65,11 @@ When `.ai-workflow/team-config.json` **already exists** with a configured `jira_
      --jira-token "<COLLABORATOR_JIRA_API_TOKEN>" \
      [--qase-token "<QASE_API_TOKEN>"]
    ```
-   - **Secrets stay local:** All tokens write exclusively to gitignored `.ai-workflow/credentials.json` (`0600`, under `role_credentials` and `member_credentials[<email>]`).
+   - **Secrets stay outside the repository by default:** Tokens are written to `$XDG_CONFIG_HOME/ai-workflow/credentials/<repo-id>.json` (default `~/.config/ai-workflow/credentials/`, dir `0700`, file `0600`, atomic write, symlink refusal) — eliminating Gitleaks/secret-scanner false positives inside the repo. Existing legacy `<repo>/.ai-workflow/credentials.json` files remain 100% backward-compatible (and `--credential-store repo` is available if explicitly requested).
    - **Non-destructive multi-member pool upsert:** `auth` verifies `/rest/api/3/myself` and appends/updates the collaborator (`name`, `email`, `jira_account_id`, optional `specialty`) in `.ai-workflow/team-config.json` (`--replace-role` only when intentionally replacing an outgoing owner). Remind the collaborator to commit `.ai-workflow/team-config.json` if `team_config_modified` is `true`, then run `status` (`$team-next-step`)!
 
 ### Step 1: Inspect existing repository state (`init --inspect`)
-1. Run pre-init inspection to check whether `.ai-workflow/team-config.json`, `.ai-workflow/credentials.json`, `AGENTS.md`, `docs/shared/engineering-standards.md`, and `.gitignore` exist:
+1. Run pre-init inspection to check whether `.ai-workflow/team-config.json`, local credentials (env vars / user config / legacy `.ai-workflow/credentials.json`), `AGENTS.md`, `docs/shared/engineering-standards.md`, and `.gitignore` exist:
    ```bash
    python3 <skill-dir>/scripts/jira_sync.py --repo-root . init --inspect
    ```
@@ -91,7 +97,7 @@ If any of the following items have not been explicitly provided or confirmed by 
    - **漸進式角色認領（Progressive Role Claiming）**：初始化者**不需要**預先幫所有人代填帳號或收集他人的 Token！您可以直接詢問使用者：
      - **「請問您自己負責哪幾個角色（例如 `pm, tech_lead, developer`）？以及您的姓名、Jira Email 與 API Token 為何？」**
      - 其他尚未確定的角色可直接留空（標記為 `unclaimed_roles`），當第二、第三位協作者 `git clone` 專案並執行 `$team-next-step` 時，系統會自動請他們認領自己的角色並綁定各自的本機 Token！（若初始化時已知全體成員，仍可透過 `--roles-json` 一次填齊。）
-   - **安全儲存承諾**：所有 API Token 皆**只會寫入受 `.gitignore` 保護的 `.ai-workflow/credentials.json`（權限 `0600`）**，**絕不會寫入 Git 追蹤的 `.ai-workflow/team-config.json`**。
+   - **安全儲存承諾**：建議優先使用環境變數（`JIRA_BASE_URL`、`JIRA_EMAIL`、`JIRA_API_TOKEN`，搭配 `--credential-store env` 零寫檔）；若需本機持久化，所有 API Token 預設**只會寫入 Repo 外部的使用者設定目錄 `~/.config/ai-workflow/credentials/`（目錄 `0700`、檔案 `0600`）**，**絕不會寫入 Git 追蹤的 `.ai-workflow/team-config.json`**（既有 `.ai-workflow/credentials.json` 仍維持 100% 向後相容，並受 `.gitignore` 保護）。
 4. **Jira 狀態、單據類型映射、多環境 QA 交接模式與選填 QA 測試管理後端（選填確認）**
    - 列出預設狀態映射（`To Do`、`In Progress`、`In Review`、`In QA`、`Ready for Release`、`Done`）與單據類型（`Story`、`Sub-task`、`Bug`），詢問是否直接沿用預設值或需自訂。
    - 若團隊採用多環境 CI/CD 流程（Review 通過先進入「開發完成 / Dev Completed」，待打 QA Tag 或部署至 QA 環境後才推進 `In QA` 並通知 QA），可選配 `--qa-handoff-mode gated_by_deploy` 與 `--status-dev-done "<開發完成狀態>"`（若 CI 掃描偵測到獨立 QA 部署觸發規則，`init --inspect` 會自動建議 `suggested_qa_handoff_mode: "gated_by_deploy"`；預設為 `immediate`，維持 100% 向後相容）。可一併確認 `delivery_pipeline` 選配旗標：`--integration-branch`、`--production-branch`、`--qa-tag-prefix`、`--uat-tag-prefix`、`--jira-deployment-sync`（僅於使用者確認後寫入 `team-config.json`）。
@@ -140,20 +146,25 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   [--jira-deployment-sync]
 ```
 
-*(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them in `.ai-workflow/credentials.json` under `role_credentials`. Optional `--commit-policy` defaults to `"confirm_before_commit"` — pause after local tests pass to wait for user confirmation before committing — or can opt in to `"auto_on_test_pass"`; optional `--commit-message-pattern` configures a non-blocking regex check in `complete-task`. Optional `--qa-handoff-mode` defaults to `"immediate"` — or set `"gated_by_deploy"` with `--status-dev-done "<Dev Completed>"` to decouple Code Review approval from QA environment deployment.)*
+*(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them outside the repo under `~/.config/ai-workflow/credentials/` (`--credential-store user`, default; `--credential-store env` writes zero files using runtime env vars; `--credential-store repo` opts in to legacy `.ai-workflow/credentials.json`). Optional `--commit-policy` defaults to `"confirm_before_commit"` — pause after local tests pass to wait for user confirmation before committing — or can opt in to `"auto_on_test_pass"`; optional `--commit-message-pattern` configures a non-blocking regex check in `complete-task`. Optional `--qa-handoff-mode` defaults to `"immediate"` — or set `"gated_by_deploy"` with `--status-dev-done "<Dev Completed>"` to decouple Code Review approval from QA environment deployment.)*
 
 What `jira_sync.py init` enforces automatically:
 - Creates or updates `.ai-workflow/team-config.json` (template: `references/team-config-template.json`) with confirmed `project_key`, `jira_base_url`, `roles` (strictly `name`, `email`, `jira_account_id` — never tokens), `status_mapping`, and `issue_type_mapping`.
-- Saves default `jira_email`/`jira_api_token` and per-role `role_credentials` into `.ai-workflow/credentials.json` (`chmod 0600`) so each station command (`sync-story`, `create-subtasks`, `complete-task`, `handoff`, `record-qa`, `create-bug`, `close-story`) automatically authenticates with that station role's Jira account.
+- When tokens are passed (and `--credential-store env` is not used), saves default `jira_email`/`jira_api_token` and per-role `role_credentials` outside the repo under `~/.config/ai-workflow/credentials/<repo-id>.json` (`0700` dir, `0600` atomic write) so each station command (`sync-story`, `create-subtasks`, `complete-task`, `handoff`, `record-qa`, `create-bug`, `close-story`) automatically authenticates with that station role's Jira account (with runtime env vars always taking highest precedence and legacy `.ai-workflow/credentials.json` remaining backward-compatible).
 - When live credentials are provided, verifies Jira connectivity (`GET /rest/api/3/myself`) for both default and per-role tokens (`role_verifications`) and automatically populates missing `jira_account_id` fields from the role token's `/myself` response or `GET /rest/api/3/user/search`.
 - Installs `.ai-workflow/bin/jira_sync.py` (`chmod 0755`) and returns `"cli_path": ".ai-workflow/bin/jira_sync.py"`.
-- Appends `.ai-workflow/active/`, `.ai-workflow/credentials.json`, and `.ai-workflow/.env` to `.gitignore` if not already present.
+- Appends `.ai-workflow/active/`, `.ai-workflow/credentials.json`, and `.ai-workflow/.env` to `.gitignore` if not already present (defense-in-depth for legacy repos; **never** creates or modifies `.semgrepignore` or `.gitleaksignore`).
 - Extracts engineering/coding/testing/security/Git Commit & PR sections from `AGENTS.md` into `docs/shared/engineering-standards.md` (or creates a starter from `references/engineering-standards-template.md` including `## 4. Git Commit & PR Standards` if `AGENTS.md` has none) and **replaces the duplicated sections in `AGENTS.md` with a reference link** to `docs/shared/engineering-standards.md`.
+
+### Enterprise SAST / Secret Scanner Note (Semgrep & Gitleaks)
+- `team-init` **never** auto-creates or modifies `.semgrepignore` or `.gitleaksignore` in downstream repositories so security scanning policies stay strictly under the repository owner's control.
+- Moving default credential storage outside the repo (`~/.config/ai-workflow/credentials/`) and supporting pure env-var auth (`--credential-store env`) eliminates local secret-file Gitleaks hits by design.
+- If a downstream team runs Semgrep against the repository and prefers not to scan the vendored stdlib CLI helper `.ai-workflow/bin/jira_sync.py` alongside application source code, the team may optionally add `.ai-workflow/bin/jira_sync.py` to their own repo-managed `.semgrepignore`.
 
 ### Step 4: Verify and summarize
 1. Verify that `docs/shared/engineering-standards.md` reflects the repository's actual stack, test commands, **CI-mirrored local lint/test commands (`detected_ci_checks`)**, **branch/tag promotion rules** (e.g., `integration_branch`, `production_branch`, `qa-*` / `uat-*` human-confirmed tags — never AI auto-tagging or auto-merging), security boundaries, and **§4 Git Commit & PR Standards** (the single source of truth for project commit format). Refine the extracted markdown if needed.
 2. Present a concise initialization summary in Traditional Chinese (繁體中文):
-   - **專案連線與憑證狀態**：確認 `project_key`、`jira_base_url`、`jira_mode`（`live` 或 `offline`）、連線驗證結果（`jira_verification`）以及憑證已受 `.gitignore` 保護（`.ai-workflow/credentials.json`）。
+   - **專案連線與憑證狀態**：確認 `project_key`、`jira_base_url`、`jira_mode`（`live` 或 `offline`）、連線驗證結果（`jira_verification`）以及憑證來源（`credential_source`：`env` 環境變數或 Repo 外部的 `~/.config/ai-workflow/credentials/` `0600`）。
    - **角色定義與交接整併表 (`role_consolidation`)**：列出各角色負責人、帳號與哪些相鄰站點為同一人（`auto-consolidated` 僅抑制重複 `@mention` 通知，跨站推進仍需使用者明確授權）、哪些跨人交接會觸發 Jira `@mention` + 指派 + 狀態流轉並執行 Clean Stop。
    - **工程規範收斂結果**：`docs/shared/engineering-standards.md` 與 `AGENTS.md` 去重狀態。
    - **下一步指引**：提示使用者後續只需輸入 `$team-next-step`（或 `$team-spec`）即可啟動第一個 Jira Story。
@@ -161,6 +172,7 @@ What `jira_sync.py init` enforces automatically:
 ## Red Flags — STOP
 
 - **Running `jira_sync.py init` with dummy defaults (`PROJ`, empty URL, `PM Owner`, `Developer`) without asking the user first:** STOP immediately. Always ask the user to confirm Project URL, Project Key, Jira Account/Token, and Role definitions before running `init`.
-- **Hardcoding secrets in tracked files:** Never write `JIRA_API_TOKEN` or passwords into `.ai-workflow/team-config.json`, `AGENTS.md`, or any Git-tracked file. Always pass `--jira-token` so it is stored exclusively in gitignored `.ai-workflow/credentials.json` (`0600`) or environment variables.
+- **Hardcoding secrets in tracked files:** Never write `JIRA_API_TOKEN` or passwords into `.ai-workflow/team-config.json`, `AGENTS.md`, or any Git-tracked file. Prefer runtime environment variables (`--credential-store env`) or the default out-of-repo user store (`~/.config/ai-workflow/credentials/`, `0600`).
+- **Auto-modifying scanner ignore files:** Never create or edit `.semgrepignore` or `.gitleaksignore` automatically during `init` or `auth`.
 - **Duplicating rules across `AGENTS.md` and `engineering-standards.md`:** Always keep detailed engineering standards in `docs/shared/engineering-standards.md` and leave only a pointer in `AGENTS.md`.
 - **Creating per-feature `docs/` folders:** Never create `docs/requirements/`, `docs/design/`, or `docs/qa/` directories; per-feature artifacts belong in Jira and `.ai-workflow/active/<JIRA-KEY>.json`.

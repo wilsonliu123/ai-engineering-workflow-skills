@@ -36,6 +36,7 @@ import re
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import urllib.parse
@@ -68,6 +69,13 @@ def _is_denied_secret_attachment(path_obj: Path) -> bool:
         return True
     if any(lower_name.endswith(sfx) for sfx in _DENIED_ATTACHMENT_SUFFIXES):
         return True
+    try:
+        user_creds_dir = get_user_credentials_dir().resolve()
+        resolved_p = path_obj.resolve()
+        if resolved_p.parent == user_creds_dir or user_creds_dir in resolved_p.parents:
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -134,6 +142,7 @@ def _build_multipart_form_data(validated_files: list, field_name: str = "file") 
 
 VALID_COMMIT_POLICIES = ("confirm_before_commit", "auto_on_test_pass")
 VALID_QA_HANDOFF_MODES = ("immediate", "gated_by_deploy")
+VALID_CREDENTIAL_STORES = ("user", "repo", "env")
 BUG_TRIAGE_RESOLUTION_ALIASES = {
     "not-a-bug": ("not-a-bug", "Not a Bug"),
     "not a bug": ("not-a-bug", "Not a Bug"),
@@ -293,48 +302,212 @@ def get_dotenv_path(repo_root: Path) -> Path:
     return get_workflow_dir(repo_root) / ".env"
 
 
+def _env_jira_base_url() -> str:
+    return (os.environ.get("JIRA_BASE_URL") or os.environ.get("JIRA_URL") or "").strip()
+
+
+def _validate_env_dir_value(raw: str, env_name: str) -> str:
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        raise ValueError(f"Invalid control character in {env_name}.")
+    return raw.strip()
+
+
+def get_user_credentials_dir() -> Path:
+    """Resolve the out-of-repo user credential directory (pure stdlib, cross-platform)."""
+    raw_override = os.environ.get("AI_WORKFLOW_CREDENTIALS_DIR")
+    if raw_override is not None and raw_override != "":
+        cleaned = _validate_env_dir_value(raw_override, "AI_WORKFLOW_CREDENTIALS_DIR")
+        if cleaned:
+            return Path(cleaned).expanduser()
+
+    raw_xdg = os.environ.get("XDG_CONFIG_HOME")
+    if raw_xdg is not None and raw_xdg != "":
+        cleaned_xdg = _validate_env_dir_value(raw_xdg, "XDG_CONFIG_HOME")
+        if cleaned_xdg and Path(cleaned_xdg).is_absolute():
+            return Path(cleaned_xdg) / "ai-workflow" / "credentials"
+
+    return Path.home() / ".config" / "ai-workflow" / "credentials"
+
+
+def _resolve_git_common_dir(repo_root: Path):
+    """Resolve canonical Git common directory so main checkouts and all child worktrees share one identity."""
+    repo_resolved = Path(repo_root).resolve()
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=str(repo_resolved),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            common_dir = Path(res.stdout.strip())
+            if not common_dir.is_absolute():
+                common_dir = (repo_resolved / common_dir).resolve()
+            else:
+                common_dir = common_dir.resolve()
+            return common_dir
+    except Exception:
+        pass
+
+    # Pure-Python fallback when git binary is unavailable or fails
+    for candidate in (repo_resolved, *repo_resolved.parents):
+        dot_git = candidate / ".git"
+        try:
+            if dot_git.is_dir():
+                return dot_git.resolve()
+            if dot_git.is_file():
+                for line in dot_git.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.lower().startswith("gitdir:"):
+                        gitdir_raw = line.split(":", 1)[1].strip()
+                        if not gitdir_raw:
+                            break
+                        gitdir_path = Path(gitdir_raw)
+                        if not gitdir_path.is_absolute():
+                            gitdir_path = (candidate / gitdir_path).resolve()
+                        else:
+                            gitdir_path = gitdir_path.resolve()
+                        commondir_file = gitdir_path / "commondir"
+                        if commondir_file.is_file():
+                            c_raw = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
+                            if c_raw:
+                                c_path = Path(c_raw)
+                                if not c_path.is_absolute():
+                                    return (gitdir_path / c_path).resolve()
+                                return c_path.resolve()
+                        return gitdir_path
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_repo_identity(repo_root: Path) -> tuple:
+    """Return (canonical_identity_string, filesystem_safe_slug) stable across Git worktrees."""
+    repo_resolved = Path(repo_root).resolve()
+    common_dir = _resolve_git_common_dir(repo_resolved)
+    if common_dir is not None:
+        canonical_id = str(common_dir)
+        slug_source = common_dir.parent.name if common_dir.name == ".git" else common_dir.name
+    else:
+        canonical_id = str(repo_resolved)
+        slug_source = repo_resolved.name
+
+    safe_slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", slug_source or "").strip(".-_")[:32]
+    if not safe_slug or safe_slug in (".", ".."):
+        safe_slug = "repo"
+    return canonical_id, safe_slug
+
+
+def get_user_credentials_path(repo_root: Path) -> Path:
+    """Return deterministic, traversal-safe out-of-repo credential file path for repo_root."""
+    base_dir = get_user_credentials_dir()
+    base_resolved = base_dir.resolve()
+    canonical_id, safe_slug = _resolve_repo_identity(repo_root)
+    digest = hashlib.sha256(canonical_id.encode("utf-8")).hexdigest()[:16]
+    filename = f"{safe_slug}-{digest}.json"
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise ValueError("Invalid derived credentials filename.")
+    target = base_resolved / filename
+    if target.parent != base_resolved:
+        raise ValueError("Resolved credential path escaped credentials directory.")
+    return target
+
+
+def _format_credentials_path(cred_path, repo_root: Path) -> str:
+    if cred_path is None:
+        return ""
+    p = Path(cred_path)
+    try:
+        return str(p.resolve().relative_to(Path(repo_root).resolve()))
+    except ValueError:
+        return str(p)
+
+
 def is_zh_tw(config: dict) -> bool:
     """Return True unless the project explicitly configured English ('en') output."""
     lang = str((config or {}).get("language") or "zh-TW").strip().lower()
     return lang not in ("en", "en-us", "en-gb", "english")
 
 
+def _empty_credentials_dict() -> dict:
+    return {"role_credentials": {}, "member_credentials": {}}
+
+
+def _parse_credentials_dict(raw) -> dict:
+    creds = _empty_credentials_dict()
+    if not isinstance(raw, dict):
+        return creds
+    for k in ("jira_base_url", "jira_email", "jira_api_token", "qase_api_token"):
+        if raw.get(k):
+            creds[k] = str(raw[k]).strip()
+    raw_rc = raw.get("role_credentials")
+    if isinstance(raw_rc, dict):
+        for r_key, r_val in raw_rc.items():
+            if isinstance(r_val, dict):
+                r_em = str(r_val.get("jira_email") or r_val.get("email") or "").strip()
+                r_tk = str(r_val.get("jira_api_token") or r_val.get("api_token") or r_val.get("token") or "").strip()
+                if r_em or r_tk:
+                    creds["role_credentials"][str(r_key).strip()] = {
+                        "jira_email": r_em,
+                        "jira_api_token": r_tk,
+                    }
+    raw_mc = raw.get("member_credentials")
+    if isinstance(raw_mc, dict):
+        for m_key, m_val in raw_mc.items():
+            if isinstance(m_val, dict):
+                m_em = str(m_val.get("jira_email") or m_val.get("email") or m_key or "").strip()
+                m_tk = str(m_val.get("jira_api_token") or m_val.get("api_token") or m_val.get("token") or "").strip()
+                if m_em and m_tk:
+                    creds["member_credentials"][m_em.lower()] = {
+                        "jira_email": m_em,
+                        "jira_api_token": m_tk,
+                    }
+    return creds
+
+
+def _read_credentials_json_file(cred_file: Path, warn_malformed: bool = False) -> dict:
+    if cred_file.is_symlink():
+        if warn_malformed:
+            print(f"WARNING: Refusing to read symlinked credentials file: {cred_file}", file=sys.stderr)
+        return _empty_credentials_dict()
+    if not cred_file.exists() or not cred_file.is_file():
+        return _empty_credentials_dict()
+    try:
+        raw = json.loads(cred_file.read_text(encoding="utf-8"))
+        return _parse_credentials_dict(raw)
+    except Exception as exc:
+        if warn_malformed:
+            print(
+                f"WARNING: Ignoring malformed credentials file '{cred_file}' ({type(exc).__name__}).",
+                file=sys.stderr,
+            )
+        return _empty_credentials_dict()
+
+
+def _merge_credential_dicts(higher: dict, lower: dict) -> dict:
+    merged = _empty_credentials_dict()
+    for k in ("jira_base_url", "jira_email", "jira_api_token", "qase_api_token"):
+        val = (higher or {}).get(k) or (lower or {}).get(k)
+        if val:
+            merged[k] = val
+    for src in (lower or {}, higher or {}):
+        for r_key, r_val in (src.get("role_credentials") or {}).items():
+            if isinstance(r_val, dict):
+                prev = merged["role_credentials"].get(r_key) or {}
+                merged["role_credentials"][r_key] = {
+                    "jira_email": r_val.get("jira_email") or prev.get("jira_email", ""),
+                    "jira_api_token": r_val.get("jira_api_token") or prev.get("jira_api_token", ""),
+                }
+        for m_key, m_val in (src.get("member_credentials") or {}).items():
+            if isinstance(m_val, dict):
+                merged["member_credentials"][m_key] = dict(m_val)
+    return merged
+
+
 def _read_credentials_from_dir(wf_dir: Path) -> dict:
-    creds = {"role_credentials": {}, "member_credentials": {}}
-    cred_file = wf_dir / "credentials.json"
-    if cred_file.exists():
-        try:
-            raw = json.loads(cred_file.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                for k in ("jira_base_url", "jira_email", "jira_api_token", "qase_api_token"):
-                    if raw.get(k):
-                        creds[k] = str(raw[k]).strip()
-                raw_rc = raw.get("role_credentials")
-                if isinstance(raw_rc, dict):
-                    for r_key, r_val in raw_rc.items():
-                        if isinstance(r_val, dict):
-                            r_em = str(r_val.get("jira_email") or r_val.get("email") or "").strip()
-                            r_tk = str(r_val.get("jira_api_token") or r_val.get("api_token") or r_val.get("token") or "").strip()
-                            if r_em or r_tk:
-                                creds["role_credentials"][str(r_key).strip()] = {
-                                    "jira_email": r_em,
-                                    "jira_api_token": r_tk,
-                                }
-                raw_mc = raw.get("member_credentials")
-                if isinstance(raw_mc, dict):
-                    for m_key, m_val in raw_mc.items():
-                        if isinstance(m_val, dict):
-                            m_em = str(m_val.get("jira_email") or m_val.get("email") or m_key or "").strip()
-                            m_tk = str(m_val.get("jira_api_token") or m_val.get("api_token") or m_val.get("token") or "").strip()
-                            if m_em and m_tk:
-                                creds["member_credentials"][m_em.lower()] = {
-                                    "jira_email": m_em,
-                                    "jira_api_token": m_tk,
-                                }
-        except Exception:
-            pass
+    creds = _read_credentials_json_file(wf_dir / "credentials.json", warn_malformed=False)
     env_file = wf_dir / ".env"
-    if env_file.exists():
+    if not env_file.is_symlink() and env_file.exists() and env_file.is_file():
         try:
             env_map = {
                 "JIRA_BASE_URL": "jira_base_url",
@@ -342,6 +515,7 @@ def _read_credentials_from_dir(wf_dir: Path) -> dict:
                 "JIRA_API_TOKEN": "jira_api_token",
                 "QASE_API_TOKEN": "qase_api_token",
             }
+            jira_url_fallback = ""
             for line in env_file.read_text(encoding="utf-8").splitlines():
                 s = line.strip()
                 if not s or s.startswith("#") or "=" not in s:
@@ -351,31 +525,124 @@ def _read_credentials_from_dir(wf_dir: Path) -> dict:
                 if k.startswith("export "):
                     k = k[len("export "):].strip()
                 v = v.strip().strip("'").strip('"')
-                if k in env_map and v and not creds.get(env_map[k]):
+                if k == "JIRA_URL" and v and not jira_url_fallback:
+                    jira_url_fallback = v
+                elif k in env_map and v and not creds.get(env_map[k]):
                     creds[env_map[k]] = v
+            if jira_url_fallback and not creds.get("jira_base_url"):
+                creds["jira_base_url"] = jira_url_fallback
         except Exception:
             pass
     return creds
 
 
-def load_jira_credentials(repo_root: Path = None) -> dict:
-    """Load local gitignored Jira credentials (.ai-workflow/credentials.json or .env), with worktree fallback."""
+def _has_any_credential_entry(creds: dict) -> bool:
+    if not isinstance(creds, dict):
+        return False
+    if (creds.get("jira_email") and creds.get("jira_api_token")) or creds.get("qase_api_token"):
+        return True
+    for r_val in (creds.get("role_credentials") or {}).values():
+        if isinstance(r_val, dict) and (r_val.get("jira_api_token") or "").strip():
+            return True
+    for m_val in (creds.get("member_credentials") or {}).values():
+        if isinstance(m_val, dict) and (m_val.get("jira_api_token") or "").strip():
+            return True
+    return False
+
+
+def _has_runtime_env_credentials() -> bool:
+    if (os.environ.get("JIRA_EMAIL", "").strip() and os.environ.get("JIRA_API_TOKEN", "").strip()):
+        return True
+    if os.environ.get("QASE_API_TOKEN", "").strip():
+        return True
+    for r_key in DEFAULT_TEAM_CONFIG["roles"]:
+        if os.environ.get(f"JIRA_API_TOKEN_{r_key.upper()}", "").strip():
+            return True
+    return False
+
+
+def _detect_credential_source(repo_root: Path) -> str:
+    """Return active credential source: 'env', 'user_config', 'legacy_repo', or 'none'."""
+    if _has_runtime_env_credentials():
+        return "env"
     if repo_root is None:
-        return {"role_credentials": {}, "member_credentials": {}}
-    creds = _read_credentials_from_dir(get_workflow_dir(repo_root))
+        return "none"
+    user_creds = _read_credentials_json_file(get_user_credentials_path(repo_root), warn_malformed=False)
+    if _has_any_credential_entry(user_creds):
+        return "user_config"
+    repo_creds = _read_credentials_from_dir(get_workflow_dir(repo_root))
+    if _has_any_credential_entry(repo_creds):
+        return "legacy_repo"
     main_root = _resolve_main_worktree_root(repo_root)
     if main_root:
         main_creds = _read_credentials_from_dir(get_workflow_dir(main_root))
-        for k in ("jira_base_url", "jira_email", "jira_api_token", "qase_api_token"):
-            if main_creds.get(k) and not creds.get(k):
-                creds[k] = main_creds[k]
-        for r_key, r_val in (main_creds.get("role_credentials") or {}).items():
-            if r_key not in creds["role_credentials"]:
-                creds["role_credentials"][r_key] = r_val
-        for m_key, m_val in (main_creds.get("member_credentials") or {}).items():
-            if m_key not in creds["member_credentials"]:
-                creds["member_credentials"][m_key] = m_val
+        if _has_any_credential_entry(main_creds):
+            return "legacy_repo"
+    return "none"
+
+
+def load_jira_credentials(repo_root: Path = None) -> dict:
+    """Load Jira/Qase credentials with precedence: user out-of-repo store > legacy in-repo (.ai-workflow/credentials.json, .env) > main worktree fallback."""
+    if repo_root is None:
+        return _empty_credentials_dict()
+    user_creds = _read_credentials_json_file(get_user_credentials_path(repo_root), warn_malformed=True)
+    repo_creds = _read_credentials_from_dir(get_workflow_dir(repo_root))
+    creds = _merge_credential_dicts(user_creds, repo_creds)
+    main_root = _resolve_main_worktree_root(repo_root)
+    if main_root:
+        main_creds = _read_credentials_from_dir(get_workflow_dir(main_root))
+        creds = _merge_credential_dicts(creds, main_creds)
     return creds
+
+
+def _write_json_secret_atomic(target: Path, payload: dict, enforce_dir_mode: bool = False) -> Path:
+    """Atomically write JSON secrets with 0600 permissions before any data is written, refusing symlinks."""
+    parent_dir = target.parent
+    if parent_dir.is_symlink():
+        raise RuntimeError(f"Refusing to write credentials into symlinked directory: {parent_dir}")
+    os.makedirs(parent_dir, mode=stat.S_IRWXU, exist_ok=True)
+    if enforce_dir_mode and os.name == "posix":
+        try:
+            parent_dir.chmod(stat.S_IRWXU)
+        except OSError:
+            pass
+    if target.is_symlink():
+        raise RuntimeError(f"Refusing to write credentials through symlink: {target}")
+    if target.exists() and not target.is_file():
+        raise RuntimeError(f"Refusing to overwrite non-regular credential path: {target}")
+
+    serialized = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    tmp_path = parent_dir / f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:12]}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    file_mode = stat.S_IRUSR | stat.S_IWUSR
+    fd = os.open(str(tmp_path), flags, file_mode)
+    fd_wrapped = False
+    try:
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(fd, file_mode)
+            except OSError:
+                pass
+        with os.fdopen(fd, "wb") as fh:
+            fd_wrapped = True
+            fh.write(serialized)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if target.is_symlink():
+            raise RuntimeError(f"Refusing to write credentials through symlink: {target}")
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        if not fd_wrapped:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+    return target
 
 
 def save_jira_credentials(
@@ -386,12 +653,27 @@ def save_jira_credentials(
     role_credentials: dict = None,
     qase_token: str = None,
     member_credentials: dict = None,
+    store: str = "user",
 ) -> Path:
-    """Save Jira/Qase credentials (including per-role and per-member tokens) to gitignored .ai-workflow/credentials.json with 0600 permissions."""
-    wf_dir = get_workflow_dir(repo_root)
-    wf_dir.mkdir(parents=True, exist_ok=True)
-    cred_path = get_credentials_path(repo_root)
-    existing = _read_credentials_from_dir(wf_dir)
+    """Save Jira/Qase credentials to out-of-repo user config (default, store='user') or legacy repo path (store='repo') with atomic 0600 writes."""
+    if store not in ("user", "repo"):
+        raise ValueError(f"Invalid credential store '{store}'. Must be 'user' or 'repo'.")
+
+    if store == "user":
+        raw_user_dir = get_user_credentials_dir()
+        if raw_user_dir.is_symlink():
+            raise RuntimeError(f"Refusing to write credentials into symlinked directory: {raw_user_dir}")
+        cred_path = get_user_credentials_path(repo_root)
+        if cred_path.is_symlink():
+            raise RuntimeError(f"Refusing to write credentials through symlink: {cred_path}")
+        existing = _read_credentials_json_file(cred_path, warn_malformed=False)
+    else:
+        wf_dir = get_workflow_dir(repo_root)
+        cred_path = get_credentials_path(repo_root)
+        if cred_path.is_symlink():
+            raise RuntimeError(f"Refusing to write credentials through symlink: {cred_path}")
+        existing = _read_credentials_from_dir(wf_dir)
+
     if jira_url is not None and jira_url.strip():
         existing["jira_base_url"] = jira_url.strip().rstrip("/")
     if jira_email is not None:
@@ -439,12 +721,7 @@ def save_jira_credentials(
                 if m_em and m_tk:
                     mc_map[m_em.lower()] = {"jira_email": m_em, "jira_api_token": m_tk}
     existing["updated_at"] = now_iso()
-    cred_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    try:
-        cred_path.chmod(0o600)
-    except Exception:
-        pass
-    return cred_path
+    return _write_json_secret_atomic(cred_path, existing, enforce_dir_mode=(store == "user"))
 
 
 def get_effective_commit_policy(config: dict) -> str:
@@ -2100,7 +2377,7 @@ class JiraClient:
         self.role = (role or "").strip()
         local_creds = load_jira_credentials(repo_root) if repo_root else {"role_credentials": {}, "member_credentials": {}}
         self.base_url = (
-            os.environ.get("JIRA_BASE_URL")
+            _env_jira_base_url()
             or config.get("jira_base_url")
             or local_creds.get("jira_base_url")
             or ""
@@ -2118,19 +2395,24 @@ class JiraClient:
         env_role_email = os.environ.get(f"JIRA_EMAIL_{self.role.upper()}", "").strip() if self.role else ""
         env_role_token = os.environ.get(f"JIRA_API_TOKEN_{self.role.upper()}", "").strip() if self.role else ""
 
-        default_email = (os.environ.get("JIRA_EMAIL") or local_creds.get("jira_email") or "").strip()
-        default_token = (os.environ.get("JIRA_API_TOKEN") or local_creds.get("jira_api_token") or "").strip()
+        env_default_email = os.environ.get("JIRA_EMAIL", "").strip()
+        env_default_token = os.environ.get("JIRA_API_TOKEN", "").strip()
+        default_email = (env_default_email or local_creds.get("jira_email") or "").strip()
+        default_token = (env_default_token or local_creds.get("jira_api_token") or "").strip()
 
         resolved_email = ""
         resolved_token = ""
         explicit_member_em = (member_email or "").strip().lower()
-        if explicit_member_em and explicit_member_em in member_creds_map:
+        if env_role_token:
+            resolved_token = env_role_token
+            resolved_email = env_role_email or (role_cred or {}).get("jira_email") or role_person.get("email") or default_email
+        elif env_default_token:
+            resolved_token = env_default_token
+            resolved_email = env_default_email or default_email
+        elif explicit_member_em and explicit_member_em in member_creds_map:
             mc = member_creds_map[explicit_member_em]
             resolved_email = mc["jira_email"]
             resolved_token = mc["jira_api_token"]
-        elif env_role_token:
-            resolved_token = env_role_token
-            resolved_email = env_role_email or (role_cred or {}).get("jira_email") or role_person.get("email") or default_email
         elif (
             self.role
             and default_email
@@ -4726,11 +5008,13 @@ def _inspect_init_state(repo_root: Path) -> dict:
     cfg_path = get_config_path(repo_root)
     cred_path = get_credentials_path(repo_root)
     dotenv_path = get_dotenv_path(repo_root)
+    user_cred_path = get_user_credentials_path(repo_root)
     cfg = load_team_config(repo_root)
     local_creds = load_jira_credentials(repo_root)
+    credential_source = _detect_credential_source(repo_root)
 
     eff_url = (
-        os.environ.get("JIRA_BASE_URL")
+        _env_jira_base_url()
         or cfg.get("jira_base_url")
         or local_creds.get("jira_base_url")
         or ""
@@ -4738,7 +5022,11 @@ def _inspect_init_state(repo_root: Path) -> dict:
     eff_email = (os.environ.get("JIRA_EMAIL") or local_creds.get("jira_email") or "").strip()
     eff_token = (os.environ.get("JIRA_API_TOKEN") or local_creds.get("jira_api_token") or "").strip()
     role_creds = local_creds.get("role_credentials") or {}
-    has_any_role_token = any(isinstance(v, dict) and v.get("jira_api_token") for v in role_creds.values())
+    has_any_role_token = any(
+        (isinstance(role_creds.get(r_key), dict) and bool((role_creds.get(r_key) or {}).get("jira_api_token")))
+        or bool(os.environ.get(f"JIRA_API_TOKEN_{r_key.upper()}", "").strip())
+        for r_key in DEFAULT_TEAM_CONFIG["roles"]
+    )
     has_any_creds = bool((eff_email and eff_token) or has_any_role_token)
 
     missing = []
@@ -4752,7 +5040,10 @@ def _inspect_init_state(repo_root: Path) -> dict:
         missing.append("roles")
 
     role_token_status = {
-        r_key: bool((role_creds.get(r_key) or {}).get("jira_api_token"))
+        r_key: bool(
+            (role_creds.get(r_key) or {}).get("jira_api_token")
+            or os.environ.get(f"JIRA_API_TOKEN_{r_key.upper()}", "").strip()
+        )
         for r_key in DEFAULT_TEAM_CONFIG["roles"]
     }
 
@@ -4770,12 +5061,13 @@ def _inspect_init_state(repo_root: Path) -> dict:
             "prompt": (
                 "請問您自己負責哪幾個角色（pm / tech_lead / developer / reviewer / qa / release_manager），並請提供您的姓名、Jira Email 與 API Token？"
                 "（若您已知其他成員資訊亦可一併提供；若尚未確定，其他角色可留空為待認領狀態，待其他成員 git clone 並執行 $team-next-step 時再各自認領並綁定個人 Token。）"
-                "所有 Token 僅寫入受 .gitignore 保護的 .ai-workflow/credentials.json（權限 0600），絕不進版控。"
+                "建議優先使用環境變數（JIRA_EMAIL / JIRA_API_TOKEN），或由 CLI 預設寫入 Repo 外部的使用者設定目錄（~/.config/ai-workflow/credentials/，權限 0600），絕不進版控。"
             ),
             "configured": (not _are_roles_unconfigured(cfg.get("roles", {}))) and has_any_creds,
             "current_value": {
                 "default_jira_email": eff_email,
                 "has_default_api_token": bool(eff_token),
+                "credential_source": credential_source,
                 "roles": cfg.get("roles", {}),
                 "role_has_api_token": role_token_status,
             },
@@ -4792,13 +5084,18 @@ def _inspect_init_state(repo_root: Path) -> dict:
         },
     ]
 
+    user_cred_exists = (not user_cred_path.is_symlink()) and user_cred_path.is_file()
+    legacy_cred_exists = cred_path.exists() or dotenv_path.exists()
     ci_detect = _detect_ci_delivery_pipeline(repo_root)
     return {
         "ok": True,
         "action": "init-inspect",
         "config_exists": cfg_path.exists(),
-        "credentials_file_exists": cred_path.exists() or dotenv_path.exists(),
+        "credentials_file_exists": user_cred_exists or legacy_cred_exists,
         "credentials_configured": has_any_creds,
+        "credential_source": credential_source,
+        "user_credentials_path": str(user_cred_path),
+        "legacy_credentials_exists": legacy_cred_exists,
         "role_has_api_token": role_token_status,
         "ready_for_live_jira": bool(eff_url and has_any_creds),
         "missing_confirmations": missing,
@@ -4842,7 +5139,7 @@ def _prompt_interactive_init(cfg: dict, local_creds: dict) -> tuple:
     jira_email = _ask("3. Default Jira Account Email (JIRA_EMAIL)", cur_email)
 
     cur_token_hint = "***configured***" if (local_creds.get("jira_api_token") or os.environ.get("JIRA_API_TOKEN")) else ""
-    raw_token = _ask("4. Default Jira API Token (JIRA_API_TOKEN, saved to gitignored .ai-workflow/credentials.json)", cur_token_hint)
+    raw_token = _ask("4. Default Jira API Token (JIRA_API_TOKEN, saved outside repo under ~/.config/ai-workflow/credentials/ with 0600)", cur_token_hint)
     jira_token = None
     if raw_token and raw_token != "***configured***":
         jira_token = raw_token
@@ -4876,8 +5173,8 @@ def ensure_live_or_explicit_offline(client: JiraClient, config: dict, offline_fl
     if base_url and not offline_flag and not client.is_live:
         print(
             f"ERROR: Project is configured for live Jira ({base_url}), but local Jira credentials are missing "
-            f"(.ai-workflow/credentials.json is gitignored per collaborator machine). "
-            f"Run 'jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN>' to bind your personal credentials, "
+            f"(configure JIRA_EMAIL/JIRA_API_TOKEN env vars or bind credentials outside the repo via user config). "
+            f"Run 'jira_sync.py auth --jira-email <EMAIL> --jira-token <TOKEN>' (or 'jira_sync.py auth --credential-store env'), "
             f"or pass --offline explicitly.",
             file=sys.stderr,
         )
@@ -5584,7 +5881,7 @@ def _ensure_gitignore_entries(repo_root: Path) -> bool:
 
 
 def cmd_auth(args) -> int:
-    """Bind personal Jira (and optional Qase) credentials to local gitignored .ai-workflow/credentials.json without modifying team-config.json."""
+    """Bind personal Jira (and optional Qase) credentials to out-of-repo user config (default), legacy repo store, or pure env vars."""
     repo_root = Path(args.repo_root).resolve()
     cfg_path = get_config_path(repo_root)
     if not cfg_path.exists():
@@ -5605,20 +5902,26 @@ def cmd_auth(args) -> int:
     ) or any(
         bool((v or {}).get("jira_email") and (v or {}).get("jira_api_token"))
         for v in role_creds.values()
+    ) or any(
+        bool(os.environ.get(f"JIRA_API_TOKEN_{r_key.upper()}", "").strip())
+        for r_key in DEFAULT_TEAM_CONFIG["roles"]
     )
 
     if getattr(args, "inspect", False):
         claimed_map, unclaimed_list = _partition_claimed_roles(config)
+        user_cred_path = get_user_credentials_path(repo_root)
+        legacy_cred_exists = get_credentials_path(repo_root).exists() or get_dotenv_path(repo_root).exists()
         roles_summary = {}
         for r_key, r_val in (config.get("roles") or {}).items():
             p = resolve_role_person(config, r_key)
             rc = role_creds.get(r_key) if isinstance(role_creds.get(r_key), dict) else {}
+            env_rtok = os.environ.get(f"JIRA_API_TOKEN_{r_key.upper()}", "").strip()
             roles_summary[r_key] = {
                 "claimed": _is_role_claimed(r_key, r_val),
                 "name": p["name"],
                 "email": p["email"],
                 "jira_account_id": p["jira_account_id"],
-                "has_local_token": bool((rc.get("jira_api_token") or "").strip()),
+                "has_local_token": bool((rc.get("jira_api_token") or "").strip() or env_rtok),
             }
         print(json.dumps({
             "ok": True,
@@ -5626,6 +5929,9 @@ def cmd_auth(args) -> int:
             "project_key": config.get("project_key", ""),
             "jira_base_url": config.get("jira_base_url", ""),
             "credentials_configured": has_creds,
+            "credential_source": _detect_credential_source(repo_root),
+            "user_credentials_path": str(user_cred_path),
+            "legacy_credentials_exists": legacy_cred_exists,
             "claimed_roles": claimed_map,
             "unclaimed_roles": unclaimed_list,
             "qa_test_backend": qa_backend,
@@ -5636,12 +5942,15 @@ def cmd_auth(args) -> int:
             "agent_instruction": (
                 "Show the collaborator `claimed_roles` and `unclaimed_roles`, then STOP and ask: "
                 "(1) Which role(s) they are responsible for (`--role`, e.g. `qa` or `reviewer,qa`), and "
-                "(2) Their personal Jira Email and Jira API Token (plus display name `--name` if desired, and Qase API Token if claiming `qa` when `qase_required` is true). "
-                "Then run `jira_sync.py auth --role <ROLES> [--name <NAME>] --jira-email <EMAIL> --jira-token <TOKEN> [--qase-token <QASE_TOKEN>]`."
+                "(2) Whether they prefer pure environment variables (`JIRA_EMAIL` / `JIRA_API_TOKEN` with `--credential-store env`) "
+                "or saving personal Jira/Qase tokens outside the repo (`~/.config/ai-workflow/credentials/`, mode 0600). "
+                "Then run `jira_sync.py auth --role <ROLES> [--name <NAME>] --jira-email <EMAIL> --jira-token <TOKEN> [--qase-token <QASE_TOKEN>]` "
+                "(or `jira_sync.py auth --role <ROLES> --credential-store env` when env vars are set)."
             ),
         }, ensure_ascii=False, indent=2))
         return 0
 
+    requested_store = getattr(args, "credential_store", None)
     jira_email = getattr(args, "jira_email", None)
     jira_token = getattr(args, "jira_token", None)
     qase_token = getattr(args, "qase_token", None)
@@ -5650,7 +5959,7 @@ def cmd_auth(args) -> int:
     specialty_arg = (getattr(args, "specialty", None) or "").strip()
     replace_role = bool(getattr(args, "replace_role", False))
 
-    if getattr(args, "interactive", False):
+    if getattr(args, "interactive", False) and requested_store != "env":
         _, unclaimed_list = _partition_claimed_roles(config)
         print("=== Collaborator Role Claim & Local Credential Binding ===", file=sys.stderr)
         if not explicit_roles:
@@ -5691,21 +6000,86 @@ def cmd_auth(args) -> int:
                         "jira_api_token": str(rv["jira_api_token"]).strip(),
                     }
 
-    if not ((jira_email and jira_token) or role_tokens_to_save or qase_token):
+    cli_tokens_supplied = bool(jira_token or role_tokens_to_save or qase_token)
+    if requested_store == "env" and cli_tokens_supplied:
         print(
-            "ERROR: Provide --jira-email <EMAIL> and --jira-token <TOKEN> (or --qase-token / --interactive).",
+            "ERROR: --credential-store env uses runtime environment variables only and cannot persist "
+            "--jira-token, --qase-token, or --role-tokens-json. Set JIRA_EMAIL/JIRA_API_TOKEN/QASE_API_TOKEN in your environment instead.",
             file=sys.stderr,
         )
         return 1
 
+    # Check runtime environment variables for pure env-var auth (explicit --credential-store env or implicit when no CLI token flags passed)
+    env_email = (jira_email or os.environ.get("JIRA_EMAIL") or "").strip()
+    env_token = os.environ.get("JIRA_API_TOKEN", "").strip()
+    env_qase_token = os.environ.get("QASE_API_TOKEN", "").strip()
+    role_search_order = list(explicit_roles) + [
+        rk for rk in DEFAULT_TEAM_CONFIG["roles"] if rk not in explicit_roles
+    ]
+    env_role_email = ""
+    env_role_token = ""
+    for rk in role_search_order:
+        rtok = os.environ.get(f"JIRA_API_TOKEN_{rk.upper()}", "").strip()
+        if rtok:
+            rem = (
+                os.environ.get(f"JIRA_EMAIL_{rk.upper()}", "").strip()
+                or (jira_email or "").strip()
+                or resolve_role_person(config, rk).get("email", "").strip()
+                or env_email
+            )
+            env_role_email = rem
+            env_role_token = rtok
+            break
+
+    eff_env_email = env_role_email if (explicit_roles and env_role_token) else (env_email or env_role_email)
+    eff_env_token = env_role_token if (explicit_roles and env_role_token) else (env_token or env_role_token)
+    has_env_jira = bool(eff_env_email and eff_env_token)
+    has_env_qase = bool(env_qase_token)
+
+    use_env_mode = False
+    if requested_store == "env":
+        if not (has_env_jira or has_env_qase):
+            print(
+                "ERROR: --credential-store env was requested, but no Jira/Qase credentials were found in environment variables "
+                "(set JIRA_EMAIL + JIRA_API_TOKEN, JIRA_EMAIL_<ROLE> + JIRA_API_TOKEN_<ROLE>, or QASE_API_TOKEN).",
+                file=sys.stderr,
+            )
+            return 1
+        use_env_mode = True
+    elif (
+        requested_store is None
+        and not cli_tokens_supplied
+        and not getattr(args, "interactive", False)
+        and (has_env_jira or has_env_qase)
+    ):
+        use_env_mode = True
+
+    if use_env_mode:
+        effective_store = "env"
+        verify_email = eff_env_email
+        verify_token = eff_env_token
+        if eff_env_email and not jira_email:
+            jira_email = eff_env_email
+    else:
+        effective_store = requested_store or "user"
+        if not ((jira_email and jira_token) or role_tokens_to_save or qase_token):
+            print(
+                "ERROR: Provide --jira-email <EMAIL> and --jira-token <TOKEN> (or --qase-token / --interactive), "
+                "or set JIRA_EMAIL + JIRA_API_TOKEN in environment variables for pure env-var auth.",
+                file=sys.stderr,
+            )
+            return 1
+        verify_email = jira_email
+        verify_token = jira_token
+
     jira_verification = {"mode": "offline", "verified": False}
-    base_url = (config.get("jira_base_url") or "").strip()
-    if jira_email and jira_token and base_url and not args.offline:
+    base_url = (_env_jira_base_url() or config.get("jira_base_url") or "").strip()
+    if verify_email and verify_token and base_url and not args.offline:
         probe_cfg = dict(config)
         probe_client = JiraClient(probe_cfg, offline=True, repo_root=None)
         probe_client.base_url = base_url.rstrip("/")
-        probe_client.email = jira_email.strip()
-        probe_client.api_token = jira_token.strip()
+        probe_client.email = verify_email.strip()
+        probe_client.api_token = verify_token.strip()
         probe_client._explicit_offline = False
         probe_client.offline = False
         try:
@@ -5716,7 +6090,7 @@ def cmd_auth(args) -> int:
 
     matched_roles = []
     for rk in explicit_roles:
-        if jira_email and jira_token:
+        if not use_env_mode and jira_email and jira_token:
             role_tokens_to_save[rk] = {
                 "jira_email": jira_email.strip(),
                 "jira_api_token": jira_token.strip(),
@@ -5724,14 +6098,16 @@ def cmd_auth(args) -> int:
         if rk not in matched_roles:
             matched_roles.append(rk)
 
-    if jira_email and jira_token:
-        norm_em = jira_email.strip().lower()
+    active_email_for_match = (jira_email or "").strip()
+    if active_email_for_match and (verify_token or (not use_env_mode and jira_token)):
+        norm_em = active_email_for_match.lower()
         for r_key in (config.get("roles") or {}):
             if any((m.get("email") or "").strip().lower() == norm_em for m in resolve_role_members(config, r_key)):
-                role_tokens_to_save.setdefault(r_key, {
-                    "jira_email": jira_email.strip(),
-                    "jira_api_token": jira_token.strip(),
-                })
+                if not use_env_mode and jira_token:
+                    role_tokens_to_save.setdefault(r_key, {
+                        "jira_email": active_email_for_match,
+                        "jira_api_token": jira_token.strip(),
+                    })
                 if r_key not in matched_roles:
                     matched_roles.append(r_key)
 
@@ -5746,7 +6122,7 @@ def cmd_auth(args) -> int:
     for rk in matched_roles:
         existing_entry = disk_roles.get(rk) if isinstance(disk_roles.get(rk), (dict, list, str)) else {}
         is_explicit = rk in explicit_roles
-        cand_email = (jira_email or "").strip()
+        cand_email = active_email_for_match or (jira_verification.get("email") or "").strip()
         cand_name = (
             person_name_arg
             or verified_display_name
@@ -5781,14 +6157,21 @@ def cmd_auth(args) -> int:
     updated_config = load_team_config(repo_root)
     _, remaining_unclaimed = _partition_claimed_roles(updated_config)
 
-    saved_cred_path = save_jira_credentials(
-        repo_root,
-        jira_url=base_url or None,
-        jira_email=jira_email,
-        jira_token=jira_token,
-        role_credentials=role_tokens_to_save or None,
-        qase_token=qase_token,
-    )
+    saved_cred_path = None
+    if not use_env_mode:
+        try:
+            saved_cred_path = save_jira_credentials(
+                repo_root,
+                jira_url=base_url or None,
+                jira_email=jira_email,
+                jira_token=jira_token,
+                role_credentials=role_tokens_to_save or None,
+                qase_token=qase_token,
+                store=effective_store,
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"ERROR: Failed to save credentials: {exc}", file=sys.stderr)
+            return 1
     gitignore_updated = _ensure_gitignore_entries(repo_root)
 
     # Backfill unassigned active Story/Sub-tasks if newly claimed role owns them in live mode
@@ -5805,20 +6188,32 @@ def cmd_auth(args) -> int:
         except Exception:
             pass
 
-    print(json.dumps({
+    final_creds = load_jira_credentials(repo_root)
+    payload = {
         "ok": True,
         "action": "auth",
         "project_key": updated_config.get("project_key", ""),
         "jira_base_url": base_url,
-        "credentials_path": str(saved_cred_path.relative_to(repo_root)),
+        "credential_store": effective_store,
+        "credential_source": _detect_credential_source(repo_root),
+        "credentials_file": str(saved_cred_path) if saved_cred_path is not None else "",
+        "credentials_path": _format_credentials_path(saved_cred_path, repo_root),
         "matched_roles": matched_roles,
         "claimed_roles_updated": claimed_roles_updated,
         "remaining_unclaimed_roles": remaining_unclaimed,
-        "qase_token_saved": bool(qase_token),
+        "qase_token_saved": bool(qase_token) if not use_env_mode else False,
+        "qase_token_configured": bool((os.environ.get("QASE_API_TOKEN") or final_creds.get("qase_api_token") or "").strip()),
         "jira_verification": jira_verification,
         "gitignore_updated": gitignore_updated,
         "team_config_modified": team_config_modified,
-    }, ensure_ascii=False, indent=2))
+    }
+    if effective_store == "user" and get_credentials_path(repo_root).exists():
+        payload["legacy_credentials_warning"] = (
+            "Legacy in-repo .ai-workflow/credentials.json still exists. "
+            "Credentials are now stored outside the repository; you may safely delete "
+            ".ai-workflow/credentials.json to eliminate Gitleaks/secret-scanner alerts."
+        )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -5983,13 +6378,18 @@ def cmd_init(args) -> int:
     eff_email_to_save = jira_email_arg if jira_email_arg is not None else interactive_email
     eff_token_to_save = jira_token_arg if jira_token_arg is not None else interactive_token
 
+    requested_store = getattr(args, "credential_store", None)
     init_explicit_roles = _parse_role_list(getattr(args, "role", None) or "")
     init_name_arg = (getattr(args, "name", None) or "").strip()
     init_specialty_arg = (getattr(args, "specialty", None) or "").strip()
     if init_explicit_roles:
         for rk in init_explicit_roles:
             prev_role = resolve_role_person(cfg, rk)
-            r_em = (eff_email_to_save or prev_role.get("email") or "").strip()
+            env_role_em = (
+                os.environ.get(f"JIRA_EMAIL_{rk.upper()}", "").strip()
+                or os.environ.get("JIRA_EMAIL", "").strip()
+            ) if requested_store == "env" else ""
+            r_em = (eff_email_to_save or prev_role.get("email") or env_role_em).strip()
             r_nm = init_name_arg or (prev_role.get("name") if _is_role_claimed(rk, cfg["roles"].get(rk)) else "") or (r_em.split("@")[0] if r_em else rk)
             new_m = {
                 "name": r_nm,
@@ -6023,22 +6423,49 @@ def cmd_init(args) -> int:
             if not eff_email_to_save and first_rc.get("jira_email"):
                 eff_email_to_save = first_rc["jira_email"]
 
+    if requested_store == "env" and (
+        eff_token_to_save or extracted_role_creds or extracted_member_creds or qase_token_arg
+    ):
+        print(
+            "ERROR: --credential-store env uses runtime environment variables only and cannot persist "
+            "--jira-token, --qase-token, or --role-tokens-json. Set JIRA_EMAIL/JIRA_API_TOKEN/QASE_API_TOKEN in your environment instead.",
+            file=sys.stderr,
+        )
+        return 1
+
+    save_store = requested_store or "user"
     cred_saved_path = None
-    if eff_email_to_save is not None or eff_token_to_save is not None or extracted_role_creds or extracted_member_creds or qase_token_arg:
-        cred_saved_path = save_jira_credentials(
-            repo_root,
-            jira_url=cfg.get("jira_base_url") or None,
-            jira_email=eff_email_to_save,
-            jira_token=eff_token_to_save,
-            role_credentials=extracted_role_creds if extracted_role_creds else None,
-            qase_token=qase_token_arg,
-            member_credentials=extracted_member_creds if extracted_member_creds else None,
-        )
-    elif cfg.get("jira_base_url") and get_credentials_path(repo_root).exists():
-        cred_saved_path = save_jira_credentials(
-            repo_root,
-            jira_url=cfg.get("jira_base_url"),
-        )
+    if requested_store != "env":
+        try:
+            if eff_email_to_save is not None or eff_token_to_save is not None or extracted_role_creds or extracted_member_creds or qase_token_arg:
+                cred_saved_path = save_jira_credentials(
+                    repo_root,
+                    jira_url=cfg.get("jira_base_url") or None,
+                    jira_email=eff_email_to_save,
+                    jira_token=eff_token_to_save,
+                    role_credentials=extracted_role_creds if extracted_role_creds else None,
+                    qase_token=qase_token_arg,
+                    member_credentials=extracted_member_creds if extracted_member_creds else None,
+                    store=save_store,
+                )
+            elif cfg.get("jira_base_url"):
+                user_cred_existing = get_user_credentials_path(repo_root)
+                legacy_cred_existing = get_credentials_path(repo_root)
+                if requested_store in (None, "user") and (not user_cred_existing.is_symlink()) and user_cred_existing.is_file():
+                    cred_saved_path = save_jira_credentials(
+                        repo_root,
+                        jira_url=cfg.get("jira_base_url"),
+                        store="user",
+                    )
+                elif requested_store in (None, "repo") and (not legacy_cred_existing.is_symlink()) and legacy_cred_existing.is_file():
+                    cred_saved_path = save_jira_credentials(
+                        repo_root,
+                        jira_url=cfg.get("jira_base_url"),
+                        store="repo",
+                    )
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"ERROR: Failed to save credentials: {exc}", file=sys.stderr)
+            return 1
 
     client = JiraClient(cfg, offline=args.offline, repo_root=repo_root)
     jira_verification = {"mode": "live" if client.is_live else "offline", "verified": False}
@@ -6145,6 +6572,35 @@ def cmd_init(args) -> int:
         env_tok = os.environ.get(f"JIRA_API_TOKEN_{r_key.upper()}", "").strip()
         role_has_api_token[r_key] = bool((rc.get("jira_api_token") or "").strip() or env_tok)
 
+    credential_source = _detect_credential_source(repo_root)
+    if requested_store == "env":
+        effective_init_store = "env"
+        effective_cred_path_display = ""
+        effective_cred_file_display = ""
+    else:
+        user_cred_p = get_user_credentials_path(repo_root)
+        legacy_cred_p = get_credentials_path(repo_root)
+        if cred_saved_path is not None:
+            effective_init_store = save_store
+            effective_cred_path_display = _format_credentials_path(cred_saved_path, repo_root)
+            effective_cred_file_display = str(cred_saved_path)
+        elif credential_source == "env":
+            effective_init_store = "env"
+            effective_cred_path_display = ""
+            effective_cred_file_display = ""
+        elif (not user_cred_p.is_symlink()) and user_cred_p.is_file():
+            effective_init_store = "user"
+            effective_cred_path_display = str(user_cred_p)
+            effective_cred_file_display = str(user_cred_p)
+        elif (not legacy_cred_p.is_symlink()) and legacy_cred_p.is_file():
+            effective_init_store = "repo"
+            effective_cred_path_display = ".ai-workflow/credentials.json"
+            effective_cred_file_display = str(legacy_cred_p)
+        else:
+            effective_init_store = save_store
+            effective_cred_path_display = None
+            effective_cred_file_display = ""
+
     ci_detect = _detect_ci_delivery_pipeline(repo_root)
     result = {
         "ok": True,
@@ -6161,11 +6617,10 @@ def cmd_init(args) -> int:
         "detected_ci_checks": ci_detect["detected_ci_checks"],
         "suggested_qa_handoff_mode": ci_detect["suggested_qa_handoff_mode"],
         "credentials_configured": has_creds,
-        "credentials_path": (
-            str(cred_saved_path.relative_to(repo_root))
-            if cred_saved_path is not None
-            else (".ai-workflow/credentials.json" if get_credentials_path(repo_root).exists() else None)
-        ),
+        "credential_store": effective_init_store,
+        "credential_source": credential_source,
+        "credentials_file": effective_cred_file_display,
+        "credentials_path": effective_cred_path_display,
         "role_has_api_token": role_has_api_token,
         "claimed_roles": list(_partition_claimed_roles(cfg)[0].keys()),
         "unclaimed_roles": _partition_claimed_roles(cfg)[1],
@@ -6176,6 +6631,12 @@ def cmd_init(args) -> int:
         "standards": standards_result,
         "role_consolidation": person_to_roles,
     }
+    if cred_saved_path is not None and save_store == "user" and get_credentials_path(repo_root).exists():
+        result["legacy_credentials_warning"] = (
+            "Legacy in-repo .ai-workflow/credentials.json still exists. "
+            "Credentials are now stored outside the repository; you may safely delete "
+            ".ai-workflow/credentials.json to eliminate Gitleaks/secret-scanner alerts."
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -6593,7 +7054,7 @@ def _cmd_status_epic(
             "recommended_skill": "team-init",
             "recommended_mode": "auth",
             "reason": (
-                f"Project is configured for live Jira ({base_url}), but local `.ai-workflow/credentials.json` is missing "
+                f"Project is configured for live Jira ({base_url}), but local Jira credentials are missing "
                 f"(cannot fetch Epic {epic_key} progress)."
             ),
             "done_when": "Collaborator claims their role(s) and binds personal Jira credentials via `jira_sync.py auth --role <ROLES> --jira-email <EMAIL> --jira-token <TOKEN>`.",
@@ -6893,7 +7354,7 @@ def cmd_status(args) -> int:
                     "recommended_skill": "team-init",
                     "recommended_mode": "auth",
                     "reason": (
-                        f"Project is configured for live Jira ({base_url}), but local `.ai-workflow/credentials.json` is missing on this machine "
+                        f"Project is configured for live Jira ({base_url}), but local Jira credentials are missing on this machine "
                         f"(cannot fetch remote Story {jira_key})."
                     ),
                     "done_when": "Collaborator claims their role(s) and binds personal Jira credentials via `jira_sync.py auth --role <ROLES> --jira-email <EMAIL> --jira-token <TOKEN>`.",
@@ -6981,7 +7442,7 @@ def cmd_status(args) -> int:
             "recommended_mode": "auth",
             "reason": (
                 f"Repository is already initialized for live Jira ({base_url}), "
-                f"but `.ai-workflow/credentials.json` is gitignored and not yet configured on this machine."
+                f"but local Jira credentials (environment variables or user config) are not yet configured on this machine."
             ),
             "done_when": "Collaborator selects their role(s) and binds personal Jira API token via `jira_sync.py auth --role <ROLES> --jira-email <EMAIL> --jira-token <TOKEN>`.",
         }
@@ -9373,7 +9834,8 @@ def cmd_record_qa(args) -> int:
     if eff_backend == "qase" and not args.offline and not qase_client.has_credentials:
         print(
             "ERROR: qa_test_backend is 'qase', but Qase project_code or Qase API token is missing. "
-            "Pass --qase-project-code <CODE> and --qase-token <TOKEN> (stored in .ai-workflow/credentials.json).",
+            "Pass --qase-project-code <CODE> and --qase-token <TOKEN> (stored outside the repo under ~/.config/ai-workflow/credentials/), "
+            "or set QASE_API_TOKEN in your environment.",
             file=sys.stderr,
         )
         return 1
@@ -11164,9 +11626,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="subcommand", required=True)
 
     # 1. init
-    p_init = sub.add_parser("init", parents=[sub_common], help="Initialize .ai-workflow/team-config.json, gitignored credentials.json, .gitignore, and engineering-standards.md")
+    p_init = sub.add_parser("init", parents=[sub_common], help="Initialize .ai-workflow/team-config.json, out-of-repo user credentials (or env auth), .gitignore, and engineering-standards.md")
     p_init.add_argument("--inspect", action="store_true", help="Inspect current initialization state and return required user inquiry questions without modifying files")
-    p_init.add_argument("--auth-only", action="store_true", help="Collaborator mode: bind local gitignored credentials.json and optionally claim role(s)")
+    p_init.add_argument("--auth-only", action="store_true", help="Collaborator mode: bind local credentials and optionally claim role(s)")
+    p_init.add_argument("--credential-store", choices=list(VALID_CREDENTIAL_STORES), default=None, help="Where to store/read credentials: 'user' (default, out-of-repo ~/.config/ai-workflow/credentials/), 'repo' (legacy .ai-workflow/credentials.json), or 'env' (environment variables only; zero files written)")
     p_init.add_argument("--role", help="Comma-separated role(s) owned by the current user (e.g. 'pm,tech_lead,developer'); leaves remaining roles unclaimed for teammates")
     p_init.add_argument("--specialty", default=None, help="Optional specialty tag for multi-member roles (e.g. 'backend', 'frontend', 'mobile', 'devops')")
     p_init.add_argument("--language", choices=["zh-TW", "en"], default=None, help="Default prose language for Jira comments and descriptions (default: zh-TW)")
@@ -11184,15 +11647,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")
     p_init.add_argument("--jira-board-id", default=None, help="Optional Jira Scrum board id used by team-plan")
     p_init.add_argument("--jira-url", default=None, help="Jira base URL (e.g. https://org.atlassian.net)")
-    p_init.add_argument("--jira-email", default=None, help="Jira account email (stored in gitignored .ai-workflow/credentials.json)")
-    p_init.add_argument("--jira-token", default=None, help="Jira API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
-    p_init.add_argument("--roles-json", help="JSON string or file mapping roles to people/members (optional api_token fields are extracted to credentials.json)")
-    p_init.add_argument("--role-tokens-json", help="JSON string or file mapping roles to Jira API tokens (stored in gitignored .ai-workflow/credentials.json)")
+    p_init.add_argument("--jira-email", default=None, help="Jira account email (stored outside repo in user config by default)")
+    p_init.add_argument("--jira-token", default=None, help="Jira API token (stored outside repo in user config with mode 0600 by default)")
+    p_init.add_argument("--roles-json", help="JSON string or file mapping roles to people/members (optional api_token fields are extracted to credential store)")
+    p_init.add_argument("--role-tokens-json", help="JSON string or file mapping roles to Jira API tokens (stored in credential store, mode 0600)")
     p_init.add_argument("--status-mapping-json", help="JSON string or file mapping workflow states to Jira statuses")
     p_init.add_argument("--issue-type-mapping-json", help="JSON string or file mapping story/subtask/bug to Jira issue types")
     p_init.add_argument("--qa-backend", choices=["jira-comment", "qase"], help="Optional remembered QA test backend ('jira-comment' or 'qase')")
     p_init.add_argument("--qase-project-code", help="Optional Qase project code (e.g. AP)")
-    p_init.add_argument("--qase-token", help="Optional Qase API token (stored in gitignored .ai-workflow/credentials.json)")
+    p_init.add_argument("--qase-token", help="Optional Qase API token (stored in credential store, mode 0600)")
     p_init.add_argument("--qase-base-url", help="Optional Qase API v1 base URL (default: https://api.qase.io/v1)")
     p_init.add_argument("--qase-app-url", help="Optional Qase web app URL (default: https://app.qase.io)")
     p_init.add_argument("--qase-jira-type", help="Optional Qase Jira external issue integration type (default: jira-cloud)")
@@ -11201,17 +11664,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.set_defaults(func=cmd_init)
 
     # 1b. auth (collaborator role claiming & personal credential onboarding after git clone)
-    p_auth = sub.add_parser("auth", parents=[sub_common], help="Claim/append role(s) and bind personal Jira/Qase API tokens into local gitignored .ai-workflow/credentials.json")
+    p_auth = sub.add_parser("auth", parents=[sub_common], help="Claim/append role(s) and bind personal Jira/Qase credentials (out-of-repo user config by default, or pure env-var auth)")
     p_auth.add_argument("--inspect", action="store_true", help="Inspect collaborator credential readiness, claimed roles, and unclaimed roles")
     p_auth.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for owned role(s), display name, Jira Email, Jira API Token, and optional Qase API Token")
+    p_auth.add_argument("--credential-store", choices=list(VALID_CREDENTIAL_STORES), default=None, help="Where to store/read credentials: 'user' (default, out-of-repo ~/.config/ai-workflow/credentials/), 'repo' (legacy .ai-workflow/credentials.json), or 'env' (environment variables only; zero files written)")
     p_auth.add_argument("--role", default=None, help="Comma-separated role(s) claimed by this collaborator (appends to role pool by default)")
     p_auth.add_argument("--specialty", default=None, help="Optional specialty tag when joining a multi-member role pool (e.g. 'backend', 'frontend')")
     p_auth.add_argument("--replace-role", action="store_true", help="Replace existing member(s) in --role instead of appending to the role pool")
     p_auth.add_argument("--name", default=None, help="Collaborator display name (auto-filled from Jira /rest/api/3/myself if omitted)")
     p_auth.add_argument("--jira-email", default=None, help="Personal Jira account email")
-    p_auth.add_argument("--jira-token", default=None, help="Personal Jira API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
+    p_auth.add_argument("--jira-token", default=None, help="Personal Jira API token (stored outside repo in user config with mode 0600 by default)")
     p_auth.add_argument("--role-tokens-json", default=None, help="Optional JSON mapping role names to Jira API tokens")
-    p_auth.add_argument("--qase-token", default=None, help="Optional Qase API token (stored in gitignored .ai-workflow/credentials.json, mode 0600)")
+    p_auth.add_argument("--qase-token", default=None, help="Optional Qase API token (stored outside repo in user config with mode 0600 by default)")
     p_auth.set_defaults(func=cmd_auth)
 
     # 2. status
