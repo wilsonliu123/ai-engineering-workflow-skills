@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI 工程工作流技能套件（ai-engineering-workflow-skills v1.6）教育訓練與情境實戰手冊</title>
+  <title>AI 工程工作流技能套件（ai-engineering-workflow-skills v1.6.1）教育訓練與情境實戰手冊</title>
   <style>
     :root {
       --bg: #f6f8fb;
@@ -214,7 +214,7 @@
 </head>
 <body>
   <nav class="sidebar">
-    <h2>AI 工程工作流技能套件（ai-engineering-workflow-skills v1.6）教育訓練與情境實戰手冊</h2>
+    <h2>AI 工程工作流技能套件（ai-engineering-workflow-skills v1.6.1）教育訓練與情境實戰手冊</h2>
     <a class="nav-main" href="#1-文件目的-適用角色與訓練導覽">1. 文件目的、適用角色與訓練導覽</a>
 <a class="nav-sub" href="#1-1-為什麼需要-規劃層-四站八技能-jira-核心工作流">1.1 為什麼需要「規劃層 + 四站八技能 Jira 核心工作流」？</a>
 <a class="nav-sub" href="#1-2-六大核心角色職責與建議訓練路徑">1.2 六大核心角色職責與建議訓練路徑</a>
@@ -270,14 +270,14 @@
 <a class="nav-sub" href="#13-4-交付前品質檢查清單-quality-checklist">13.4 交付前品質檢查清單（Quality Checklist）</a>
   </nav>
   <main class="main">
-    <h1>AI 工程工作流技能套件（ai-engineering-workflow-skills v1.6）教育訓練與情境實戰手冊</h1>
+    <h1>AI 工程工作流技能套件（ai-engineering-workflow-skills v1.6.1）教育訓練與情境實戰手冊</h1>
     <blockquote><p><strong>版本記錄</strong></p></blockquote>
 <blockquote><p></p></blockquote>
-<blockquote><p>- <strong>目前版本：</strong> <code class="inline-code">v1.6.0</code></p></blockquote>
-<blockquote><p>- <strong>更新日期：</strong> 2026-11-23</p></blockquote>
-<blockquote><p>- <strong>本次變更：</strong> 新增 <code class="inline-code">v1.6.0</code> Phase A CI/CD 交付流水線對齊——選填 <code class="inline-code">delivery_pipeline</code> 設定與純標準庫 CI 自動偵測（<code class="inline-code">.gitlab-ci.yml</code> / <code class="inline-code">.github/workflows/*.yml</code>、<code class="inline-code">detected_ci_checks</code>、<code class="inline-code">suggested_qa_handoff_mode</code>）、<code class="inline-code">integration_branch</code> 基準分支解析、<code class="inline-code">promote-qa</code> / <code class="inline-code">record-qa --mode verify</code> 的 <code class="inline-code">--deploy-ref</code> 與 <code class="inline-code">--environment</code> 溯源（含新 Commit 舊參照防洩漏與 <code class="inline-code">qa_deploy_hint</code>），以及多環境 <code class="inline-code">team-release</code> 非阻塞式 <code class="inline-code">release_checklist_reminders</code>（嚴守人工確認紅線，不自動打 Tag、不自動合併、不引入 UAT 狀態機），對齊 8 個工作流技能、16 個 CLI 子命令與 38 項驗證測試。</p></blockquote>
-<blockquote><p>- <strong>完整變更：</strong> 請參閱根目錄的 <code class="inline-code">CHANGELOG.md</code>。</p></blockquote>
-<p>本手冊為 <code class="inline-code">ai-engineering-workflow-skills</code>（v1.6 規劃層 + 四站八技能 Jira 核心工程工作流，另附動態多代理系統編排技能 <code class="inline-code">run-workflow</code>）之完整教育訓練教材與實戰操作指南。全書採用<strong>真實使用情境驅動（Scenario-Driven Training）</strong>編排，結合視覺化架構圖、終端機與 Jira 雙視窗實況對照圖、CLI 參數規格表與標準操作步驟，協助工程團隊從零完成專案導入、協作者認領、Epic 拆解與 Sprint 規劃、規格定義與回補、任務拆解、AI 編碼與提交門禁、同儕審查、多環境部署交接、三層混合測試、缺陷分診／報修閉環與正式發佈結案。</p>
+<blockquote><p>- <strong>目前版本：</strong> <code class="inline-code">v1.6.1</code></p></blockquote>
+<blockquote><p>- <strong>更新日期：</strong> 2026-11-25</p></blockquote>
+<blockquote><p>- <strong>本次變更：</strong> 新增 <code class="inline-code">v1.6.1</code> 資安強化、Semgrep SAST 零告警與程式碼庫外部預設憑證儲存——以純標準庫 fail-closed XML 掃描器取代 <code class="inline-code">xml.etree.ElementTree</code>、以 <code class="inline-code">_VerifiedTLSConnection</code> + <code class="inline-code">_http_request</code> 取代 <code class="inline-code">urllib.request.urlopen</code> / <code class="inline-code">HTTPSConnection</code>（達成 0 Semgrep 告警、0 <code class="inline-code"># nosemgrep</code>）；預設憑證移至程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/&lt;repo-id&gt;.json</code>（<code class="inline-code">0700</code>/<code class="inline-code">0600</code> 原子寫入、跨 Worktree 共用、拒絕 symlink），新增 <code class="inline-code">--credential-store {user,repo,env}</code> 與零寫檔純環境變數認證（100% 向下相容舊版 <code class="inline-code">.ai-workflow/credentials.json</code>），補齊繁體中文 <code class="inline-code">README.zh-TW.md</code> / <code class="inline-code">CHANGELOG.zh-TW.md</code>，對齊 8 個工作流技能、16 個 CLI 子命令與 41 項驗證測試。</p></blockquote>
+<blockquote><p>- <strong>完整變更：</strong> 請參閱根目錄的 <code class="inline-code">CHANGELOG.md</code> 與繁體中文版 <code class="inline-code">CHANGELOG.zh-TW.md</code>。</p></blockquote>
+<p>本手冊為 <code class="inline-code">ai-engineering-workflow-skills</code>（v1.6.1 規劃層 + 四站八技能 Jira 核心工程工作流，另附動態多代理系統編排技能 <code class="inline-code">run-workflow</code>）之完整教育訓練教材與實戰操作指南。全書採用<strong>真實使用情境驅動（Scenario-Driven Training）</strong>編排，結合視覺化架構圖、終端機與 Jira 雙視窗實況對照圖、CLI 參數規格表與標準操作步驟，協助工程團隊從零完成專案導入、協作者認領、Epic 拆解與 Sprint 規劃、規格定義與回補、任務拆解、AI 編碼與提交門禁、同儕審查、多環境部署交接、三層混合測試、缺陷分診／報修閉環與正式發佈結案。</p>
 <hr>
 <h2 id="1-文件目的-適用角色與訓練導覽">1. 文件目的、適用角色與訓練導覽</h2>
 <h3 id="1-1-為什麼需要-規劃層-四站八技能-jira-核心工作流">1.1 為什麼需要「規劃層 + 四站八技能 Jira 核心工作流」？</h3>
@@ -287,9 +287,9 @@
   <li><strong>一人兼多職或多人共職時交接摩擦大（Handoff Ceremony Fatigue）</strong>：團隊既常由同一位成員兼任多職（例如 PM 兼 Release Manager），也常由多位成員共擔同一角色（例如前後端多位 Developer 或多位 QA），傳統流程不是被迫自己簽核自己，就是單據長期留白無人指派。</li>
   <li><strong>細枝末節追問耗盡人類審查精力，大需求又漏掉邊界（Review Fatigue vs. Edge-Case Blindness）</strong>：AI 若將常規分頁筆數、標準錯誤碼逐題追問人類會耗盡耐心；但若把複雜架構硬壓成單回合快審，又容易遺漏併發與權限邊界。</li>
 </ol>
-<p>為解決上述問題，<code class="inline-code">ai-engineering-workflow-skills</code> v1.6 確立了四大核心設計支柱：</p>
+<p>為解決上述問題，<code class="inline-code">ai-engineering-workflow-skills</code> v1.6.1 確立了四大核心設計支柱：</p>
 <ul>
-  <li><strong>第一性原理資產邊界（First-Principles Asset Boundary）</strong>：單一功能的生命週期資產永久保存於 <strong>Jira</strong>（<code class="inline-code">User Story</code>、<code class="inline-code">Sub-task</code>、<code class="inline-code">Bug</code>、結構化評論與隱藏屬性 <code class="inline-code">ai_workflow_state</code>）及選用之 <strong>Qase TestOps</strong>；本地僅在開發期間維護受 <code class="inline-code">.gitignore</code> 保護的暫存狀態檔 <code class="inline-code">.ai-workflow/active/&lt;JIRA-KEY&gt;.json</code>（結案自動刪除）與個人憑證檔 <code class="inline-code">.ai-workflow/credentials.json</code>（權限 <code class="inline-code">0600</code>）。Git 儲存庫僅保留全系統常駐活資產（<code class="inline-code">.ai-workflow/team-config.json</code>、<code class="inline-code">.ai-workflow/bin/jira_sync.py</code>、<code class="inline-code">AGENTS.md</code>、<code class="inline-code">docs/shared/engineering-standards.md</code>，以及選用之 <code class="inline-code">glossary.md</code>、<code class="inline-code">adr/</code> 與 <code class="inline-code">docs/manuals/&lt;manual-name&gt;/&lt;manual-name&gt;.html</code> 常駐產品手冊）；絕不提交 <code class="inline-code">analysis.md</code> 或任何單功能流程 Markdown。</li>
+  <li><strong>第一性原理資產邊界（First-Principles Asset Boundary）</strong>：單一功能的生命週期資產永久保存於 <strong>Jira</strong>（<code class="inline-code">User Story</code>、<code class="inline-code">Sub-task</code>、<code class="inline-code">Bug</code>、結構化評論與隱藏屬性 <code class="inline-code">ai_workflow_state</code>）及選用之 <strong>Qase TestOps</strong>；本地僅在開發期間維護受 <code class="inline-code">.gitignore</code> 保護的暫存狀態檔 <code class="inline-code">.ai-workflow/active/&lt;JIRA-KEY&gt;.json</code>（結案自動刪除），個人與角色 API Token 優先由執行期環境變數提供或預設儲存於程式碼庫外部 <code class="inline-code">$XDG_CONFIG_HOME/ai-workflow/credentials/&lt;repo-id&gt;.json</code>（預設 <code class="inline-code">~/.config/ai-workflow/credentials/</code>，目錄 <code class="inline-code">0700</code>、檔案 <code class="inline-code">0600</code> 原子寫入且跨 Worktree 共用；舊版受 <code class="inline-code">.gitignore</code> 保護之 <code class="inline-code">.ai-workflow/credentials.json</code> 維持 100% 向下相容）。Git 儲存庫僅保留全系統常駐活資產（<code class="inline-code">.ai-workflow/team-config.json</code>、<code class="inline-code">.ai-workflow/bin/jira_sync.py</code>、<code class="inline-code">AGENTS.md</code>、<code class="inline-code">docs/shared/engineering-standards.md</code>，以及選用之 <code class="inline-code">glossary.md</code>、<code class="inline-code">adr/</code> 與 <code class="inline-code">docs/manuals/&lt;manual-name&gt;/&lt;manual-name&gt;.html</code> 常駐產品手冊）；絕不提交 <code class="inline-code">analysis.md</code> 或任何單功能流程 Markdown。</li>
   <li><strong>規劃層 + 四站八技能精煉架構與雙向對帳（4-Station Architecture &amp; Bidirectional Sync）</strong>：將傳統十餘個零碎步驟收斂為 <strong>Init 初始化／協作者認領</strong>、<strong>Planning 規劃層</strong>、<strong>Router 導航員</strong>及 <strong>Station 1 至 Station 4</strong> 共 8 個工作流技能（預設繁體中文 <code class="inline-code">zh-TW</code> 輸出與行內 Markdown 轉 Jira ADF 渲染），支援開發與 QA 平行推進、跨機自動水合，以及與 Jira 網頁端手動修改的即時雙向對帳。</li>
   <li><strong>一人兼多職整併、1 對多角色池與嚴格 HITL / SoD 邊界（Smart Handoff, HITL &amp; SoD Clean Stop）</strong>：透過 <code class="inline-code">team-config.json</code> 同時支援「一人兼多職」（<code class="inline-code">same_person: true</code> 僅透過 <code class="inline-code">auto-consolidated</code> 抑制自我 <code class="inline-code">@mention</code> 噪音，<strong>絕不自動串接下一站</strong>，一律停下以一句簡短確認詢問使用者）與「一職多人池」（<code class="inline-code">roles.&lt;role&gt;.members</code> 搭配 <code class="inline-code">specialty</code> 專長標籤自動指派子任務、自動避開作者選取同儕審查、跨人交接強制執行職責分離 Clean Stop）。</li>
   <li><strong>按規模分軌之「抓大放小」審查（Scale-Aware Focus-on-Material-Risks）</strong>：常規工程與 UI 細節由 AI 依專案標準自動拍板並列入<strong>AI 預設細節清單</strong>（<code class="inline-code">auto_decisions</code>）；小型明確需求單趟最多問 <strong>3 題</strong>關鍵問題即核准，中大型複雜需求則透過多輪 <code class="inline-code">draft</code> 深挖（每輪 3 至 5 題）與 6 大 AC 維度檢查把關，既有 Story 亦支援 <code class="inline-code">--backfill</code> 無損回補規格。</li>
@@ -388,12 +388,12 @@
 <tr>
 <td><strong>初次設定專案 (<code class="inline-code">init</code>)</strong></td>
 <td><strong>「請用 <code class="inline-code">$team-init</code> 初始化專案，代號 <code class="inline-code">TEAM</code>，我先認領 PM 與 Tech Lead。」</strong></td>
-<td>支援漸進式認領個人角色，建立 <code class="inline-code">team-config.json</code>（含 <code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code> 等設定）、安全寫入本機 <code class="inline-code">credentials.json</code> (<code class="inline-code">0600</code>)、安裝 <code class="inline-code">.ai-workflow/bin/jira_sync.py</code> 並萃取工程標準。</td>
+<td>支援漸進式認領個人角色，建立 <code class="inline-code">team-config.json</code>（含 <code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、<code class="inline-code">delivery_pipeline</code> 等設定）、將憑證安全寫入程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/</code> (<code class="inline-code">0600</code>) 或採純環境變數認證（<code class="inline-code">--credential-store env</code>）、安裝 <code class="inline-code">.ai-workflow/bin/jira_sync.py</code> 並萃取工程標準。</td>
 </tr>
 <tr>
 <td><strong>協作者加入 (<code class="inline-code">auth</code>)</strong></td>
 <td><strong>「我剛 clone 專案，負責前端開發（或 QA），請幫我綁定憑證！」</strong></td>
-<td>執行 <code class="inline-code">auth</code> 驗證個人 Jira/Qase Token（僅存本機 <code class="inline-code">credentials.json</code>），並非破壞性追加至 <code class="inline-code">team-config.json</code> 對應角色池（<code class="inline-code">members</code>）。</td>
+<td>執行 <code class="inline-code">auth</code> 驗證個人 Jira/Qase Token（預設寫入程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/</code> 或 <code class="inline-code">--credential-store env</code> 零寫檔），並非破壞性追加至 <code class="inline-code">team-config.json</code> 對應角色池（<code class="inline-code">members</code>）。</td>
 </tr>
 <tr>
 <td><strong>Station 1 定規格 / 回補</strong></td>
@@ -462,7 +462,7 @@
 <td><code class="inline-code">init</code> / <code class="inline-code">auth</code></td>
 <td><code class="inline-code">tech_lead</code> / <code class="inline-code">pm</code> / 協作者</td>
 <td><code class="inline-code">init</code> / <code class="inline-code">auth</code></td>
-<td>建立 <code class="inline-code">team-config.json</code>（含角色池、<code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、<code class="inline-code">epic_link_field</code>）、本機 <code class="inline-code">credentials.json</code> (<code class="inline-code">0600</code>)、<code class="inline-code">.gitignore</code>，並萃取 <code class="inline-code">engineering-standards.md</code></td>
+<td>建立 <code class="inline-code">team-config.json</code>（含角色池、<code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、<code class="inline-code">delivery_pipeline</code>、<code class="inline-code">epic_link_field</code>）、程式碼庫外部憑證 <code class="inline-code">~/.config/ai-workflow/credentials/</code> (<code class="inline-code">0600</code>) 或純環境變數認證、<code class="inline-code">.gitignore</code>，並萃取 <code class="inline-code">engineering-standards.md</code></td>
 </tr>
 <tr>
 <td><strong>Router 導航員</strong></td>
@@ -593,7 +593,7 @@
 <tr>
 <td><strong>L1/L2</strong> <code class="inline-code">skills/team-init/SKILL.md</code></td>
 <td>專案初始化與協作者認領 (<code class="inline-code">team-init</code>)</td>
-<td><code class="inline-code">jira_sync.py init</code> / <code class="inline-code">auth</code>、CI 自動偵測（<code class="inline-code">.gitlab-ci.yml</code> / <code class="inline-code">.github/workflows/*.yml</code>）、選填 <code class="inline-code">delivery_pipeline</code>、<code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、<code class="inline-code">status_mapping.dev_done</code>、<code class="inline-code">epic_link_field</code>、<code class="inline-code">credentials.json</code> (<code class="inline-code">0600</code>)</td>
+<td><code class="inline-code">jira_sync.py init</code> / <code class="inline-code">auth</code>、<code class="inline-code">--credential-store {user,repo,env}</code>、程式碼庫外部憑證 <code class="inline-code">~/.config/ai-workflow/credentials/</code> (<code class="inline-code">0600</code>)、CI 自動偵測（<code class="inline-code">.gitlab-ci.yml</code> / <code class="inline-code">.github/workflows/*.yml</code>）、選填 <code class="inline-code">delivery_pipeline</code>、<code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、<code class="inline-code">status_mapping.dev_done</code>、<code class="inline-code">epic_link_field</code></td>
 <td><code class="inline-code">tech_lead</code> / <code class="inline-code">pm</code> / 協作者</td>
 <td>第 3 章 情境 0（圖 3-1：<code class="inline-code">03-scenario0-team-init.png</code>）</td>
 </tr>
@@ -655,8 +655,8 @@
 </tr>
 <tr>
 <td><strong>L3</strong> <code class="inline-code">scripts/jira_sync.py</code> + <code class="inline-code">system/run-workflow</code> + <code class="inline-code">tools/*</code></td>
-<td>同步引擎、多代理編排與 38 項測試套件</td>
-<td>Jira REST API v3（含行內 Markdown ADF 與 <code class="inline-code">ai_workflow_state</code>）、Qase API v1、純標準庫 CI 偵測、<code class="inline-code">run-workflow</code>、<code class="inline-code">check_shared.sh</code>（8 份一致）、<code class="inline-code">test_workflow.py</code>（38 項測試）</td>
+<td>同步引擎、SAST 零告警強化與 41 項測試套件</td>
+<td>Jira REST API v3（行內 ADF 與 <code class="inline-code">ai_workflow_state</code>）、Qase API v1、純標準庫 fail-closed XML 掃描器與 <code class="inline-code">_VerifiedTLSConnection</code>（0 Semgrep 告警）、純標準庫 CI 偵測、<code class="inline-code">run-workflow</code>、<code class="inline-code">check_shared.sh</code>（8 份一致）、<code class="inline-code">test_workflow.py</code>（41 項測試）</td>
 <td>維運 / 全體角色</td>
 <td>第 11 - 13 章 情境 8（圖 10-1）</td>
 </tr>
@@ -715,7 +715,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
 <p>本技能同時支援<strong>一次設定全隊角色</strong>與<strong>漸進式角色認領（Progressive Role Claiming）</strong>：</p>
 <ul>
   <li><strong>創始者快速啟動（<code class="inline-code">init</code>）</strong>：第一位初始化專案的成員只需先認領自己負責的角色（未認領角色自動列於 <code class="inline-code">unclaimed_roles</code>），無須替還沒加入的隊友代填帳號與 Token。</li>
-  <li><strong>協作者無損加入與 1 對多角色池（<code class="inline-code">auth</code>）</strong>：後續成員 <code class="inline-code">git clone</code> 後執行 <code class="inline-code">auth --role developer --specialty frontend</code> 或 <code class="inline-code">auth --role qa</code>，即可將個人 Token 安全寫入本機 <code class="inline-code">.ai-workflow/credentials.json</code>（權限 <code class="inline-code">0600</code>），並<strong>非破壞性追加</strong>至 <code class="inline-code">team-config.json</code> 的 <code class="inline-code">roles.&lt;role&gt;.members</code> 角色池中（不覆蓋既有隊友）。</li>
+  <li><strong>協作者無損加入與 1 對多角色池（<code class="inline-code">auth</code>）</strong>：後續成員 <code class="inline-code">git clone</code> 後執行 <code class="inline-code">auth --role developer --specialty frontend</code> 或 <code class="inline-code">auth --role qa</code>，即可將個人 Token 預設安全寫入程式碼庫外部 <code class="inline-code">$XDG_CONFIG_HOME/ai-workflow/credentials/&lt;repo-id&gt;.json</code>（預設 <code class="inline-code">~/.config/ai-workflow/credentials/</code>，目錄 <code class="inline-code">0700</code>、檔案 <code class="inline-code">0600</code> 原子寫入且拒絕 symlink；亦支援 <code class="inline-code">--credential-store env</code> 零寫檔純環境變數認證），並<strong>非破壞性追加</strong>至 <code class="inline-code">team-config.json</code> 的 <code class="inline-code">roles.&lt;role&gt;.members</code> 角色池中（不覆蓋既有隊友）。</li>
 </ul>
 <p>在此訓練情境中，假設我們的小型團隊共有 3 位成員負責 <code class="inline-code">TEAM</code> 專案：</p>
 <ul>
@@ -736,7 +736,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
 </ul>
 <ol>
   <li><strong>專案 Jira URL 與 Project Key</strong>（例如 <code class="inline-code">https://your-org.atlassian.net</code>、代號 <code class="inline-code">TEAM</code>）</li>
-  <li><strong>您本人負責的角色與 Jira 認證信箱／API Token</strong>（亦可一次填寫全隊六大角色 <code class="inline-code">pm</code>、<code class="inline-code">tech_lead</code>、<code class="inline-code">developer</code>、<code class="inline-code">reviewer</code>、<code class="inline-code">qa</code>、<code class="inline-code">release_manager</code> 及其專屬 Token；連線模式下自動呼叫 <code class="inline-code">/rest/api/3/myself</code> 綁定真實 <code class="inline-code">jira_account_id</code>，所有 Token 只會寫入受 <code class="inline-code">.gitignore</code> 保護的 <code class="inline-code">.ai-workflow/credentials.json</code>，權限 <code class="inline-code">0600</code>）</li>
+  <li><strong>您本人負責的角色與 Jira 認證信箱／API Token</strong>（亦可一次填寫全隊六大角色 <code class="inline-code">pm</code>、<code class="inline-code">tech_lead</code>、<code class="inline-code">developer</code>、<code class="inline-code">reviewer</code>、<code class="inline-code">qa</code>、<code class="inline-code">release_manager</code> 及其專屬 Token；連線模式下自動呼叫 <code class="inline-code">/rest/api/3/myself</code> 綁定真實 <code class="inline-code">jira_account_id</code>，所有 Token 預設寫入程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/&lt;repo-id&gt;.json</code>，目錄 <code class="inline-code">0700</code>、檔案 <code class="inline-code">0600</code> 並跨 Worktree 共用；亦可使用 <code class="inline-code">--credential-store env</code> 零寫檔純環境變數認證，舊版受 <code class="inline-code">.gitignore</code> 保護的 <code class="inline-code">.ai-workflow/credentials.json</code> 維持 100% 向下相容）</li>
   <li><strong>Jira 狀態、單據類型映射與預設語言</strong>（預設繁體中文 <code class="inline-code">zh-TW</code>）</li>
   <li value="2"><strong>步驟二：確認回覆後，執行決定性初始化腳本 <code class="inline-code">jira_sync.py init</code>（後續隊友則跑 <code class="inline-code">auth</code>）</strong></li>
 </ol>
@@ -780,7 +780,7 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
   <li value="3"><strong>步驟三：檢視產出檔案與提交 Git 版控</strong></li>
 </ol>
 <ul>
-  <li>確認 <code class="inline-code">.ai-workflow/team-config.json</code>、本地受保護憑證 <code class="inline-code">.ai-workflow/credentials.json</code>（已被 <code class="inline-code">.gitignore</code> 排除，絕不進版控）、統一短指令入口 <code class="inline-code">.ai-workflow/bin/jira_sync.py</code>（權限 <code class="inline-code">0755</code>）、<code class="inline-code">.gitignore</code>、<code class="inline-code">docs/shared/engineering-standards.md</code> 與精簡後的 <code class="inline-code">AGENTS.md</code> 皆已正確生成，即可將受版控檔案提交至 Git。</li>
+  <li>確認 <code class="inline-code">.ai-workflow/team-config.json</code>、統一短指令入口 <code class="inline-code">.ai-workflow/bin/jira_sync.py</code>（權限 <code class="inline-code">0755</code>）、<code class="inline-code">.gitignore</code>、<code class="inline-code">docs/shared/engineering-standards.md</code> 與精簡後的 <code class="inline-code">AGENTS.md</code> 皆已正確生成，且個人憑證已存於程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/&lt;repo-id&gt;.json</code>（或採純環境變數認證，零敏感檔留於 Repo 內），即可將受版控檔案提交至 Git。</li>
 </ul>
 <h3 id="3-3-jira_sync-py-init-auth-參數與產出檔案規格表">3.3 <code class="inline-code">jira_sync.py init</code> / <code class="inline-code">auth</code> 參數與產出檔案規格表</h3>
 <table>
@@ -805,8 +805,15 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
 <td><strong>CLI 子指令</strong></td>
 <td><code class="inline-code">auth</code>（或 <code class="inline-code">init --auth-only</code>）</td>
 <td>協作者專用</td>
-<td>新成員 <code class="inline-code">git clone</code> 已初始化專案後，選擇負責角色（<code class="inline-code">--role qa</code> 或 <code class="inline-code">--role developer</code>）並綁定個人 <code class="inline-code">--jira-email</code>、<code class="inline-code">--jira-token</code> 與選填 <code class="inline-code">--qase-token</code></td>
-<td>驗證 <code class="inline-code">/rest/api/3/myself</code> 後將個人 Token 寫入本機 <code class="inline-code">credentials.json</code>（<code class="inline-code">member_credentials</code>，權限 <code class="inline-code">0600</code>），並預設以<strong>非破壞性追加</strong>方式將成員加入 <code class="inline-code">team-config.json</code> 之 <code class="inline-code">roles.&lt;role&gt;.members</code></td>
+<td>新成員 <code class="inline-code">git clone</code> 已初始化專案後，選擇負責角色（<code class="inline-code">--role qa</code> 或 <code class="inline-code">--role developer</code>）並綁定個人 <code class="inline-code">--jira-email</code>、<code class="inline-code">--jira-token</code> 與選填 <code class="inline-code">--qase-token</code>（可搭配 <code class="inline-code">--credential-store {user,repo,env}</code>）</td>
+<td>驗證 <code class="inline-code">/rest/api/3/myself</code> 後預設將個人 Token 寫入程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/&lt;repo-id&gt;.json</code>（<code class="inline-code">member_credentials</code>，<code class="inline-code">0600</code> 原子寫入；<code class="inline-code">env</code> 模式零寫檔），並以<strong>非破壞性追加</strong>方式將成員加入 <code class="inline-code">team-config.json</code> 之 <code class="inline-code">roles.&lt;role&gt;.members</code></td>
+</tr>
+<tr>
+<td><strong>CLI 旗標</strong></td>
+<td><code class="inline-code">--credential-store</code></td>
+<td>選填（預設 <code class="inline-code">user</code>）</td>
+<td>選擇憑證儲存模式：<code class="inline-code">user</code>（程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/</code>，可由 <code class="inline-code">AI_WORKFLOW_CREDENTIALS_DIR</code> 覆寫）、<code class="inline-code">env</code>（純環境變數認證，零寫檔）或 <code class="inline-code">repo</code>（舊版程式碼庫內 <code class="inline-code">.ai-workflow/credentials.json</code> 顯式選項）</td>
+<td>讀取優先順序嚴格為 <code class="inline-code">env &gt; user_config &gt; legacy repo</code>；拒絕 symlink 讀寫，消除 Gitleaks 等密鑰掃描器誤報</td>
 </tr>
 <tr>
 <td><strong>CLI 旗標</strong></td>
@@ -876,21 +883,21 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
 <td><code class="inline-code">--jira-email</code> / <code class="inline-code">--jira-token</code></td>
 <td>選填</td>
 <td>設定 Jira 認證登入信箱與 API Token</td>
-<td>寫入受 <code class="inline-code">.gitignore</code> 保護之 <code class="inline-code">.ai-workflow/credentials.json</code>（權限 <code class="inline-code">0600</code>），<strong>嚴禁寫入 <code class="inline-code">team-config.json</code></strong></td>
+<td>預設寫入程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/&lt;repo-id&gt;.json</code>（權限 <code class="inline-code">0600</code>；<code class="inline-code">--credential-store env</code> 零寫檔），<strong>嚴禁寫入 <code class="inline-code">team-config.json</code></strong></td>
 </tr>
 <tr>
 <td><strong>CLI 旗標</strong></td>
 <td><code class="inline-code">--roles-json</code></td>
 <td>選填</td>
 <td>JSON 字串或檔案路徑，定義六大角色（支援單一物件或含 <code class="inline-code">members</code> 多人陣列）及選用之 <code class="inline-code">independent_reviewer</code></td>
-<td>內嵌之 <code class="inline-code">api_token</code> 會自動剝離轉存至 <code class="inline-code">credentials.json</code>，並自動呼叫 Jira API 解析補齊 <code class="inline-code">jira_account_id</code></td>
+<td>內嵌之 <code class="inline-code">api_token</code> 會自動剝離轉存至外部憑證檔（或依 <code class="inline-code">--credential-store</code> 處理），並自動呼叫 Jira API 解析補齊 <code class="inline-code">jira_account_id</code></td>
 </tr>
 <tr>
 <td><strong>CLI 旗標</strong></td>
 <td><code class="inline-code">--role-tokens-json</code></td>
 <td>選填</td>
 <td>JSON 字串或檔案路徑，設定各角色專屬 Jira API Token（如 <code class="inline-code">{&quot;qa&quot;: &quot;...&quot;}</code>）</td>
-<td>寫入 <code class="inline-code">.ai-workflow/credentials.json</code> 之 <code class="inline-code">role_credentials</code>，使各站點直接以該角色本人之 Jira 帳號發送評論與流轉狀態</td>
+<td>寫入外部憑證檔之 <code class="inline-code">role_credentials</code>，使各站點直接以該角色本人之 Jira 帳號發送評論與流轉狀態</td>
 </tr>
 <tr>
 <td><strong>CLI 旗標</strong></td>
@@ -910,29 +917,29 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . sprint-plan \
 <td><strong>產出檔案</strong></td>
 <td><code class="inline-code">.ai-workflow/team-config.json</code></td>
 <td>自動建立（進 Git）</td>
-<td>儲存專案代號、Jira 網址、1 對多角色池映射、狀態表、<code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、選用 <code class="inline-code">epic_link_field</code>、<code class="inline-code">qa_test_backend</code> 與預設語言</td>
+<td>儲存專案代號、Jira 網址、1 對多角色池映射、狀態表、<code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、<code class="inline-code">delivery_pipeline</code>、選用 <code class="inline-code">epic_link_field</code>、<code class="inline-code">qa_test_backend</code> 與預設語言</td>
 <td><strong>嚴禁寫入 <code class="inline-code">JIRA_API_TOKEN</code>、<code class="inline-code">QASE_API_TOKEN</code> 或密碼</strong></td>
 </tr>
 <tr>
 <td><strong>產出檔案</strong></td>
-<td><code class="inline-code">.ai-workflow/credentials.json</code></td>
-<td>自動建立（<strong>不進 Git</strong>）</td>
-<td>儲存本機預設、角色與個人之 Jira / Qase API Token（權限 <code class="inline-code">0600</code>），供各站自動解析連線</td>
-<td>自動寫入 <code class="inline-code">.gitignore</code>，防止憑證外洩</td>
+<td><code class="inline-code">~/.config/ai-workflow/credentials/&lt;repo-id&gt;.json</code></td>
+<td>預設外部建立（<strong>不進 Git</strong>）</td>
+<td>預設儲存本機預設、角色與個人之 Jira / Qase API Token（目錄 <code class="inline-code">0700</code>、檔案 <code class="inline-code">0600</code> 原子寫入，同 Repo 各 Worktree 共用，可由 <code class="inline-code">XDG_CONFIG_HOME</code> / <code class="inline-code">AI_WORKFLOW_CREDENTIALS_DIR</code> 覆寫）</td>
+<td>完全位於 Git 程式碼庫外部，避免密鑰掃描器誤報；舊版 <code class="inline-code">.ai-workflow/credentials.json</code> 與 <code class="inline-code">.env</code> 仍 100% 向下相容</td>
 </tr>
 <tr>
 <td><strong>產出檔案</strong></td>
 <td><code class="inline-code">.ai-workflow/bin/jira_sync.py</code></td>
 <td>自動建立（進 Git）</td>
-<td>業務專案本地統一 CLI 入口（權限 <code class="inline-code">0755</code>）</td>
-<td>解決全域安裝 Skill 時業務專案無 <code class="inline-code">skills/</code> 目錄之路徑問題</td>
+<td>業務專案本地統一 CLI 入口（權限 <code class="inline-code">0755</code>，純 Python 3 標準庫，0 Semgrep 告警）</td>
+<td>解決全域安裝 Skill 時業務專案無 <code class="inline-code">skills/</code> 目錄之路徑問題；<code class="inline-code">team-init</code> 絕不自動修改 <code class="inline-code">.semgrepignore</code> / <code class="inline-code">.gitleaksignore</code></td>
 </tr>
 <tr>
 <td><strong>產出檔案</strong></td>
 <td><code class="inline-code">.gitignore</code></td>
 <td>自動更新（進 Git）</td>
 <td>自動確保包含 <code class="inline-code">.ai-workflow/active/</code>、<code class="inline-code">.ai-workflow/credentials.json</code> 與 <code class="inline-code">.ai-workflow/.env</code></td>
-<td>具備冪等性，重複執行 <code class="inline-code">init</code> 不會重複插入多行</td>
+<td>具備冪等性，重複執行 <code class="inline-code">init</code> 不會重複插入多行（兼顧舊版憑證安全防護）</td>
 </tr>
 </tbody>
 </table>
@@ -1649,7 +1656,7 @@ python3 .ai-workflow/bin/jira_sync.py \
 <td><code class="inline-code">plan</code> &amp; <code class="inline-code">verify</code></td>
 <td>選填（字串）</td>
 <td>設定 Qase API Token（<code class="inline-code">QASE_API_TOKEN</code>）</td>
-<td><strong>只會寫入受 <code class="inline-code">.gitignore</code> 保護之 <code class="inline-code">.ai-workflow/credentials.json</code>（權限 <code class="inline-code">0600</code>）</strong>，絕不寫入 <code class="inline-code">team-config.json</code></td>
+<td><strong>預設寫入程式碼庫外部 <code class="inline-code">~/.config/ai-workflow/credentials/</code>（權限 <code class="inline-code">0600</code>）或由環境變數提供</strong>（舊版 <code class="inline-code">.ai-workflow/credentials.json</code> 向下相容），絕不寫入 <code class="inline-code">team-config.json</code></td>
 </tr>
 <tr>
 <td><code class="inline-code">--qa-owner</code> / <code class="inline-code">--to-assignee</code></td>
@@ -2101,7 +2108,7 @@ python3 .ai-workflow/bin/jira_sync.py \
 </tr>
 <tr>
 <td><strong>協作者憑證攔截 (<code class="inline-code">0b</code>)</strong></td>
-<td><code class="inline-code">team-config.json</code> 已設定 <code class="inline-code">jira_base_url</code>，但本機尚無 <code class="inline-code">.ai-workflow/credentials.json</code>（<code class="inline-code">requires_member_auth: true</code>）</td>
+<td><code class="inline-code">team-config.json</code> 已設定 <code class="inline-code">jira_base_url</code>，但本機尚無外部／舊版憑證檔且未設環境變數（<code class="inline-code">requires_member_auth: true</code>）</td>
 <td><code class="inline-code">team-init</code></td>
 <td><code class="inline-code">auth</code></td>
 <td>新加入之協作者（顯示 <code class="inline-code">claimed_roles</code> 與 <code class="inline-code">unclaimed_roles</code>）</td>
@@ -2209,21 +2216,21 @@ python3 .ai-workflow/bin/jira_sync.py \
 <hr>
 <h2 id="11-情境-8-離線模式-vs-真實-jira-qase-連線模式與自我驗證">11. 情境 8：離線模式 vs 真實 Jira / Qase 連線模式與自我驗證</h2>
 <h3 id="11-1-雙模式與角色憑證解析機制-live-mode-vs-offline-mode">11.1 雙模式與角色憑證解析機制（Live Mode vs Offline Mode）</h3>
-<p><code class="inline-code">scripts/jira_sync.py</code> 僅使用 Python 3 標準函式庫（零第三方套件依賴），內建 <code class="inline-code">JiraClient</code> 與 <code class="inline-code">QaseClient</code> 支援兩種執行模式：</p>
+<p><code class="inline-code">scripts/jira_sync.py</code> 僅使用 Python 3 標準函式庫（零第三方套件依賴），內建純標準庫 fail-closed JUnit XML 掃描器（取代 <code class="inline-code">xml.etree.ElementTree</code>，杜絕 XXE/DTD）與 <code class="inline-code">_VerifiedTLSConnection</code> + <code class="inline-code">_http_request</code>（取代 <code class="inline-code">urllib.request.urlopen</code> 與 <code class="inline-code">http.client.HTTPSConnection</code>，強制 <code class="inline-code">CERT_REQUIRED</code>、<code class="inline-code">check_hostname=True</code>、<code class="inline-code">TLSv1.2+</code>、ALPN <code class="inline-code">http/1.1</code> 及跨來源／降級重導向敏感標頭剝離，達成 <strong>0 Semgrep 告警</strong>與 <strong>0 <code class="inline-code"># nosemgrep</code></strong>），支援兩種執行模式：</p>
 <ol>
   <li><strong>真實 Jira REST API v3（及選用 Qase API v1）連線模式（Live Mode）</strong>：</li>
 </ol>
 <ul>
-  <li><strong>啟動條件</strong>：<code class="inline-code">team-config.json</code>（或環境變數 <code class="inline-code">JIRA_BASE_URL</code>）已設定 Jira 網址，且本機 <code class="inline-code">.ai-workflow/credentials.json</code>（權限 <code class="inline-code">0600</code>）或環境變數中具備有效認證憑證，同時未傳入 <code class="inline-code">--offline</code>。</li>
-  <li><strong>多角色／多成員憑證自動切換</strong>：各工作站指令（<code class="inline-code">sync-story</code> 對應 <code class="inline-code">pm</code>、<code class="inline-code">create-subtasks</code>/<code class="inline-code">complete-task</code> 對應 <code class="inline-code">developer</code>、<code class="inline-code">handoff</code> 對應 <code class="inline-code">reviewer</code>、<code class="inline-code">record-qa</code>/<code class="inline-code">create-bug</code> 對應 <code class="inline-code">qa</code>、<code class="inline-code">close-story</code> 對應 <code class="inline-code">release_manager</code>）會優先解析執行者於 <code class="inline-code">credentials.json</code> 中的專屬 Token（<code class="inline-code">member_credentials</code> / <code class="inline-code">role_credentials</code>，或環境變數 <code class="inline-code">JIRA_API_TOKEN_&lt;ROLE&gt;</code>），無專屬設定時回退使用預設 <code class="inline-code">JIRA_EMAIL</code> + <code class="inline-code">JIRA_API_TOKEN</code>：</li>
+  <li><strong>啟動條件</strong>：<code class="inline-code">team-config.json</code>（或環境變數 <code class="inline-code">JIRA_BASE_URL</code> / <code class="inline-code">JIRA_URL</code>）已設定 Jira 網址，且執行期環境變數、程式碼庫外部憑證檔 <code class="inline-code">~/.config/ai-workflow/credentials/&lt;repo-id&gt;.json</code>（<code class="inline-code">0700</code>/<code class="inline-code">0600</code>）或舊版 <code class="inline-code">.ai-workflow/credentials.json</code> 中具備有效認證憑證，同時未傳入 <code class="inline-code">--offline</code>。</li>
+  <li><strong>憑證優先序與多角色自動切換</strong>：解析順序嚴格為<strong>執行期環境變數 &gt; 使用者外部憑證（<code class="inline-code">~/.config/ai-workflow/credentials/</code>，可由 <code class="inline-code">AI_WORKFLOW_CREDENTIALS_DIR</code> 覆寫） &gt; 舊版程式碼庫內 <code class="inline-code">.ai-workflow/credentials.json</code> &gt; 舊版 <code class="inline-code">.ai-workflow/.env</code></strong>。各工作站指令（<code class="inline-code">sync-story</code> 對應 <code class="inline-code">pm</code>、<code class="inline-code">create-subtasks</code>/<code class="inline-code">complete-task</code> 對應 <code class="inline-code">developer</code>、<code class="inline-code">handoff</code> 對應 <code class="inline-code">reviewer</code>、<code class="inline-code">record-qa</code>/<code class="inline-code">create-bug</code> 對應 <code class="inline-code">qa</code>、<code class="inline-code">close-story</code> 對應 <code class="inline-code">release_manager</code>）會優先解析執行者專屬 Token（<code class="inline-code">JIRA_EMAIL_&lt;ROLE&gt;</code> / <code class="inline-code">JIRA_API_TOKEN_&lt;ROLE&gt;</code> 或憑證檔之 <code class="inline-code">member_credentials</code> / <code class="inline-code">role_credentials</code>），無專屬設定時回退使用預設 <code class="inline-code">JIRA_EMAIL</code> + <code class="inline-code">JIRA_API_TOKEN</code>：</li>
 </ul>
-<pre><code># 日常開發由 team-init / auth 自動寫入 credentials.json
-# CI/CD 環境亦可透過環境變數覆寫：
+<pre><code># 日常開發預設由 init/auth 寫入 ~/.config/ai-workflow/credentials/
+# CI/CD 或零憑證檔模式可透過環境變數搭配 --credential-store env：
 export JIRA_BASE_URL=&quot;https://your-org.atlassian.net&quot;
 export JIRA_EMAIL=&quot;alice@team.io&quot;
 export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <ul>
-  <li><strong>協作者未綁定憑證防誤入離線保護</strong>：若 <code class="inline-code">team-config.json</code> 已設定 <code class="inline-code">jira_base_url</code>，但新成員 <code class="inline-code">git clone</code> 後尚未建立本機 <code class="inline-code">credentials.json</code>，寫入型指令<strong>絕不會靜默退化為離線模式</strong>，而是明確提示執行 <code class="inline-code">jira_sync.py auth</code> 綁定個人憑證。</li>
+  <li><strong>協作者未綁定憑證防誤入離線保護</strong>：若 <code class="inline-code">team-config.json</code> 已設定 <code class="inline-code">jira_base_url</code>，但新成員 <code class="inline-code">git clone</code> 後尚未建立本機外部憑證檔且未提供環境變數，寫入型指令<strong>絕不會靜默退化為離線模式</strong>，而是明確提示執行 <code class="inline-code">jira_sync.py auth</code>（或設定環境變數搭配 <code class="inline-code">--credential-store env</code>）綁定個人憑證。</li>
 </ul>
 <ol>
   <li value="2"><strong>本地 / 離線模式（Offline Mode）</strong>：</li>
@@ -2257,7 +2264,7 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><code class="inline-code">/rest/api/3/myself</code></td>
 <td><code class="inline-code">GET</code></td>
 <td><code class="inline-code">init</code>、<code class="inline-code">auth</code> 驗證個人/角色 Token 有效性，並自動帶入真實 <code class="inline-code">displayName</code> 與 <code class="inline-code">accountId</code></td>
-<td>HTTP Basic Auth；Token 僅存於 <code class="inline-code">credentials.json</code> (<code class="inline-code">0600</code>)</td>
+<td>HTTP Basic Auth；經 <code class="inline-code">_VerifiedTLSConnection</code>（TLSv1.2+），Token 預設存外部憑證檔 (<code class="inline-code">0600</code>) 或環境變數</td>
 </tr>
 <tr>
 <td><strong>Jira API</strong></td>
@@ -2313,7 +2320,7 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><code class="inline-code">https://api.qase.io/v1/*</code> (<code class="inline-code">suite</code>, <code class="inline-code">case</code>, <code class="inline-code">run</code>, <code class="inline-code">result</code>, <code class="inline-code">attachment</code>, <code class="inline-code">defect</code>)</td>
 <td><code class="inline-code">GET</code> / <code class="inline-code">POST</code> / <code class="inline-code">PATCH</code></td>
 <td>當 <code class="inline-code">qa_test_backend == &quot;qase&quot;</code> 時，自動同步測試套件、案例、執行輪次、附件與 Qase Defect（<code class="inline-code">complete-task</code> 時自動結案）</td>
-<td><code class="inline-code">Token</code> Header 認證（<code class="inline-code">qase_api_token</code> 僅存於 <code class="inline-code">credentials.json</code>）</td>
+<td><code class="inline-code">Token</code> Header 認證（<code class="inline-code">qase_api_token</code> 預設存外部憑證檔 <code class="inline-code">0600</code> 或 <code class="inline-code">QASE_API_TOKEN</code>）</td>
 </tr>
 <tr>
 <td><strong>自檢工具</strong></td>
@@ -2326,8 +2333,8 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><strong>測試套件</strong></td>
 <td><code class="inline-code">tools/test_workflow.py</code></td>
 <td><code class="inline-code">python3 tools/test_workflow.py</code></td>
-<td>執行 <strong>38 項</strong>端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試</td>
-<td>涵蓋初始化、CI 流水線偵測與 <code class="inline-code">delivery_pipeline</code>、漸進認領、多人角色池、行內 ADF、HITL/SoD、<code class="inline-code">commit_policy</code>、雙向對帳、<code class="inline-code">gated_by_deploy</code>/<code class="inline-code">promote-qa --deploy-ref</code>、Bug Triage、<code class="inline-code">--root-cause</code>/<code class="inline-code">--solution</code>、Spec Backfill、Epic 拆解與進度彙總全流程</td>
+<td>執行 <strong>41 項</strong>端到端生命週期測試與本地 Mock Jira REST API v3 + Mock Qase API v1 整合測試</td>
+<td>涵蓋初始化、CI 流水線偵測與 <code class="inline-code">delivery_pipeline</code>、漸進認領、多人角色池、行內 ADF、HITL/SoD、<code class="inline-code">commit_policy</code>、雙向對帳、<code class="inline-code">gated_by_deploy</code>/<code class="inline-code">promote-qa --deploy-ref</code>、Bug Triage、<code class="inline-code">--root-cause</code>/<code class="inline-code">--solution</code>、Spec Backfill、Epic 拆解、SAST 零告警 XML/TLS 防護與程式碼庫外部憑證全流程</td>
 </tr>
 </tbody>
 </table>
@@ -2401,14 +2408,14 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <tr>
 <td><strong>T-09</strong></td>
 <td><code class="inline-code">Jira API POST /rest/api/3/... failed with HTTP 401 / 403</code></td>
-<td><code class="inline-code">credentials.json</code> 或環境變數中之 Jira Email / API Token 過期，或該帳號無目標 Jira 專案權限。</td>
-<td>於 Atlassian 帳號設定重新產生 API Token 並執行 <code class="inline-code">jira_sync.py auth</code> 更新本機憑證；若暫時無須連線 Jira，可加上 <code class="inline-code">--offline</code> 切換離線模式。</td>
+<td>程式碼庫外部憑證檔（<code class="inline-code">~/.config/ai-workflow/credentials/</code>）、舊版 <code class="inline-code">credentials.json</code> 或環境變數中之 Jira Email / API Token 過期，或該帳號無目標 Jira 專案權限。</td>
+<td>於 Atlassian 帳號設定重新產生 API Token 並執行 <code class="inline-code">jira_sync.py auth</code>（或更新環境變數）刷新憑證；若暫時無須連線 Jira，可加上 <code class="inline-code">--offline</code> 切換離線模式。</td>
 </tr>
 <tr>
 <td><strong>T-10</strong></td>
 <td><code class="inline-code">requires_member_auth: true</code>（協作者剛 <code class="inline-code">git clone</code> 專案無法執行寫入指令）</td>
-<td><code class="inline-code">team-config.json</code> 已啟用連線模式，但本機尚未建立 <code class="inline-code">.ai-workflow/credentials.json</code>。</td>
-<td>對 AI 說「請幫我綁定我的角色與 Jira 憑證」（底層執行 <code class="inline-code">jira_sync.py auth --role &lt;roles&gt; --jira-email ... --jira-token ...</code>），即可安全寫入本機 <code class="inline-code">credentials.json</code> 並加入角色池。</td>
+<td><code class="inline-code">team-config.json</code> 已啟用連線模式，但本機尚未建立外部憑證檔且未設環境變數。</td>
+<td>對 AI 說「請幫我綁定我的角色與 Jira 憑證」（底層執行 <code class="inline-code">jira_sync.py auth --role &lt;roles&gt; --jira-email ... --jira-token ...</code>，或設好環境變數後加 <code class="inline-code">--credential-store env</code>），即可安全完成認證並加入角色池。</td>
 </tr>
 <tr>
 <td><strong>T-11</strong></td>
@@ -2444,22 +2451,22 @@ export JIRA_API_TOKEN=&quot;ATATT3xFfGF0...&quot;</code></pre>
 <td><strong>Global 全域旗標</strong></td>
 <td>全部 8 個工作流技能</td>
 <td><code class="inline-code">--repo-root &lt;PATH&gt;</code>（預設 <code class="inline-code">.</code>）、<code class="inline-code">--offline</code>（強制離線模式）</td>
-<td>環境變數或 <code class="inline-code">.ai-workflow/credentials.json</code></td>
+<td>環境變數、外部 <code class="inline-code">~/.config/ai-workflow/credentials/</code> 或舊版 <code class="inline-code">.ai-workflow/credentials.json</code></td>
 <td>控制工作目錄與 <code class="inline-code">JiraClient</code> / <code class="inline-code">QaseClient</code> 連線或離線模式</td>
 </tr>
 <tr>
 <td><code class="inline-code">init</code></td>
 <td><code class="inline-code">team-init</code> (Init)</td>
-<td><code class="inline-code">--inspect</code>, <code class="inline-code">-i</code>/<code class="inline-code">--interactive</code>, <code class="inline-code">--auth-only</code>, <code class="inline-code">--role</code>, <code class="inline-code">--specialty</code>, <code class="inline-code">--language</code>, <code class="inline-code">--commit-policy</code>, <code class="inline-code">--commit-message-pattern</code>, <code class="inline-code">--qa-handoff-mode</code>, <code class="inline-code">--status-dev-done</code>, <code class="inline-code">--integration-branch</code>, <code class="inline-code">--production-branch</code>, <code class="inline-code">--qa-tag-prefix</code>, <code class="inline-code">--uat-tag-prefix</code>, <code class="inline-code">--jira-deployment-sync</code>, <code class="inline-code">--name</code>, <code class="inline-code">--project-key</code>, <code class="inline-code">--jira-board-id</code>, <code class="inline-code">--jira-url</code>, <code class="inline-code">--jira-email</code>, <code class="inline-code">--jira-token</code>, <code class="inline-code">--roles-json</code>, <code class="inline-code">--role-tokens-json</code>, <code class="inline-code">--status-mapping-json</code>, <code class="inline-code">--issue-type-mapping-json</code>, <code class="inline-code">--qa-backend</code>, <code class="inline-code">--qase-project-code</code>, <code class="inline-code">--qase-token</code>, <code class="inline-code">--qase-base-url</code>, <code class="inline-code">--qase-app-url</code>, <code class="inline-code">--qase-jira-type</code>, <code class="inline-code">--agents-md</code>, <code class="inline-code">--standards-md</code></td>
+<td><code class="inline-code">--inspect</code>, <code class="inline-code">-i</code>/<code class="inline-code">--interactive</code>, <code class="inline-code">--auth-only</code>, <code class="inline-code">--credential-store</code>, <code class="inline-code">--role</code>, <code class="inline-code">--specialty</code>, <code class="inline-code">--language</code>, <code class="inline-code">--commit-policy</code>, <code class="inline-code">--commit-message-pattern</code>, <code class="inline-code">--qa-handoff-mode</code>, <code class="inline-code">--status-dev-done</code>, <code class="inline-code">--integration-branch</code>, <code class="inline-code">--production-branch</code>, <code class="inline-code">--qa-tag-prefix</code>, <code class="inline-code">--uat-tag-prefix</code>, <code class="inline-code">--jira-deployment-sync</code>, <code class="inline-code">--name</code>, <code class="inline-code">--project-key</code>, <code class="inline-code">--jira-board-id</code>, <code class="inline-code">--jira-url</code>, <code class="inline-code">--jira-email</code>, <code class="inline-code">--jira-token</code>, <code class="inline-code">--roles-json</code>, <code class="inline-code">--role-tokens-json</code>, <code class="inline-code">--status-mapping-json</code>, <code class="inline-code">--issue-type-mapping-json</code>, <code class="inline-code">--qa-backend</code>, <code class="inline-code">--qase-project-code</code>, <code class="inline-code">--qase-token</code>, <code class="inline-code">--qase-base-url</code>, <code class="inline-code">--qase-app-url</code>, <code class="inline-code">--qase-jira-type</code>, <code class="inline-code">--agents-md</code>, <code class="inline-code">--standards-md</code></td>
 <td>既有 <code class="inline-code">AGENTS.md</code>、<code class="inline-code">.gitlab-ci.yml</code> / <code class="inline-code">.github/workflows/*.yml</code>、<code class="inline-code">.gitignore</code> 與 <code class="inline-code">team-config.json</code></td>
-<td><code class="inline-code">.ai-workflow/team-config.json</code>（含角色池、<code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、<code class="inline-code">delivery_pipeline</code>、<code class="inline-code">status_mapping.dev_done</code>、<code class="inline-code">epic_link_field</code> 與預設 <code class="inline-code">zh-TW</code>）、<code class="inline-code">credentials.json</code>、<code class="inline-code">.ai-workflow/bin/jira_sync.py</code>、<code class="inline-code">.gitignore</code>、<code class="inline-code">docs/shared/engineering-standards.md</code>、<code class="inline-code">AGENTS.md</code></td>
+<td><code class="inline-code">.ai-workflow/team-config.json</code>（含角色池、<code class="inline-code">commit_policy</code>、<code class="inline-code">qa_handoff_mode</code>、<code class="inline-code">delivery_pipeline</code>、<code class="inline-code">status_mapping.dev_done</code>、<code class="inline-code">epic_link_field</code> 與預設 <code class="inline-code">zh-TW</code>）、外部憑證檔 <code class="inline-code">~/.config/ai-workflow/credentials/&lt;repo-id&gt;.json</code>（或 <code class="inline-code">--credential-store env</code> 零寫檔）、<code class="inline-code">.ai-workflow/bin/jira_sync.py</code>、<code class="inline-code">.gitignore</code>、<code class="inline-code">docs/shared/engineering-standards.md</code>、<code class="inline-code">AGENTS.md</code></td>
 </tr>
 <tr>
 <td><code class="inline-code">auth</code></td>
 <td><code class="inline-code">team-init</code> (<code class="inline-code">auth</code> 協作者認領)</td>
-<td><code class="inline-code">--inspect</code>, <code class="inline-code">-i</code>/<code class="inline-code">--interactive</code>, <code class="inline-code">--role</code>, <code class="inline-code">--specialty</code>, <code class="inline-code">--replace-role</code>, <code class="inline-code">--name</code>, <code class="inline-code">--jira-email</code>, <code class="inline-code">--jira-token</code>, <code class="inline-code">--role-tokens-json</code>, <code class="inline-code">--qase-token</code></td>
-<td><code class="inline-code">team-config.json</code>, <code class="inline-code">credentials.json</code></td>
-<td>將協作者非破壞性追加至 <code class="inline-code">team-config.json</code> 角色池（<code class="inline-code">members</code>），並將個人 Token 安全寫入本機 <code class="inline-code">credentials.json</code> (<code class="inline-code">member_credentials</code>)</td>
+<td><code class="inline-code">--inspect</code>, <code class="inline-code">-i</code>/<code class="inline-code">--interactive</code>, <code class="inline-code">--credential-store</code>, <code class="inline-code">--role</code>, <code class="inline-code">--specialty</code>, <code class="inline-code">--replace-role</code>, <code class="inline-code">--name</code>, <code class="inline-code">--jira-email</code>, <code class="inline-code">--jira-token</code>, <code class="inline-code">--role-tokens-json</code>, <code class="inline-code">--qase-token</code></td>
+<td><code class="inline-code">team-config.json</code>、外部／舊版憑證檔或環境變數</td>
+<td>將協作者非破壞性追加至 <code class="inline-code">team-config.json</code> 角色池（<code class="inline-code">members</code>），並依 <code class="inline-code">--credential-store</code> 將個人 Token 安全寫入外部 <code class="inline-code">~/.config/ai-workflow/credentials/</code>（或 <code class="inline-code">env</code> 模式零寫檔）</td>
 </tr>
 <tr>
 <td><code class="inline-code">sprint-plan</code></td>

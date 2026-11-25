@@ -1,5 +1,20 @@
 # Changelog
 
+> **Language**: **English** | [繁體中文](./CHANGELOG.zh-TW.md)
+
+## v1.6.1 — 2026-11-25 — Security Hardening, SAST Zero-Findings & Out-of-Repo Credentials
+
+- **Semgrep SAST Zero-Findings Remediation (Issue #21 / PR #22, Issue #23 / PR #24):**
+  - Replaced `xml.etree.ElementTree` in `parse_junit_xml_results` with a pure-stdlib fail-closed XML scanner rejecting `<!DOCTYPE`/`<!ENTITY`, NUL bytes, and duplicate attributes while safely handling comments and `<![CDATA[...]]>` blocks (resolving `use-defused-xml-parse`).
+  - Replaced all 4 `urllib.request.urlopen` call sites and `http.client.HTTPSConnection` with shared pure-stdlib `_http_request` + `_VerifiedTLSConnection(http.client.HTTPConnection)` enforcing `http`/`https` scheme validation, `\A...\Z` CR/LF method/header guards, userinfo/backslash/non-ASCII rejection, `ssl.create_default_context()` (`CERT_REQUIRED`, `check_hostname=True`, `TLSv1.2+`, rejecting weakened contexts including `ssl.TLSVersion.MINIMUM_SUPPORTED`, ALPN `http/1.1`), leak-free socket teardown, IPv6 default-port `Host:` fidelity, and cross-origin/downgrade sensitive-header-stripping redirects (resolving `dynamic-urllib-use-detected` and `httpsconnection-detected` CWE-295 with **0 Semgrep findings** and **0 `# nosemgrep`**).
+- **Out-of-Repo Default Credential Storage & Pure Env-Var Auth (Issue #23 / PR #25):**
+  - Moved default local credential storage outside the Git repository to `$XDG_CONFIG_HOME/ai-workflow/credentials/<repo-id>.json` (default `~/.config/ai-workflow/credentials/`, overrideable via `AI_WORKFLOW_CREDENTIALS_DIR`) with `0700` dirs, atomic `0600` writes, canonical git common-dir sharing across worktrees, dotless slug sanitization, and read/write symlink refusal — eliminating Gitleaks / non-git directory secret-scanner false positives.
+  - Added `--credential-store {user,repo,env}` on `auth` and `init` plus implicit pure env-var auth (zero files written to disk; supporting `JIRA_BASE_URL` with `JIRA_URL` fallback, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_EMAIL_<ROLE>`, `JIRA_API_TOKEN_<ROLE>`, and `QASE_API_TOKEN`) with strict `env > user_config > legacy repo` precedence and 100% backward compatibility for existing `.ai-workflow/credentials.json` / `.env` files.
+  - Added opt-in SAST / Secret Scanner guidance in `README.md` and `skills/team-init/SKILL.md` without auto-modifying downstream `.semgrepignore` / `.gitleaksignore`; single-file `jira_sync.py` distribution preserved for standalone skill portability.
+- **Verification & Documentation:**
+  - Added `test_39_issue21_sast_remediation`, `test_40_issue23_verified_tls_connection`, and `test_41_issue23_out_of_repo_credentials` (**41/41** automated tests in `tools/test_workflow.py`), with `./tools/check_shared.sh` passing 8/8 identical across all skill bundles.
+  - Added Traditional Chinese documentation: `README.zh-TW.md` and `CHANGELOG.zh-TW.md`.
+
 ## v1.6.0 — 2026-11-23 — CI/CD Delivery Pipeline Alignment (Phase A)
 
 - **Optional `delivery_pipeline` Schema & Pure-Stdlib CI Auto-Detection (`team-init` / `jira_sync.py`):**

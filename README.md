@@ -1,4 +1,6 @@
-# ai-engineering-workflow skills (v1.6 — CI/CD Delivery Pipeline Alignment + Epic/Sprint Planning + 4-Station Jira-Centered Workflow)
+# ai-engineering-workflow skills (v1.6.1 — CI/CD Delivery Pipeline Alignment + Epic/Sprint Planning + 4-Station Jira-Centered Workflow)
+
+> **Language**: **English** | [繁體中文](./README.zh-TW.md) · [Changelog (EN)](./CHANGELOG.md) | [更新日誌 (繁體中文)](./CHANGELOG.zh-TW.md)
 
 Eight Jira-centered engineering workflow skills — plus a dynamic multi-agent orchestration system skill — designed for small and growing teams where one person may hold multiple roles, one role may be shared by multiple members (`1-to-N` role pools), and **Jira** serves as the single permanent planning and per-feature lifecycle asset.
 
@@ -46,9 +48,11 @@ Eight Jira-centered engineering workflow skills — plus a dynamic multi-agent o
 
 ## Security & SAST / Secret Scanner Notes
 
+- **Pure-Stdlib SAST Zero-Findings Hardening (`v1.6.1`):**
+  - `jira_sync.py` uses a pure-stdlib fail-closed JUnit XML scanner (replacing `xml.etree.ElementTree`, rejecting `<!DOCTYPE`/`<!ENTITY`, NUL bytes, and duplicate attributes for zero XXE/DTD exposure) and shared pure-stdlib `_VerifiedTLSConnection` + `_http_request` (replacing `urllib.request.urlopen` and `http.client.HTTPSConnection`, enforcing `CERT_REQUIRED`, `check_hostname=True`, `TLSv1.2+`, ALPN `http/1.1`, and cross-origin/downgrade auth-header stripping) — achieving **0 Semgrep findings** and **0 `# nosemgrep`** suppressions.
 - **Out-of-Repo Credential Storage & Pure Env-Var Auth:**
-  - By default, `jira_sync.py init` and `jira_sync.py auth` store persisted tokens **outside the Git repository** under `$XDG_CONFIG_HOME/ai-workflow/credentials/<repo-id>.json` (default `~/.config/ai-workflow/credentials/<repo-id>.json`; override via `AI_WORKFLOW_CREDENTIALS_DIR`) with `0700` directory permissions, `0600` atomic writes, and symlink refusal. All Git worktrees of the same repository share one canonical credential file.
-  - For zero-token-file workflows (CI or local secret managers), set `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` (and optional `JIRA_EMAIL_<ROLE>`, `JIRA_API_TOKEN_<ROLE>`, `QASE_API_TOKEN`) and run `jira_sync.py auth --credential-store env` (or omit `--jira-token`) — zero credential files are written to disk.
+  - By default, `jira_sync.py init` and `jira_sync.py auth` support `--credential-store {user,repo,env}` and store persisted tokens **outside the Git repository** (`user` default) under `$XDG_CONFIG_HOME/ai-workflow/credentials/<repo-id>.json` (default `~/.config/ai-workflow/credentials/<repo-id>.json`; override via `AI_WORKFLOW_CREDENTIALS_DIR`) with `0700` directory permissions, `0600` atomic writes, and symlink refusal. All Git worktrees of the same repository share one canonical credential file.
+  - For zero-token-file workflows (CI or local secret managers), set `JIRA_BASE_URL` (plus `JIRA_URL` fallback), `JIRA_EMAIL`, `JIRA_API_TOKEN` (and optional `JIRA_EMAIL_<ROLE>`, `JIRA_API_TOKEN_<ROLE>`, `QASE_API_TOKEN`) and run `jira_sync.py auth --credential-store env` (or omit `--jira-token`) — zero credential files are written to disk.
   - Precedence is strictly: **runtime environment variables > user config (`~/.config/ai-workflow/credentials/`) > legacy in-repo `.ai-workflow/credentials.json` > legacy `.ai-workflow/.env`**.
 - **Legacy `.ai-workflow/credentials.json` Compatibility & Migration:**
   - Existing repositories with `.ai-workflow/credentials.json` or `.ai-workflow/.env` remain 100% backward-compatible (and `--credential-store repo` remains available as an explicit opt-in). Once you migrate to environment variables or the default out-of-repo user store, you may safely delete the old `.ai-workflow/credentials.json` inside the repo to eliminate Gitleaks/secret-scanner hits.
@@ -56,10 +60,11 @@ Eight Jira-centered engineering workflow skills — plus a dynamic multi-agent o
   - `team-init` **never** creates or modifies `.semgrepignore` or `.gitleaksignore` in downstream repositories.
   - `.ai-workflow/bin/jira_sync.py` is intentionally distributed as a single pure-stdlib Python file so each packaged skill stays self-contained with zero third-party dependencies (modularization is tracked for a future major release). If your repository runs Semgrep or other SAST scanners and you want to exclude the vendored workflow helper from application-code scanning budgets, your team may optionally add `.ai-workflow/bin/jira_sync.py` to your own repo-managed `.semgrepignore`.
 
-## Training & Onboarding Materials (`docs/`)
+## Documentation, Training & Onboarding Materials (`docs/`)
 
-- **Scenario-Driven Training Manual (`v1.6.0`):** `docs/training-manual.md` (canonical Markdown source) along with synced `v1.6.0` exports `docs/training-manual.html`, `docs/training-manual.pdf`, and `docs/training-manual.docx` (with annotated dual-pane terminal + Jira illustrations in `docs/screenshots/`).
-- **Training Slide Deck (`v1.6.0`):** 18-slide scenario presentation in `docs/training-manual.pptx` (`docs/ppt-assets/`), synced to `v1.6.0` (covering `team-plan` Epic/Sprint planning, strict HITL / SoD Clean Stop, `commit_policy`, `qa_handoff_mode`, `triage-bug`, and CI/CD `delivery_pipeline` alignment).
+- **Repository Documentation (EN / 繁體中文):** [README.md](./README.md) · [README.zh-TW.md](./README.zh-TW.md) · [CHANGELOG.md](./CHANGELOG.md) · [CHANGELOG.zh-TW.md](./CHANGELOG.zh-TW.md).
+- **Scenario-Driven Training Manual (`v1.6.1`):** [docs/training-manual.md](./docs/training-manual.md) (canonical Markdown source) along with synced `v1.6.1` exports [docs/training-manual.html](./docs/training-manual.html), [docs/training-manual.pdf](./docs/training-manual.pdf), and [docs/training-manual.docx](./docs/training-manual.docx) (with annotated dual-pane terminal + Jira illustrations in `docs/screenshots/`).
+- **Training Slide Deck (`v1.6.1`):** 18-slide scenario presentation in [docs/training-manual.pptx](./docs/training-manual.pptx) (`docs/ppt-assets/`), synced to `v1.6.1` (covering `team-plan` Epic/Sprint planning, strict HITL / SoD Clean Stop, `commit_policy`, `qa_handoff_mode`, `triage-bug`, CI/CD `delivery_pipeline` alignment, SAST zero-findings hardening, and out-of-repo default credentials).
 
 ## Shared Files & Verification
 
