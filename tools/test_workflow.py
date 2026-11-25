@@ -48,11 +48,25 @@ EXPECTED_SKILLS = {
 def run_cli(repo_root: Path, *args, env_override: dict = None) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     if env_override is None:
-        env.pop("JIRA_BASE_URL", None)
-        env.pop("JIRA_EMAIL", None)
-        env.pop("JIRA_API_TOKEN", None)
+        for k in list(env.keys()):
+            if k in (
+                "JIRA_BASE_URL",
+                "JIRA_URL",
+                "JIRA_EMAIL",
+                "JIRA_API_TOKEN",
+                "QASE_API_TOKEN",
+                "QASE_PROJECT_CODE",
+                "QASE_BASE_URL",
+                "QASE_APP_URL",
+                "QASE_JIRA_INTEGRATION_TYPE",
+            ) or k.startswith("JIRA_EMAIL_") or k.startswith("JIRA_API_TOKEN_"):
+                env.pop(k, None)
     else:
-        env.update(env_override)
+        for k, v in env_override.items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = str(v)
     cmd = [sys.executable, str(JIRA_SYNC), "--repo-root", str(repo_root), *args]
     return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
@@ -619,6 +633,23 @@ class MockQaseHandler(BaseHTTPRequestHandler):
 
 
 class WorkflowTestSuite(unittest.TestCase):
+
+    def setUp(self):
+        self._orig_cred_dir_env = os.environ.get("AI_WORKFLOW_CREDENTIALS_DIR")
+        self._orig_xdg_env = os.environ.get("XDG_CONFIG_HOME")
+        self._isolated_cred_tmp = tempfile.TemporaryDirectory(prefix="aiwf-test-creds-")
+        os.environ["AI_WORKFLOW_CREDENTIALS_DIR"] = str(Path(self._isolated_cred_tmp.name) / "creds")
+
+    def tearDown(self):
+        if self._orig_cred_dir_env is None:
+            os.environ.pop("AI_WORKFLOW_CREDENTIALS_DIR", None)
+        else:
+            os.environ["AI_WORKFLOW_CREDENTIALS_DIR"] = self._orig_cred_dir_env
+        if self._orig_xdg_env is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._orig_xdg_env
+        self._isolated_cred_tmp.cleanup()
 
     def test_01_skill_bundle_structure_and_shared_files(self):
         actual_skills = {p.name for p in SKILLS_DIR.iterdir() if p.is_dir() and p.name != "system"}
@@ -1708,7 +1739,8 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertEqual(init_out["jira_base_url"], f"http://127.0.0.1:{port}")
                 self.assertEqual(init_out["jira_mode"], "live")
                 self.assertTrue(init_out["credentials_configured"])
-                self.assertEqual(init_out["credentials_path"], ".ai-workflow/credentials.json")
+                self.assertEqual(init_out["credential_store"], "user")
+                self.assertFalse((root / ".ai-workflow/credentials.json").exists())
                 self.assertTrue(init_out["jira_verification"]["verified"])
                 self.assertEqual(init_out["jira_verification"]["account_id"], "acc-alice")
                 self.assertTrue(init_out["role_has_api_token"]["developer"])
@@ -1720,9 +1752,10 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertEqual(init_out["auto_resolved_account_ids"]["developer"], "acc-bob-from-token")
                 self.assertEqual(init_out["auto_resolved_account_ids"]["qa"], "acc-carol-from-token")
 
-                # Verify .ai-workflow/credentials.json exists (0600) and .ai-workflow/team-config.json NEVER contains ANY tokens
-                cred_path = root / ".ai-workflow/credentials.json"
+                # Verify out-of-repo user credentials file exists (0600) and .ai-workflow/team-config.json NEVER contains ANY tokens
+                cred_path = Path(init_out["credentials_path"])
                 self.assertTrue(cred_path.exists())
+                self.assertNotIn(root.resolve(), cred_path.resolve().parents)
                 cred_data = json.loads(cred_path.read_text(encoding="utf-8"))
                 self.assertEqual(cred_data["jira_email"], "alice@team.io")
                 self.assertEqual(cred_data["jira_api_token"], "super-secret-token-999")
@@ -1956,13 +1989,15 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertEqual(pq_out["qase_sync"]["suite_id"], 10)
                 self.assertEqual(pq_out["qase_sync"]["case_ids"], [100, 101])
 
-                # Secret hygiene: qase-secret-123 must NEVER appear in team-config.json, ONLY in credentials.json
+                # Secret hygiene: qase-secret-123 must NEVER appear in team-config.json, ONLY in out-of-repo user credentials
                 cfg_raw = (root / ".ai-workflow/team-config.json").read_text(encoding="utf-8")
                 self.assertNotIn("qase-secret-123", cfg_raw)
                 cfg_qase = json.loads(cfg_raw)
                 self.assertEqual(cfg_qase["qa_test_backend"], "qase")
                 self.assertEqual(cfg_qase["qase"]["project_code"], "AP")
-                cred_qase = json.loads((root / ".ai-workflow/credentials.json").read_text(encoding="utf-8"))
+                self.assertFalse((root / ".ai-workflow/credentials.json").exists())
+                user_cred_qase = Path(json.loads(run_cli(root, "init", "--inspect").stdout)["user_credentials_path"])
+                cred_qase = json.loads(user_cred_qase.read_text(encoding="utf-8"))
                 self.assertEqual(cred_qase["qase_api_token"], "qase-secret-123")
 
                 # Verify Jira comment in qase mode is concise (contains Qase Suite URL, no self-mention, no table spam)
@@ -2212,9 +2247,10 @@ class WorkflowTestSuite(unittest.TestCase):
                 ga_out = json.loads(good_auth.stdout)
                 self.assertTrue(ga_out["ok"])
                 self.assertIn("qa", ga_out["matched_roles"])
-                # Verify team-config.json is byte-for-byte untouched!
+                # Verify team-config.json is byte-for-byte untouched and credentials stored outside repo!
                 self.assertEqual((carol_root / ".ai-workflow/team-config.json").read_bytes(), cfg_bytes)
-                carol_cred = json.loads((carol_root / ".ai-workflow/credentials.json").read_text(encoding="utf-8"))
+                self.assertFalse((carol_root / ".ai-workflow/credentials.json").exists())
+                carol_cred = json.loads(Path(ga_out["credentials_path"]).read_text(encoding="utf-8"))
                 self.assertEqual(carol_cred["jira_email"], "carol@team.io")
                 self.assertEqual(carol_cred["role_credentials"]["qa"]["jira_api_token"], "qa-token-carol")
                 self.assertEqual(carol_cred["qase_api_token"], "qase-secret-123")
@@ -2934,6 +2970,7 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertNotIn("JC-999", MockJiraHandler.stored_issues)
 
                 # S1c: Sensitive secret file (`credentials.json` / `.env`) is blocked from upload!
+                (root_c / ".ai-workflow/credentials.json").write_text('{"jira_api_token":"dummy"}\n', encoding="utf-8")
                 secret_res = run_cli(
                     root_c, "create-bug", "--key", "JC-1", "--tc-id", "TC-001", "--ac-id", "AC-001",
                     "--title", "按鈕破版", "--severity", "major",
@@ -5596,7 +5633,12 @@ class WorkflowTestSuite(unittest.TestCase):
                     0,
                 )
                 (root4 / ".ai-workflow" / "active" / "R2-1.json").unlink()
-                (root4 / ".ai-workflow" / "credentials.json").unlink()
+                user_cred_r4 = Path(json.loads(run_cli(root4, "init", "--inspect").stdout)["user_credentials_path"])
+                if user_cred_r4.exists():
+                    user_cred_r4.unlink()
+                legacy_cred_r4 = root4 / ".ai-workflow" / "credentials.json"
+                if legacy_cred_r4.exists():
+                    legacy_cred_r4.unlink()
                 st_need_auth = json.loads(run_cli(root4, "status").stdout)
                 self.assertTrue(st_need_auth.get("credentials_missing"))
                 self.assertTrue(st_need_auth.get("requires_member_auth"))
@@ -8332,6 +8374,630 @@ class WorkflowTestSuite(unittest.TestCase):
                 finally:
                     listener.close()
                     t_srv.join(timeout=5)
+
+    def test_41_issue23_out_of_repo_credentials(self):
+        """Issue #23 Part 2: Out-of-repo default credential storage, pure env-var auth, precedence, symlink refusal & scanner guidance."""
+        import shutil as _shutil
+        import stat
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("jira_sync_issue23_p2", str(JIRA_SYNC))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        MockJiraHandler.requests_log.clear()
+        MockJiraHandler.stored_issues.clear()
+        MockJiraHandler.stored_properties.clear()
+
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_port
+        t_jira = threading.Thread(target=jira_srv.serve_forever, daemon=True)
+        t_jira.start()
+        jira_url = f"http://127.0.0.1:{jira_port}"
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                creds_dir = base / "user-creds"
+                env_iso = {"AI_WORKFLOW_CREDENTIALS_DIR": str(creds_dir)}
+
+                # 1. Default cmd_auth writes ONLY to out-of-repo user config dir (0700 dir, 0600 file), ZERO in-repo credentials.json
+                repo1 = base / "my-app"
+                repo1.mkdir()
+                init1 = run_cli(
+                    repo1, "init",
+                    "--project-key", "SEC",
+                    "--jira-url", jira_url,
+                    env_override=env_iso,
+                )
+                self.assertEqual(init1.returncode, 0, init1.stderr)
+                self.assertFalse((repo1 / ".ai-workflow/credentials.json").exists())
+                self.assertFalse((repo1 / ".semgrepignore").exists())
+                self.assertFalse((repo1 / ".gitleaksignore").exists())
+
+                secret_tok = "tok-super-secret-alice-23"
+                qase_tok = "qase-super-secret-23"
+                auth1 = run_cli(
+                    repo1, "auth",
+                    "--role", "pm,qa",
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", secret_tok,
+                    "--qase-token", qase_tok,
+                    env_override=env_iso,
+                )
+                self.assertEqual(auth1.returncode, 0, auth1.stderr)
+                self.assertNotIn(secret_tok, auth1.stdout)
+                self.assertNotIn(secret_tok, auth1.stderr)
+                self.assertNotIn(qase_tok, auth1.stdout)
+                self.assertNotIn(qase_tok, auth1.stderr)
+                a1_out = json.loads(auth1.stdout)
+                self.assertTrue(a1_out["ok"])
+                self.assertEqual(a1_out["credential_store"], "user")
+                self.assertEqual(a1_out["credential_source"], "user_config")
+                self.assertFalse((repo1 / ".ai-workflow/credentials.json").exists())
+                self.assertFalse((repo1 / ".semgrepignore").exists())
+                self.assertFalse((repo1 / ".gitleaksignore").exists())
+
+                user_cred_file = Path(a1_out["credentials_file"])
+                self.assertTrue(user_cred_file.exists())
+                self.assertEqual(user_cred_file.resolve().parent, creds_dir.resolve())
+                if os.name == "posix":
+                    self.assertEqual(stat.S_IMODE(creds_dir.stat().st_mode), 0o700)
+                    self.assertEqual(stat.S_IMODE(user_cred_file.stat().st_mode), 0o600)
+                saved_json = json.loads(user_cred_file.read_text(encoding="utf-8"))
+                self.assertEqual(saved_json["jira_api_token"], secret_tok)
+                self.assertEqual(saved_json["qase_api_token"], qase_tok)
+
+                # Attachment validator must ALSO refuse uploading out-of-repo credential file
+                with mock.patch.dict(os.environ, env_iso):
+                    with self.assertRaises(ValueError):
+                        mod.validate_attachment_files([str(user_cred_file)], repo_root=repo1)
+
+                # 2. XDG_CONFIG_HOME resolution + control char / NUL rejection + relative XDG fallback
+                xdg_base = base / "xdg-home"
+                with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg_base)}, clear=False):
+                    os.environ.pop("AI_WORKFLOW_CREDENTIALS_DIR", None)
+                    p_xdg = mod.get_user_credentials_path(repo1)
+                    self.assertEqual(p_xdg.parent, (xdg_base / "ai-workflow" / "credentials").resolve())
+                for bad_dir in ("/tmp/bad\x00dir", "/tmp/bad\ndir", "/tmp/bad\rdir"):
+                    with mock.patch.object(mod.os, "environ", {"AI_WORKFLOW_CREDENTIALS_DIR": bad_dir}):
+                        with self.assertRaises(ValueError) as ctx_bad:
+                            mod.get_user_credentials_path(repo1)
+                        self.assertNotIn("\x00", str(ctx_bad.exception))
+                        self.assertNotIn("bad", str(ctx_bad.exception))
+                for bad_xdg in ("/tmp/xdg\x00bad", "/tmp/xdg\nbad"):
+                    with mock.patch.object(mod.os, "environ", {"XDG_CONFIG_HOME": bad_xdg}):
+                        with self.assertRaises(ValueError) as ctx_xdg:
+                            mod.get_user_credentials_path(repo1)
+                        self.assertNotIn("bad", str(ctx_xdg.exception))
+                with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "relative/path"}, clear=False):
+                    os.environ.pop("AI_WORKFLOW_CREDENTIALS_DIR", None)
+                    p_rel = mod.get_user_credentials_path(repo1)
+                    self.assertEqual(p_rel.parent, (Path.home() / ".config" / "ai-workflow" / "credentials").resolve())
+                # Restore isolated dir
+                os.environ["AI_WORKFLOW_CREDENTIALS_DIR"] = str(creds_dir)
+
+                # 3. Git worktree + main repo share EXACT same out-of-repo path; distinct repos (even same basename) differ!
+                git_main = base / "ws-a" / "shared-repo"
+                git_main.mkdir(parents=True)
+                subprocess.run(["git", "init"], cwd=str(git_main), check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.email", "dev@team.io"], cwd=str(git_main), check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Dev"], cwd=str(git_main), check=True, capture_output=True)
+                (git_main / "README.md").write_text("# Main\n", encoding="utf-8")
+                subprocess.run(["git", "add", "."], cwd=str(git_main), check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", "chore: init"], cwd=str(git_main), check=True, capture_output=True)
+
+                wt_dir = base / "ws-wt" / "wt-branch-1"
+                wt_dir.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    ["git", "worktree", "add", "-b", "feat/wt1", str(wt_dir)],
+                    cwd=str(git_main),
+                    check=True,
+                    capture_output=True,
+                )
+                other_same_name = base / "ws-b" / "shared-repo"
+                other_same_name.mkdir(parents=True)
+                try:
+                    with mock.patch.dict(os.environ, env_iso):
+                        p_main = mod.get_user_credentials_path(git_main)
+                        p_wt = mod.get_user_credentials_path(wt_dir)
+                        p_other = mod.get_user_credentials_path(other_same_name)
+                        self.assertEqual(p_main, p_wt)
+                        self.assertNotEqual(p_main, p_other)
+                        self.assertTrue(p_main.name.startswith("shared-repo-"))
+
+                        # Also verify pure-Python .git file / commondir fallback when git subprocess fails
+                        with mock.patch("subprocess.run", side_effect=FileNotFoundError("git missing")):
+                            p_main_fb = mod.get_user_credentials_path(git_main)
+                            p_wt_fb = mod.get_user_credentials_path(wt_dir)
+                            self.assertEqual(p_main_fb, p_main)
+                            self.assertEqual(p_wt_fb, p_main)
+                finally:
+                    subprocess.run(["git", "worktree", "remove", "--force", str(wt_dir)], cwd=str(git_main), capture_output=True)
+
+                # 4. Pure env-var auth (--credential-store env AND implicit env-var auth) writes ZERO files!
+                repo_env = base / "env-only-repo"
+                repo_env.mkdir()
+                fresh_creds_dir = base / "should-not-exist-creds"
+                env_base = {
+                    "AI_WORKFLOW_CREDENTIALS_DIR": str(fresh_creds_dir),
+                    "JIRA_URL": jira_url,  # Also tests JIRA_URL fallback when JIRA_BASE_URL is unset!
+                    "JIRA_EMAIL": "alice@team.io",
+                    "JIRA_API_TOKEN": "env-secret-alice-23",
+                }
+                init_env = run_cli(
+                    repo_env, "init",
+                    "--project-key", "ENV",
+                    "--jira-url", jira_url,
+                    "--credential-store", "env",
+                    env_override=env_base,
+                )
+                self.assertEqual(init_env.returncode, 0, init_env.stderr)
+                ie_out = json.loads(init_env.stdout)
+                self.assertEqual(ie_out["credential_store"], "env")
+                self.assertEqual(ie_out["credential_source"], "env")
+                self.assertEqual(ie_out["credentials_file"], "")
+                self.assertTrue(ie_out["jira_verification"]["verified"])
+                self.assertFalse(fresh_creds_dir.exists())
+                self.assertFalse((repo_env / ".ai-workflow/credentials.json").exists())
+
+                # Explicit --credential-store env in auth claims role & verifies live with ZERO files written
+                auth_env = run_cli(
+                    repo_env, "auth",
+                    "--role", "pm",
+                    "--credential-store", "env",
+                    env_override=env_base,
+                )
+                self.assertEqual(auth_env.returncode, 0, auth_env.stderr)
+                self.assertNotIn("env-secret-alice-23", auth_env.stdout)
+                ae_out = json.loads(auth_env.stdout)
+                self.assertTrue(ae_out["ok"])
+                self.assertEqual(ae_out["credential_store"], "env")
+                self.assertEqual(ae_out["credentials_file"], "")
+                self.assertEqual(ae_out["credentials_path"], "")
+                self.assertIn("pm", ae_out["claimed_roles_updated"])
+                self.assertTrue(ae_out["jira_verification"]["verified"])
+                self.assertFalse(fresh_creds_dir.exists())
+                self.assertFalse((repo_env / ".ai-workflow/credentials.json").exists())
+
+                # Implicit env-var auth (no --credential-store, no --jira-token, role-specific env var JIRA_EMAIL_QA + JIRA_API_TOKEN_QA)
+                env_role_only = {
+                    "AI_WORKFLOW_CREDENTIALS_DIR": str(fresh_creds_dir),
+                    "JIRA_EMAIL": None,
+                    "JIRA_API_TOKEN": None,
+                    "JIRA_EMAIL_QA": "carol@team.io",
+                    "JIRA_API_TOKEN_QA": "qa-token-carol",
+                }
+                auth_implicit = run_cli(
+                    repo_env, "auth",
+                    "--role", "qa",
+                    env_override=env_role_only,
+                )
+                self.assertEqual(auth_implicit.returncode, 0, auth_implicit.stderr)
+                self.assertNotIn("qa-token-carol", auth_implicit.stdout)
+                ai_impl = json.loads(auth_implicit.stdout)
+                self.assertEqual(ai_impl["credential_store"], "env")
+                self.assertEqual(ai_impl["credentials_file"], "")
+                self.assertIn("qa", ai_impl["claimed_roles_updated"])
+                self.assertTrue(ai_impl["jira_verification"]["verified"])
+                self.assertFalse(fresh_creds_dir.exists())
+
+                # --credential-store env rejects CLI --jira-token (fail closed) and fails when no env vars exist
+                bad_env_combo = run_cli(
+                    repo_env, "auth",
+                    "--credential-store", "env",
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "should-not-accept",
+                    env_override=env_base,
+                )
+                self.assertNotEqual(bad_env_combo.returncode, 0)
+                self.assertNotIn("should-not-accept", bad_env_combo.stderr)
+
+                empty_env_auth = run_cli(
+                    repo_env, "auth",
+                    "--credential-store", "env",
+                    env_override={"AI_WORKFLOW_CREDENTIALS_DIR": str(fresh_creds_dir), "JIRA_EMAIL": None, "JIRA_API_TOKEN": None, "QASE_API_TOKEN": None},
+                )
+                self.assertNotEqual(empty_env_auth.returncode, 0)
+
+                # 5. Precedence: env > user_config > legacy credentials.json > legacy .env
+                repo_prec = base / "prec-repo"
+                repo_prec.mkdir()
+                self.assertEqual(run_cli(repo_prec, "init", "--project-key", "PRC", "--jira-url", jira_url, env_override=env_iso).returncode, 0)
+
+                # 5a. Legacy .env alone -> credential_source == "legacy_repo"
+                (repo_prec / ".ai-workflow/.env").write_text(
+                    'JIRA_EMAIL="dotenv@team.io"\nJIRA_API_TOKEN="tok-dotenv"\nQASE_API_TOKEN="qase-dotenv"\n',
+                    encoding="utf-8",
+                )
+                insp_dotenv = json.loads(run_cli(repo_prec, "init", "--inspect", env_override=env_iso).stdout)
+                self.assertEqual(insp_dotenv["credential_source"], "legacy_repo")
+                with mock.patch.dict(os.environ, env_iso):
+                    c_dotenv = mod.load_jira_credentials(repo_prec)
+                    self.assertEqual(c_dotenv["jira_api_token"], "tok-dotenv")
+                    self.assertEqual(c_dotenv["qase_api_token"], "qase-dotenv")
+
+                # 5b. Legacy credentials.json overrides .env (explicit --credential-store repo)
+                auth_repo = run_cli(
+                    repo_prec, "auth",
+                    "--credential-store", "repo",
+                    "--jira-email", "bob@team.io",
+                    "--jira-token", "dev-token-bob",
+                    env_override=env_iso,
+                )
+                self.assertEqual(auth_repo.returncode, 0, auth_repo.stderr)
+                ar_out = json.loads(auth_repo.stdout)
+                self.assertEqual(ar_out["credential_store"], "repo")
+                self.assertEqual(ar_out["credentials_path"], ".ai-workflow/credentials.json")
+                self.assertTrue((repo_prec / ".ai-workflow/credentials.json").exists())
+                with mock.patch.dict(os.environ, env_iso):
+                    c_leg = mod.load_jira_credentials(repo_prec)
+                    self.assertEqual(c_leg["jira_api_token"], "dev-token-bob")
+                    self.assertEqual(c_leg["qase_api_token"], "qase-dotenv")
+
+                # 5c. User store overrides legacy credentials.json AND emits legacy_credentials_warning!
+                auth_user = run_cli(
+                    repo_prec, "auth",
+                    "--role", "qa",
+                    "--jira-email", "carol@team.io",
+                    "--jira-token", "qa-token-carol",
+                    env_override=env_iso,
+                )
+                self.assertEqual(auth_user.returncode, 0, auth_user.stderr)
+                au_out = json.loads(auth_user.stdout)
+                self.assertEqual(au_out["credential_store"], "user")
+                self.assertEqual(au_out["credential_source"], "user_config")
+                self.assertIn("legacy_credentials_warning", au_out)
+                with mock.patch.dict(os.environ, env_iso):
+                    c_usr = mod.load_jira_credentials(repo_prec)
+                    self.assertEqual(c_usr["jira_api_token"], "qa-token-carol")
+                    self.assertEqual(c_usr["qase_api_token"], "qase-dotenv")
+                    # Runtime env beats user_config AND role_credentials!
+                    with mock.patch.dict(os.environ, {"JIRA_EMAIL": "env@team.io", "JIRA_API_TOKEN": "tok-runtime-env", "QASE_API_TOKEN": "qase-runtime-env"}):
+                        jc_env = mod.JiraClient(mod.load_team_config(repo_prec), repo_root=repo_prec, role="qa")
+                        self.assertEqual(jc_env.email, "env@team.io")
+                        self.assertEqual(jc_env.api_token, "tok-runtime-env")
+                        qc_env = mod.QaseClient(mod.load_team_config(repo_prec), repo_root=repo_prec)
+                        self.assertEqual(qc_env.api_token, "qase-runtime-env")
+                        insp_env = mod._inspect_init_state(repo_prec)
+                        self.assertEqual(insp_env["credential_source"], "env")
+
+                # 6. Symlink refusal (both user store target & legacy repo target & symlinked creds dir)
+                victim = base / "victim.txt"
+                victim.write_text("DO_NOT_OVERWRITE", encoding="utf-8")
+
+                repo_sym = base / "sym-repo"
+                repo_sym.mkdir()
+                self.assertEqual(run_cli(repo_sym, "init", "--project-key", "SYM", "--jira-url", jira_url, env_override=env_iso).returncode, 0)
+                with mock.patch.dict(os.environ, env_iso):
+                    sym_target = mod.get_user_credentials_path(repo_sym)
+                    sym_target.parent.mkdir(parents=True, exist_ok=True)
+                    sym_target.symlink_to(victim)
+                    with self.assertRaises(RuntimeError):
+                        mod.save_jira_credentials(repo_sym, jira_email="a@b.c", jira_token="secret-sym", store="user")
+                    self.assertEqual(victim.read_text(encoding="utf-8"), "DO_NOT_OVERWRITE")
+                    # Loading must also refuse symlink without reading victim
+                    import io as _io
+                    with mock.patch("sys.stderr", _io.StringIO()):
+                        loaded_sym = mod.load_jira_credentials(repo_sym)
+                    self.assertFalse(loaded_sym.get("jira_api_token"))
+
+                # Symlinked credentials directory refusal
+                real_dir = base / "real-target-dir"
+                real_dir.mkdir()
+                sym_creds_dir = base / "sym-creds-dir"
+                sym_creds_dir.symlink_to(real_dir)
+                with mock.patch.dict(os.environ, {"AI_WORKFLOW_CREDENTIALS_DIR": str(sym_creds_dir)}):
+                    with self.assertRaises(RuntimeError):
+                        mod.save_jira_credentials(repo_sym, jira_email="a@b.c", jira_token="secret-symdir", store="user")
+                self.assertEqual(list(real_dir.iterdir()), [])
+
+                sym_auth_cli = run_cli(
+                    repo_sym, "auth",
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "tok-alice",
+                    env_override=env_iso,
+                )
+                self.assertNotEqual(sym_auth_cli.returncode, 0)
+                self.assertEqual(victim.read_text(encoding="utf-8"), "DO_NOT_OVERWRITE")
+                self.assertNotIn("tok-alice", sym_auth_cli.stderr)
+
+                # Legacy repo symlink refusal
+                leg_sym = repo_sym / ".ai-workflow/credentials.json"
+                leg_sym.symlink_to(victim)
+                with mock.patch.dict(os.environ, env_iso):
+                    with self.assertRaises(RuntimeError):
+                        mod.save_jira_credentials(repo_sym, jira_email="a@b.c", jira_token="secret-leg", store="repo")
+                self.assertEqual(victim.read_text(encoding="utf-8"), "DO_NOT_OVERWRITE")
+
+                # 7. Malformed user JSON fails/warns cleanly without leaking secret content
+                repo_badjson = base / "badjson-repo"
+                repo_badjson.mkdir()
+                with mock.patch.dict(os.environ, env_iso):
+                    bad_p = mod.get_user_credentials_path(repo_badjson)
+                    bad_p.parent.mkdir(parents=True, exist_ok=True)
+                    bad_p.write_text('{"jira_api_token": "LEAK_GUARD_SECRET_999", broken', encoding="utf-8")
+                    import io
+                    stderr_buf = io.StringIO()
+                    with mock.patch("sys.stderr", stderr_buf):
+                        res_bad = mod.load_jira_credentials(repo_badjson)
+                    self.assertFalse(res_bad.get("jira_api_token"))
+                    self.assertNotIn("LEAK_GUARD_SECRET_999", stderr_buf.getvalue())
+
+                # 8. Documentation checks: README, team-init SKILL.md, and common-workflow-governance.md
+                readme_txt = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+                init_skill_txt = (SKILLS_DIR / "team-init" / "SKILL.md").read_text(encoding="utf-8")
+                gov_txt = (SKILLS_DIR / "team-init" / "references" / "common-workflow-governance.md").read_text(encoding="utf-8")
+                for label, txt in (("README.md", readme_txt), ("team-init/SKILL.md", init_skill_txt)):
+                    self.assertIn(".config/ai-workflow/credentials", txt, f"{label} missing out-of-repo credentials path")
+                    self.assertIn(".semgrepignore", txt, f"{label} missing opt-in Semgrep guidance")
+                    self.assertIn("JIRA_API_TOKEN", txt, f"{label} missing env-var auth guidance")
+                self.assertIn(".config/ai-workflow/credentials", gov_txt)
+                self.assertIn("41-test", readme_txt)
+
+                # ------------------------------------------------------------------
+                # 9. Round 1 Adversarial Security Review Regressions (P1-1..P1-5, P2-1..P2-5)
+                # ------------------------------------------------------------------
+                import io as _io_r1
+
+                # 9a. [P1-1] Intermediate $XDG_CONFIG_HOME/ai-workflow symlink write refusal + read refusal on AI_WORKFLOW_CREDENTIALS_DIR & .ai-workflow
+                xdg_sym_root = base / "xdg-sym-test"
+                xdg_sym_root.mkdir()
+                attacker_dir = base / "attacker-target"
+                attacker_dir.mkdir()
+                (attacker_dir / "credentials").mkdir()
+                (xdg_sym_root / "ai-workflow").symlink_to(attacker_dir)
+                repo_r1 = base / "r1-sym-repo"
+                repo_r1.mkdir()
+                with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg_sym_root)}, clear=False):
+                    os.environ.pop("AI_WORKFLOW_CREDENTIALS_DIR", None)
+                    with self.assertRaises(RuntimeError):
+                        mod.save_jira_credentials(repo_r1, jira_email="a@team.io", jira_token="tok-r1", store="user")
+                    self.assertEqual(list((attacker_dir / "credentials").iterdir()), [])
+                    # Even if attacker pre-populates a credential file inside the symlink target, read MUST refuse it!
+                    raw_target_r1, _, fname_r1 = mod._get_user_credentials_target_spec(repo_r1)
+                    (attacker_dir / "credentials" / fname_r1).write_text(
+                        json.dumps({"jira_email": "evil@attacker.io", "jira_api_token": "evil-tok"}),
+                        encoding="utf-8",
+                    )
+                    with mock.patch("sys.stderr", _io_r1.StringIO()):
+                        loaded_xdg_sym = mod.load_jira_credentials(repo_r1)
+                    self.assertFalse(loaded_xdg_sym.get("jira_api_token"))
+                    self.assertEqual(mod._detect_credential_source(repo_r1), "none")
+                os.environ["AI_WORKFLOW_CREDENTIALS_DIR"] = str(creds_dir)
+
+                # Symlinked AI_WORKFLOW_CREDENTIALS_DIR read refusal
+                attacker_override = base / "attacker-override-dir"
+                attacker_override.mkdir()
+                sym_override = base / "sym-override-dir"
+                sym_override.symlink_to(attacker_override)
+                with mock.patch.dict(os.environ, {"AI_WORKFLOW_CREDENTIALS_DIR": str(sym_override)}):
+                    _, _, ov_fname = mod._get_user_credentials_target_spec(repo_r1)
+                    (attacker_override / ov_fname).write_text(
+                        json.dumps({"jira_email": "evil@attacker.io", "jira_api_token": "evil-ov-tok"}),
+                        encoding="utf-8",
+                    )
+                    with mock.patch("sys.stderr", _io_r1.StringIO()):
+                        loaded_ov_sym = mod.load_jira_credentials(repo_r1)
+                    self.assertFalse(loaded_ov_sym.get("jira_api_token"))
+                    self.assertEqual(mod._detect_credential_source(repo_r1), "none")
+
+                # Symlinked legacy .ai-workflow dir write & read refusal
+                repo_leg_sym = base / "repo-leg-sym"
+                repo_leg_sym.mkdir()
+                attacker_wf = base / "attacker-wf"
+                attacker_wf.mkdir()
+                (attacker_wf / "credentials.json").write_text(
+                    json.dumps({"jira_email": "evil@attacker.io", "jira_api_token": "evil-leg-tok"}),
+                    encoding="utf-8",
+                )
+                (attacker_wf / ".env").write_text("JIRA_API_TOKEN=evil-env-tok\n", encoding="utf-8")
+                (repo_leg_sym / ".ai-workflow").symlink_to(attacker_wf)
+                with mock.patch.dict(os.environ, env_iso):
+                    with mock.patch("sys.stderr", _io_r1.StringIO()):
+                        loaded_leg_sym = mod.load_jira_credentials(repo_leg_sym)
+                    self.assertFalse(loaded_leg_sym.get("jira_api_token"))
+                    self.assertEqual(mod._detect_credential_source(repo_leg_sym), "none")
+                    with self.assertRaises(RuntimeError):
+                        mod.save_jira_credentials(repo_leg_sym, jira_email="a@b.c", jira_token="tok", store="repo")
+
+                # 9b. [P1-2] Repo directory names containing '..' must NOT crash get_user_credentials_path
+                for tricky_name in ("app..v2", "..foo..bar", "..."):
+                    tricky_repo = base / tricky_name
+                    tricky_repo.mkdir()
+                    with mock.patch.dict(os.environ, env_iso):
+                        p_tricky = mod.get_user_credentials_path(tricky_repo)
+                        self.assertNotIn("..", p_tricky.name)
+                        self.assertEqual(p_tricky.parent, creds_dir.resolve())
+                        saved_tricky = mod.save_jira_credentials(
+                            tricky_repo, jira_email="alice@team.io", jira_token="tok-tricky", store="user"
+                        )
+                        self.assertTrue(saved_tricky.is_file())
+
+                # 9c. [P1-3] Unrelated JIRA_API_TOKEN_QA must NOT hijack explicit `--role developer` when default JIRA_EMAIL/JIRA_API_TOKEN exist
+                repo_p13 = base / "repo-p13"
+                repo_p13.mkdir()
+                self.assertEqual(
+                    run_cli(repo_p13, "init", "--project-key", "P13", "--jira-url", jira_url, env_override=env_iso).returncode,
+                    0,
+                )
+                p13_env = {
+                    "AI_WORKFLOW_CREDENTIALS_DIR": str(base / "p13-no-creds"),
+                    "JIRA_EMAIL": "bob@team.io",
+                    "JIRA_API_TOKEN": "dev-token-bob",
+                    "JIRA_EMAIL_QA": "carol@team.io",
+                    "JIRA_API_TOKEN_QA": "qa-token-carol",
+                }
+                p13_auth = run_cli(
+                    repo_p13, "auth",
+                    "--role", "developer",
+                    "--credential-store", "env",
+                    env_override=p13_env,
+                )
+                self.assertEqual(p13_auth.returncode, 0, p13_auth.stderr)
+                p13_cfg = json.loads((repo_p13 / ".ai-workflow/team-config.json").read_text(encoding="utf-8"))
+                self.assertEqual(p13_cfg["roles"]["developer"]["email"], "bob@team.io")
+                self.assertNotEqual(p13_cfg["roles"]["developer"]["email"], "carol@team.io")
+
+                # 9d. [P1-4] Corrupt .git files must NOT collide or escape; fallback safely to repo_resolved
+                corrupt_a = base / "corrupt-a"
+                corrupt_b = base / "corrupt-b"
+                outside_dir = base / "outside-not-git"
+                corrupt_a.mkdir()
+                corrupt_b.mkdir()
+                outside_dir.mkdir()
+                (corrupt_a / ".git").write_text("gitdir: /nonexistent/xyz\n", encoding="utf-8")
+                (corrupt_b / ".git").write_text("gitdir: /nonexistent/xyz\n", encoding="utf-8")
+                corrupt_c = base / "corrupt-c"
+                corrupt_c.mkdir()
+                (corrupt_c / ".git").write_text(f"gitdir: {outside_dir}\n", encoding="utf-8")
+                with mock.patch.dict(os.environ, env_iso):
+                    # Normal mode (git binary runs and rejects corrupt .git)
+                    self.assertIsNone(mod._resolve_git_common_dir(corrupt_a))
+                    self.assertIsNone(mod._resolve_git_common_dir(corrupt_c))
+                    pa_norm = mod.get_user_credentials_path(corrupt_a)
+                    pb_norm = mod.get_user_credentials_path(corrupt_b)
+                    self.assertNotEqual(pa_norm, pb_norm)
+                    # Fallback mode (git binary unavailable -> FileNotFoundError): must STILL reject corrupt/non-git dirs!
+                    with mock.patch("subprocess.run", side_effect=FileNotFoundError("git missing")):
+                        self.assertIsNone(mod._resolve_git_common_dir(corrupt_a))
+                        self.assertIsNone(mod._resolve_git_common_dir(corrupt_c))
+                        self.assertNotEqual(
+                            mod.get_user_credentials_path(corrupt_a),
+                            mod.get_user_credentials_path(corrupt_b),
+                        )
+
+                # 9e. [P1-5] Failed save_jira_credentials (symlink target) MUST leave team-config.json untouched!
+                repo_p15 = base / "repo-p15"
+                repo_p15.mkdir()
+                self.assertEqual(
+                    run_cli(repo_p15, "init", "--project-key", "P15", "--jira-url", jira_url, env_override=env_iso).returncode,
+                    0,
+                )
+                cfg_before_p15 = (repo_p15 / ".ai-workflow/team-config.json").read_bytes()
+                with mock.patch.dict(os.environ, env_iso):
+                    p15_target = mod.get_user_credentials_path(repo_p15)
+                    p15_target.parent.mkdir(parents=True, exist_ok=True)
+                    p15_target.symlink_to(victim)
+                p15_auth = run_cli(
+                    repo_p15, "auth",
+                    "--role", "qa",
+                    "--jira-email", "carol@team.io",
+                    "--jira-token", "qa-token-carol",
+                    env_override=env_iso,
+                )
+                self.assertNotEqual(p15_auth.returncode, 0)
+                self.assertEqual((repo_p15 / ".ai-workflow/team-config.json").read_bytes(), cfg_before_p15)
+                self.assertEqual(victim.read_text(encoding="utf-8"), "DO_NOT_OVERWRITE")
+
+                # 9f. [P2-1] Enforce 0o700 on BOTH ai-workflow AND ai-workflow/credentials under umask 0o000
+                if os.name == "posix":
+                    xdg_umask = base / "xdg-umask-zero"
+                    xdg_umask.mkdir()
+                    repo_umask = base / "repo-umask"
+                    repo_umask.mkdir()
+                    old_umask = os.umask(0o000)
+                    try:
+                        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg_umask)}, clear=False):
+                            os.environ.pop("AI_WORKFLOW_CREDENTIALS_DIR", None)
+                            saved_um = mod.save_jira_credentials(
+                                repo_umask, jira_email="alice@team.io", jira_token="tok-um", store="user"
+                            )
+                        self.assertEqual(stat.S_IMODE((xdg_umask / "ai-workflow").stat().st_mode), 0o700)
+                        self.assertEqual(stat.S_IMODE((xdg_umask / "ai-workflow" / "credentials").stat().st_mode), 0o700)
+                        self.assertEqual(stat.S_IMODE(saved_um.stat().st_mode), 0o600)
+                    finally:
+                        os.umask(old_umask)
+                        os.environ["AI_WORKFLOW_CREDENTIALS_DIR"] = str(creds_dir)
+
+                # 9g. [P2-2] Role-only env vars (JIRA_EMAIL_PM / JIRA_API_TOKEN_PM) report credentials_configured: true in cmd_init
+                repo_p22 = base / "repo-p22"
+                repo_p22.mkdir()
+                p22_env = {
+                    "AI_WORKFLOW_CREDENTIALS_DIR": str(base / "p22-no-creds"),
+                    "JIRA_EMAIL": None,
+                    "JIRA_API_TOKEN": None,
+                    "JIRA_EMAIL_PM": "alice@team.io",
+                    "JIRA_API_TOKEN_PM": "tok-pm-only",
+                }
+                p22_init = run_cli(
+                    repo_p22, "init",
+                    "--project-key", "P22",
+                    "--jira-url", jira_url,
+                    "--role", "pm",
+                    "--credential-store", "env",
+                    env_override=p22_env,
+                )
+                self.assertEqual(p22_init.returncode, 0, p22_init.stderr)
+                p22_out = json.loads(p22_init.stdout)
+                self.assertTrue(p22_out["credentials_configured"])
+                self.assertTrue(p22_out["role_has_api_token"]["pm"])
+                self.assertEqual(p22_out["credential_source"], "env")
+
+                # 9h. [P2-3] cmd_auth --credential-store env MUST NOT create .gitignore, and MUST reject Qase-only on live-Jira role claim
+                repo_p23 = base / "repo-p23"
+                (repo_p23 / ".ai-workflow").mkdir(parents=True)
+                (repo_p23 / ".ai-workflow/team-config.json").write_text(
+                    json.dumps({
+                        "project_key": "P23",
+                        "jira_base_url": jira_url,
+                        "roles": {
+                            "pm": {"name": "PM Owner", "email": "", "jira_account_id": ""},
+                            "developer": {"name": "Developer", "email": "", "jira_account_id": ""},
+                        },
+                    }),
+                    encoding="utf-8",
+                )
+                self.assertFalse((repo_p23 / ".gitignore").exists())
+                p23_env_ok = {
+                    "AI_WORKFLOW_CREDENTIALS_DIR": str(base / "p23-no-creds"),
+                    "JIRA_EMAIL": "alice@team.io",
+                    "JIRA_API_TOKEN": "tok-alice",
+                }
+                p23_auth_ok = run_cli(
+                    repo_p23, "auth",
+                    "--credential-store", "env",
+                    env_override=p23_env_ok,
+                )
+                self.assertEqual(p23_auth_ok.returncode, 0, p23_auth_ok.stderr)
+                p23_out = json.loads(p23_auth_ok.stdout)
+                self.assertFalse(p23_out["gitignore_updated"])
+                self.assertFalse((repo_p23 / ".gitignore").exists())
+
+                # Qase-only env var on live-Jira role claim MUST fail closed
+                p23_qase_only = run_cli(
+                    repo_p23, "auth",
+                    "--role", "pm",
+                    "--credential-store", "env",
+                    env_override={
+                        "AI_WORKFLOW_CREDENTIALS_DIR": str(base / "p23-no-creds"),
+                        "JIRA_EMAIL": None,
+                        "JIRA_API_TOKEN": None,
+                        "QASE_API_TOKEN": "qase-only-tok",
+                    },
+                )
+                self.assertNotEqual(p23_qase_only.returncode, 0)
+                self.assertNotIn("qase-only-tok", p23_qase_only.stderr)
+
+                # 9i. [P2-4] cmd_init --credential-store env --jira-token secret MUST fail fast BEFORE creating .ai-workflow/active/ without leaking secret
+                repo_p24 = base / "repo-p24"
+                repo_p24.mkdir()
+                p24_bad = run_cli(
+                    repo_p24, "init",
+                    "--project-key", "P24",
+                    "--jira-url", jira_url,
+                    "--credential-store", "env",
+                    "--jira-token", "SUPER_SECRET_P24_LEAK_CHECK",
+                    env_override=env_iso,
+                )
+                self.assertNotEqual(p24_bad.returncode, 0)
+                self.assertNotIn("SUPER_SECRET_P24_LEAK_CHECK", p24_bad.stderr)
+                self.assertNotIn("SUPER_SECRET_P24_LEAK_CHECK", p24_bad.stdout)
+                self.assertFalse((repo_p24 / ".ai-workflow/active").exists())
+                self.assertFalse((repo_p24 / ".ai-workflow").exists())
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
 
 
 if __name__ == "__main__":
