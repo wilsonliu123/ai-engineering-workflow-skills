@@ -63,8 +63,8 @@ Eight Jira-centered engineering workflow skills — plus a dynamic multi-agent o
 ## Documentation, Training & Onboarding Materials (`docs/`)
 
 - **Repository Documentation (EN / 繁體中文):** [README.md](./README.md) · [README.zh-TW.md](./README.zh-TW.md) · [CHANGELOG.md](./CHANGELOG.md) · [CHANGELOG.zh-TW.md](./CHANGELOG.zh-TW.md).
-- **Scenario-Driven Training Manual (`v1.6.0`):** [docs/training-manual.md](./docs/training-manual.md) (canonical Markdown source) along with synced `v1.6.0` exports [docs/training-manual.html](./docs/training-manual.html), [docs/training-manual.pdf](./docs/training-manual.pdf), and [docs/training-manual.docx](./docs/training-manual.docx) (with annotated dual-pane terminal + Jira illustrations in `docs/screenshots/`).
-- **Training Slide Deck (`v1.6.0`):** 18-slide scenario presentation in [docs/training-manual.pptx](./docs/training-manual.pptx) (`docs/ppt-assets/`), synced to `v1.6.0` (covering `team-plan` Epic/Sprint planning, strict HITL / SoD Clean Stop, `commit_policy`, `qa_handoff_mode`, `triage-bug`, and CI/CD `delivery_pipeline` alignment).
+- **Scenario-Driven Training Manual (`v1.6.1`):** [docs/training-manual.md](./docs/training-manual.md) (canonical Markdown source) along with synced `v1.6.1` exports [docs/training-manual.html](./docs/training-manual.html), [docs/training-manual.pdf](./docs/training-manual.pdf), and [docs/training-manual.docx](./docs/training-manual.docx) (with annotated dual-pane terminal + Jira illustrations in `docs/screenshots/`).
+- **Training Slide Deck (`v1.6.1`):** 18-slide scenario presentation in [docs/training-manual.pptx](./docs/training-manual.pptx) (`docs/ppt-assets/`), synced to `v1.6.1` (covering `team-plan` Epic/Sprint planning, strict HITL / SoD Clean Stop, `commit_policy`, `qa_handoff_mode`, `triage-bug`, CI/CD `delivery_pipeline` alignment, SAST zero-findings hardening, and out-of-repo default credentials).
 
 ## Shared Files & Verification
 

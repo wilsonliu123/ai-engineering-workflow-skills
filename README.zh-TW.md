@@ -63,8 +63,8 @@
 ## 文件、訓練與上手教材（`docs/`）
 
 - **程式碼庫文件（EN / 繁體中文）：** [README.md](./README.md) · [README.zh-TW.md](./README.zh-TW.md) · [CHANGELOG.md](./CHANGELOG.md) · [CHANGELOG.zh-TW.md](./CHANGELOG.zh-TW.md)。
-- **情境式訓練手冊（`v1.6.0`）：** [docs/training-manual.md](./docs/training-manual.md)（標準 Markdown 原始檔）以及同步至 `v1.6.0` 的匯出版本 [docs/training-manual.html](./docs/training-manual.html)、[docs/training-manual.pdf](./docs/training-manual.pdf) 與 [docs/training-manual.docx](./docs/training-manual.docx)（附帶 `docs/screenshots/` 中的終端機 + Jira 雙欄標註圖解）。
-- **訓練簡報（`v1.6.0`）：** 共 18 張投影片的情境式簡報 [docs/training-manual.pptx](./docs/training-manual.pptx)（`docs/ppt-assets/`），已同步至 `v1.6.0`（涵蓋 `team-plan` Epic/Sprint 規劃、嚴格 HITL / SoD Clean Stop、`commit_policy`、`qa_handoff_mode`、`triage-bug` 與 CI/CD `delivery_pipeline` 對齊）。
+- **情境式訓練手冊（`v1.6.1`）：** [docs/training-manual.md](./docs/training-manual.md)（標準 Markdown 原始檔）以及同步至 `v1.6.1` 的匯出版本 [docs/training-manual.html](./docs/training-manual.html)、[docs/training-manual.pdf](./docs/training-manual.pdf) 與 [docs/training-manual.docx](./docs/training-manual.docx)（附帶 `docs/screenshots/` 中的終端機 + Jira 雙欄標註圖解）。
+- **訓練簡報（`v1.6.1`）：** 共 18 張投影片的情境式簡報 [docs/training-manual.pptx](./docs/training-manual.pptx)（`docs/ppt-assets/`），已同步至 `v1.6.1`（涵蓋 `team-plan` Epic/Sprint 規劃、嚴格 HITL / SoD Clean Stop、`commit_policy`、`qa_handoff_mode`、`triage-bug`、CI/CD `delivery_pipeline` 對齊、SAST 零告警強化與程式碼庫外部預設憑證）。
 
 ## 共用檔案與驗證
 
