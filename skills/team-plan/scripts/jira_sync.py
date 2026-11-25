@@ -34,6 +34,7 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -1899,6 +1900,70 @@ def _validate_http_url(url: str) -> tuple:
     return scheme, hostname, port, effective_port, target
 
 
+class _VerifiedTLSConnection(http.client.HTTPConnection):
+    """Pure-stdlib TLS-wrapped HTTPConnection enforcing ssl.create_default_context()."""
+
+    default_port = http.client.HTTPS_PORT
+
+    def __init__(
+        self,
+        host,
+        port=None,
+        timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address=None,
+        blocksize=8192,
+        *,
+        context=None,
+    ):
+        super().__init__(
+            host,
+            port=port,
+            timeout=timeout,
+            source_address=source_address,
+            blocksize=blocksize,
+        )
+        if context is None:
+            ctx = ssl.create_default_context()
+            if hasattr(ssl, "TLSVersion") and ctx.minimum_version < ssl.TLSVersion.TLSv1_2:
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            try:
+                ctx.set_alpn_protocols(["http/1.1"])
+            except (AttributeError, NotImplementedError):
+                pass
+            self._context = ctx
+        else:
+            if isinstance(context, ssl.SSLContext):
+                if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+                    raise ValueError(
+                        "TLS context must require certificate verification and hostname checks."
+                    )
+                if (
+                    hasattr(ssl, "TLSVersion")
+                    and context.minimum_version < ssl.TLSVersion.TLSv1_2
+                    and context.minimum_version != ssl.TLSVersion.MAXIMUM_SUPPORTED
+                ):
+                    raise ValueError("TLS context must require TLS 1.2 or higher.")
+            self._context = context
+
+    def connect(self):
+        super().connect()
+        server_hostname = self._tunnel_host if self._tunnel_host else self.host
+        try:
+            self.sock = self._context.wrap_socket(
+                self.sock,
+                server_hostname=server_hostname,
+            )
+        except BaseException:
+            raw_sock = self.sock
+            self.sock = None
+            if raw_sock is not None:
+                try:
+                    raw_sock.close()
+                except OSError:
+                    pass
+            raise
+
+
 def _http_request(
     url: str,
     method: str = "GET",
@@ -1952,14 +2017,13 @@ def _http_request(
 
     while True:
         if scheme == "https":
-            conn = http.client.HTTPSConnection(
+            conn = _VerifiedTLSConnection(
                 hostname,
-                port=port,
+                port=effective_port,
                 timeout=timeout,
-                context=ssl.create_default_context(),
             )
         else:
-            conn = http.client.HTTPConnection(hostname, port=port, timeout=timeout)
+            conn = http.client.HTTPConnection(hostname, port=effective_port, timeout=timeout)
         try:
             conn.request(cur_method, target, body=cur_body, headers=cur_headers)
             resp = conn.getresponse()
