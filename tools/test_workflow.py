@@ -636,15 +636,21 @@ class WorkflowTestSuite(unittest.TestCase):
 
     def setUp(self):
         self._orig_cred_dir_env = os.environ.get("AI_WORKFLOW_CREDENTIALS_DIR")
+        self._orig_prov_dir_env = os.environ.get("AI_WORKFLOW_PROVENANCE_DIR")
         self._orig_xdg_env = os.environ.get("XDG_CONFIG_HOME")
         self._isolated_cred_tmp = tempfile.TemporaryDirectory(prefix="aiwf-test-creds-")
         os.environ["AI_WORKFLOW_CREDENTIALS_DIR"] = str(Path(self._isolated_cred_tmp.name) / "creds")
+        os.environ["AI_WORKFLOW_PROVENANCE_DIR"] = str(Path(self._isolated_cred_tmp.name) / "provenance")
 
     def tearDown(self):
         if self._orig_cred_dir_env is None:
             os.environ.pop("AI_WORKFLOW_CREDENTIALS_DIR", None)
         else:
             os.environ["AI_WORKFLOW_CREDENTIALS_DIR"] = self._orig_cred_dir_env
+        if self._orig_prov_dir_env is None:
+            os.environ.pop("AI_WORKFLOW_PROVENANCE_DIR", None)
+        else:
+            os.environ["AI_WORKFLOW_PROVENANCE_DIR"] = self._orig_prov_dir_env
         if self._orig_xdg_env is None:
             os.environ.pop("XDG_CONFIG_HOME", None)
         else:
@@ -653,7 +659,7 @@ class WorkflowTestSuite(unittest.TestCase):
 
     def test_01_skill_bundle_structure_and_shared_files(self):
         actual_skills = {p.name for p in SKILLS_DIR.iterdir() if p.is_dir() and p.name != "system"}
-        self.assertEqual(actual_skills, EXPECTED_SKILLS)
+        self.assertEqual(actual_skills, EXPECTED_SKILLS | {"team-provenance-audit"})
 
         for s in EXPECTED_SKILLS:
             skill_md = SKILLS_DIR / s / "SKILL.md"
@@ -669,6 +675,18 @@ class WorkflowTestSuite(unittest.TestCase):
             self.assertTrue(text.startswith("---\n"), f"{skill_md} missing YAML frontmatter")
             self.assertIn(f"name: {s}", text)
             self.assertIn("description: Use when", text)
+
+        # Verify standalone 9th skill: team-provenance-audit (never bundles jira_sync.py)
+        pa_dir = SKILLS_DIR / "team-provenance-audit"
+        pa_skill_md = pa_dir / "SKILL.md"
+        self.assertTrue(pa_skill_md.exists())
+        self.assertTrue((pa_dir / "agents" / "openai.yaml").exists())
+        self.assertFalse((pa_dir / "scripts" / "jira_sync.py").exists())
+        pa_text = pa_skill_md.read_text(encoding="utf-8")
+        self.assertTrue(pa_text.startswith("---\n"))
+        self.assertIn("name: team-provenance-audit", pa_text)
+        for pa_script in ("check_env.py", "static_scan.py", "fetch_reference.py", "fingerprint.py", "gate.py"):
+            self.assertTrue((pa_dir / "scripts" / pa_script).exists(), f"Missing team-provenance-audit script {pa_script}")
 
         # Verify check_shared.sh passes
         res = subprocess.run([str(REPO_ROOT / "tools" / "check_shared.sh")], capture_output=True, text=True)
@@ -747,7 +765,7 @@ class WorkflowTestSuite(unittest.TestCase):
                 "qa": {"name": "Carol", "email": "carol@team.io", "jira_account_id": "acc-carol"},
                 "release_manager": {"name": "Dave", "email": "dave@team.io", "jira_account_id": "acc-dave"},
             }
-            run_cli(root, "init", "--project-key", "PROJ", "--roles-json", json.dumps(roles))
+            run_cli(root, "init", "--project-key", "PROJ", "--roles-json", json.dumps(roles), "--provenance-audit-mode", "off")
 
             # Edge case: sync-story rejects >3 material decisions ("抓大放小" enforcement)
             bad_spec = run_cli(
@@ -1271,7 +1289,7 @@ class WorkflowTestSuite(unittest.TestCase):
             subprocess.run(["git", "config", "user.email", "dev@team.io"], cwd=str(root), check=True, capture_output=True)
             subprocess.run(["git", "config", "user.name", "Dev"], cwd=str(root), check=True, capture_output=True)
 
-            init_res = run_cli(root, "init", "--project-key", "PROJ")
+            init_res = run_cli(root, "init", "--project-key", "PROJ", "--provenance-audit-mode", "off")
             self.assertEqual(init_res.returncode, 0, init_res.stderr)
             init_out = json.loads(init_res.stdout)
             # Verify .ai-workflow/bin/jira_sync.py is generated and executable
@@ -1524,7 +1542,7 @@ class WorkflowTestSuite(unittest.TestCase):
     def test_09_scale_aware_draft_guard_and_3tier_qa_anti_false_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run_cli(root, "init", "--project-key", "PROJ")
+            run_cli(root, "init", "--project-key", "PROJ", "--provenance-audit-mode", "off")
 
             # 1. Iterative draft deep-dive for a large story: accumulate >3 material decisions across draft rounds
             r1 = run_cli(
@@ -3224,6 +3242,7 @@ class WorkflowTestSuite(unittest.TestCase):
                         "--qase-base-url", f"http://127.0.0.1:{qase_port}/v1",
                         "--qase-app-url", f"http://127.0.0.1:{qase_port}/app",
                         "--roles-json", json.dumps(roles_cfg),
+                        "--provenance-audit-mode", "off",
                     ).returncode,
                     0,
                 )
@@ -4790,7 +4809,7 @@ class WorkflowTestSuite(unittest.TestCase):
                     "release_manager": {"name": "Alice Chen", "email": "alice@team.io", "jira_account_id": "acc-alice"},
                 }
                 self.assertEqual(
-                    run_cli(root, "init", "--project-key", "TRG", "--jira-url", f"http://127.0.0.1:{jira_port}", "--roles-json", json.dumps(roles)).returncode,
+                    run_cli(root, "init", "--project-key", "TRG", "--jira-url", f"http://127.0.0.1:{jira_port}", "--roles-json", json.dumps(roles), "--provenance-audit-mode", "off").returncode,
                     0,
                 )
                 self.assertEqual(
@@ -6760,6 +6779,7 @@ class WorkflowTestSuite(unittest.TestCase):
                         root_off, "init",
                         "--project-key", "BS",
                         "--status-mapping-json", json.dumps({"todo": "待辦"}),
+                        "--provenance-audit-mode", "off",
                     ).returncode,
                     0,
                 )
@@ -7134,6 +7154,7 @@ class WorkflowTestSuite(unittest.TestCase):
                         "--qa-tag-prefix", "qa-",
                         "--uat-tag-prefix", "uat-",
                         "--jira-deployment-sync",
+                        "--provenance-audit-mode", "off",
                     ).returncode,
                     0,
                 )
@@ -7260,7 +7281,7 @@ class WorkflowTestSuite(unittest.TestCase):
         # 6. Offline backward compatibility (no delivery_pipeline -> empty release_checklist_reminders)
         with tempfile.TemporaryDirectory() as tmp_bc:
             bc_root = Path(tmp_bc)
-            self.assertEqual(run_cli(bc_root, "init", "--project-key", "BC").returncode, 0)
+            self.assertEqual(run_cli(bc_root, "init", "--project-key", "BC", "--provenance-audit-mode", "off").returncode, 0)
             self.assertEqual(run_cli(bc_root, "sync-story", "--key", "BC-1", "--title", "Single Branch", "--ac", "AC-001:Ok", "--status", "approved").returncode, 0)
             self.assertEqual(run_cli(bc_root, "complete-task", "--key", "BC-1", "--task-id", "TASK-001", "--commit", "b1", "--files", "b.py", "--test-result", "ok").returncode, 0)
             self.assertEqual(run_cli(bc_root, "handoff", "--key", "BC-1", "--review-status", "approved", "--commit", "b1").returncode, 0)
@@ -8733,7 +8754,7 @@ class WorkflowTestSuite(unittest.TestCase):
                     self.assertIn(".semgrepignore", txt, f"{label} missing opt-in Semgrep guidance")
                     self.assertIn("JIRA_API_TOKEN", txt, f"{label} missing env-var auth guidance")
                 self.assertIn(".config/ai-workflow/credentials", gov_txt)
-                self.assertIn("41-test", readme_txt)
+                self.assertIn("42-test", readme_txt)
 
                 # ------------------------------------------------------------------
                 # 9. Round 1 Adversarial Security Review Regressions (P1-1..P1-5, P2-1..P2-5)
@@ -8995,6 +9016,311 @@ class WorkflowTestSuite(unittest.TestCase):
                 self.assertNotIn("SUPER_SECRET_P24_LEAK_CHECK", p24_bad.stdout)
                 self.assertFalse((repo_p24 / ".ai-workflow/active").exists())
                 self.assertFalse((repo_p24 / ".ai-workflow").exists())
+        finally:
+            jira_srv.shutdown()
+            jira_srv.server_close()
+
+    def test_42_team_provenance_audit_mandatory_gate(self):
+        """Verify mandatory default-on team-provenance-audit gate in init, status, and close-story."""
+        mod = self._load_jira_sync_module()
+        pa_scripts = SKILLS_DIR / "team-provenance-audit" / "scripts"
+        pa_policy = SKILLS_DIR / "team-provenance-audit" / "assets" / "policy.example.json"
+
+        # 1. Sanitizer unit checks: default-on, legacy missing block, strict bool, control char rejection
+        self.assertEqual(
+            mod._sanitize_compliance_gates(None),
+            {"provenance_audit": {"enabled": True, "mode": "blocking", "policy_path": "", "output_dir": ""}},
+        )
+        self.assertEqual(
+            mod._sanitize_compliance_gates({}),
+            {"provenance_audit": {"enabled": True, "mode": "blocking", "policy_path": "", "output_dir": ""}},
+        )
+        # Strict boolean: string "false" MUST disable (never Python raw bool("false") == True)
+        self.assertEqual(
+            mod._sanitize_compliance_gates({"provenance_audit": {"enabled": "false", "mode": "blocking"}})["provenance_audit"],
+            {"enabled": False, "mode": "off", "policy_path": "", "output_dir": ""},
+        )
+        self.assertEqual(
+            mod._sanitize_compliance_gates({"provenance_audit": {"mode": "off"}})["provenance_audit"],
+            {"enabled": False, "mode": "off", "policy_path": "", "output_dir": ""},
+        )
+        self.assertEqual(
+            mod._sanitize_compliance_gates({"provenance_audit": {"mode": "invalid-mode"}})["provenance_audit"],
+            {"enabled": True, "mode": "blocking", "policy_path": "", "output_dir": ""},
+        )
+        self.assertEqual(
+            mod._sanitize_compliance_gates(
+                {"provenance_audit": {"mode": "blocking", "policy_path": "bad\x00p", "output_dir": "bad\ndir"}}
+            )["provenance_audit"],
+            {"enabled": True, "mode": "blocking", "policy_path": "", "output_dir": ""},
+        )
+
+        # Start mock Jira server for full E2E ADF & fail-closed mutation checks
+        MockJiraHandler.requests_log = []
+        MockJiraHandler.stored_issues = {}
+        MockJiraHandler.stored_properties = {}
+        MockJiraHandler.stored_attachments = {}
+        jira_srv = HTTPServer(("127.0.0.1", 0), MockJiraHandler)
+        jira_port = jira_srv.server_address[1]
+        jira_url = f"http://127.0.0.1:{jira_port}"
+        threading.Thread(target=jira_srv.serve_forever, daemon=True).start()
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="aiwf-prov-e2e-") as tmp:
+                base = Path(tmp)
+                repo = base / "demo-repo"
+                repo.mkdir()
+                subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.email", "dev@team.io"], cwd=str(repo), check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Dev"], cwd=str(repo), check=True, capture_output=True)
+                (repo / "app.py").write_text("print('hello world')\n", encoding="utf-8")
+                subprocess.run(["git", "add", "app.py"], cwd=str(repo), check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", "initial commit"], cwd=str(repo), check=True, capture_output=True)
+                head1 = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=str(repo), check=True, capture_output=True, text=True
+                ).stdout.strip().lower()
+                head1_short = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"], cwd=str(repo), check=True, capture_output=True, text=True
+                ).stdout.strip()
+
+                roles = {
+                    "pm": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                    "tech_lead": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                    "developer": {"name": "Bob", "email": "bob@team.io", "jira_account_id": "acc-bob"},
+                    "reviewer": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                    "qa": {"name": "Carol", "email": "carol@team.io", "jira_account_id": "acc-carol"},
+                    "release_manager": {"name": "Alice", "email": "alice@team.io", "jira_account_id": "acc-alice"},
+                }
+
+                # 2. Default cmd_init sets enabled=True, mode="blocking" and exposes provenance_audit_dir
+                init_res = run_cli(
+                    repo, "init",
+                    "--project-key", "PRV",
+                    "--jira-url", jira_url,
+                    "--jira-email", "alice@team.io",
+                    "--jira-token", "tok-alice",
+                    "--roles-json", json.dumps(roles),
+                )
+                self.assertEqual(init_res.returncode, 0, init_res.stderr)
+                init_out = json.loads(init_res.stdout)
+                self.assertEqual(
+                    init_out["compliance_gates"]["provenance_audit"],
+                    {"enabled": True, "mode": "blocking", "policy_path": "", "output_dir": ""},
+                )
+                audit_dir = Path(init_out["provenance_audit_dir"])
+                # Must be strictly inside our isolated AI_WORKFLOW_PROVENANCE_DIR and outside repo
+                self.assertTrue(str(audit_dir).startswith(os.environ["AI_WORKFLOW_PROVENANCE_DIR"]))
+                self.assertNotIn(str(repo.resolve()), str(audit_dir))
+
+                # init --inspect also exposes compliance_gates & provenance_audit_dir
+                insp_out = json.loads(run_cli(repo, "init", "--inspect").stdout)
+                self.assertEqual(insp_out["compliance_gates"]["provenance_audit"]["mode"], "blocking")
+                self.assertEqual(insp_out["provenance_audit_dir"], str(audit_dir))
+
+                # Verify upgraded legacy team-config.json (missing compliance_gates) still enforces blocking!
+                cfg_path = repo / ".ai-workflow" / "team-config.json"
+                raw_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                raw_cfg.pop("compliance_gates", None)
+                cfg_path.write_text(json.dumps(raw_cfg, indent=2), encoding="utf-8")
+                legacy_loaded = mod.load_team_config(repo)
+                self.assertTrue(legacy_loaded["compliance_gates"]["provenance_audit"]["enabled"])
+                self.assertEqual(legacy_loaded["compliance_gates"]["provenance_audit"]["mode"], "blocking")
+
+                # Advance Story PRV-1 through Spec -> Dev -> Review -> QA
+                MockJiraHandler.stored_issues["PRV-1"] = {
+                    "key": "PRV-1",
+                    "fields": {"summary": "Provenance Gated Feature", "issuetype": {"name": "Story", "subtask": False}, "status": {"name": "To Do"}},
+                }
+                self.assertEqual(run_cli(repo, "sync-story", "--key", "PRV-1", "--title", "Provenance Gated Feature", "--ac", "AC-001:Works", "--status", "approved").returncode, 0)
+                self.assertEqual(run_cli(repo, "complete-task", "--key", "PRV-1", "--task-id", "TASK-001", "--commit", head1_short, "--files", "app.py", "--test-result", "pytest ok").returncode, 0)
+                self.assertEqual(run_cli(repo, "handoff", "--key", "PRV-1", "--review-status", "approved", "--commit", head1_short).returncode, 0)
+                self.assertEqual(run_cli(repo, "record-qa", "--key", "PRV-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Works").returncode, 0)
+                self.assertEqual(run_cli(repo, "record-qa", "--key", "PRV-1", "--mode", "verify", "--commit", head1_short, "--all-pass").returncode, 0)
+
+                def _assert_close_blocked(expected_status, extra_args=()):
+                    MockJiraHandler.requests_log.clear()
+                    res = run_cli(repo, "close-story", "--key", "PRV-1", "--commit", head1_short, *extra_args)
+                    self.assertNotEqual(res.returncode, 0, f"expected block for {expected_status}, got stdout={res.stdout}")
+                    err = json.loads(res.stderr)
+                    self.assertTrue(err["blocked"])
+                    self.assertEqual(err["provenance_audit_gate"]["status"], expected_status)
+                    # ZERO Jira comment / transition mutations and active file MUST remain intact!
+                    mut_reqs = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and (r[1].endswith("/comment") or r[1].endswith("/transitions"))]
+                    self.assertEqual(mut_reqs, [], f"unexpected Jira mutations on blocked close: {mut_reqs}")
+                    self.assertTrue((repo / ".ai-workflow" / "active" / "PRV-1.json").exists())
+
+                # 3a. status blocks release readiness until decision.json PASS exists
+                st_missing = json.loads(run_cli(repo, "status", "--key", "PRV-1").stdout)
+                self.assertEqual(st_missing["recommended_skill"], "team-provenance-audit")
+                self.assertTrue(st_missing["release_blocked_by_provenance_audit"])
+                self.assertFalse(st_missing["can_auto_chain_next_station"])
+                self.assertTrue(st_missing["requires_user_confirmation_for_next_station"])
+                self.assertEqual(st_missing["provenance_audit"]["status"], "missing")
+
+                # 3b. Block on missing decision.json
+                _assert_close_blocked("missing")
+
+                # 3c. Block on malformed JSON
+                audit_dir.mkdir(parents=True, exist_ok=True)
+                dec_path = audit_dir / "decision.json"
+                dec_path.write_text("{not valid json", encoding="utf-8")
+                _assert_close_blocked("invalid_json")
+
+                # 3d. Block on symlinked decision.json
+                real_dec = base / "real-decision.json"
+                checks_all = [{"id": f"{i:02}", "status": "Completed", "method": "verified"} for i in range(1, 15)]
+                valid_doc = {
+                    "verdict": "PASS",
+                    "confirmed_failures": [],
+                    "unresolved_reasons": [],
+                    "checked_controls": [f"{i:02}" for i in range(1, 15)],
+                    "required_controls": [f"{i:02}" for i in range(1, 15)],
+                    "audited_commit": head1,
+                    "generated_utc": "2026-11-26T00:00:00+00:00",
+                }
+                real_dec.write_text(json.dumps(valid_doc), encoding="utf-8")
+                dec_path.unlink()
+                dec_path.symlink_to(real_dec)
+                _assert_close_blocked("symlink_rejected")
+                dec_path.unlink()
+
+                # 3e. Block on symlinked parent directory via --provenance-decision
+                real_dir = base / "real-dir"
+                real_dir.mkdir()
+                (real_dir / "decision.json").write_text(json.dumps(valid_doc), encoding="utf-8")
+                sym_dir = base / "sym-dir"
+                sym_dir.symlink_to(real_dir)
+                _assert_close_blocked("symlink_rejected", extra_args=("--provenance-decision", str(sym_dir / "decision.json")))
+
+                # 3f. Block on verdict == FAIL
+                dec_path.write_text(json.dumps({**valid_doc, "verdict": "FAIL", "confirmed_failures": ["FIND-01: bad"]}), encoding="utf-8")
+                _assert_close_blocked("failed")
+
+                # 3g. Block on verdict == REVIEW REQUIRED
+                dec_path.write_text(json.dumps({**valid_doc, "verdict": "REVIEW REQUIRED", "unresolved_reasons": ["check 05 incomplete"]}), encoding="utf-8")
+                _assert_close_blocked("review_required")
+
+                # 3h. Block on tampered PASS with non-empty confirmed_failures
+                dec_path.write_text(json.dumps({**valid_doc, "confirmed_failures": ["tampered"]}), encoding="utf-8")
+                _assert_close_blocked("failed")
+
+                # 3i. Block on tampered PASS with non-empty unresolved_reasons
+                dec_path.write_text(json.dumps({**valid_doc, "unresolved_reasons": ["tampered"]}), encoding="utf-8")
+                _assert_close_blocked("review_required")
+
+                # 3j. Block on tampered PASS with missing required controls
+                dec_path.write_text(json.dumps({**valid_doc, "checked_controls": ["01", "02"]}), encoding="utf-8")
+                _assert_close_blocked("incomplete_controls")
+
+                # 4. Real end-to-end provenance scan + commit-bound gate.py --repo
+                dec_path.unlink()
+                scan_res = subprocess.run(
+                    [sys.executable, str(pa_scripts / "static_scan.py"), "--repo", str(repo), "--out", str(audit_dir)],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertGreaterEqual(json.loads(scan_res.stdout)["files"], 1)
+                cov_file = audit_dir / "coverage.json"
+                find_file = audit_dir / "findings.json"
+                cov_file.write_text(json.dumps({"checks": checks_all, "scan_errors": 0, "scan_skipped": 0}), encoding="utf-8")
+                find_file.write_text("[]", encoding="utf-8")
+                gate_res = subprocess.run(
+                    [
+                        sys.executable, str(pa_scripts / "gate.py"),
+                        "--repo", str(repo),
+                        "--coverage", str(cov_file),
+                        "--findings", str(find_file),
+                        "--policy", str(pa_policy),
+                        "--out", str(dec_path),
+                    ],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertEqual(json.loads(gate_res.stdout)["verdict"], "PASS")
+                self.assertEqual(json.loads(dec_path.read_text(encoding="utf-8"))["audited_commit"], head1)
+
+                # Now status unblocks team-release!
+                st_ready = json.loads(run_cli(repo, "status", "--key", "PRV-1").stdout)
+                self.assertEqual(st_ready["recommended_skill"], "team-release")
+                self.assertEqual(st_ready["provenance_audit"]["status"], "pass")
+
+                # 5. New commit makes decision.json STALE -> MUST BLOCK with stale_commit!
+                (repo / "app.py").write_text("print('hello v2')\n", encoding="utf-8")
+                subprocess.run(["git", "add", "app.py"], cwd=str(repo), check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", "second commit"], cwd=str(repo), check=True, capture_output=True)
+                head2 = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=str(repo), check=True, capture_output=True, text=True
+                ).stdout.strip().lower()
+                self.assertNotEqual(head1, head2)
+                _assert_close_blocked("stale_commit")
+                st_stale = json.loads(run_cli(repo, "status", "--key", "PRV-1").stdout)
+                self.assertEqual(st_stale["recommended_skill"], "team-provenance-audit")
+                self.assertEqual(st_stale["provenance_audit"]["status"], "stale_commit")
+
+                # Re-run gate.py on new HEAD -> fresh PASS unblocks close-story!
+                subprocess.run(
+                    [
+                        sys.executable, str(pa_scripts / "gate.py"),
+                        "--repo", str(repo),
+                        "--coverage", str(cov_file),
+                        "--findings", str(find_file),
+                        "--policy", str(pa_policy),
+                        "--out", str(dec_path),
+                    ],
+                    capture_output=True, text=True, check=True,
+                )
+
+                MockJiraHandler.requests_log.clear()
+                ok_close = run_cli(repo, "close-story", "--key", "PRV-1", "--commit", head1_short, "--version", "v1.7.0")
+                self.assertEqual(ok_close.returncode, 0, ok_close.stderr)
+                ok_out = json.loads(ok_close.stdout)
+                self.assertTrue(ok_out["ok"])
+                self.assertEqual(ok_out["provenance_audit"]["verdict"], "PASS")
+                self.assertEqual(ok_out["provenance_audit"]["audited_commit"], head2)
+                self.assertEqual(ok_out["provenance_audit"]["checked_controls_count"], 14)
+
+                # Verify Jira closing ADF comment is valid AND contains zero local paths or secrets!
+                close_comments = [r for r in MockJiraHandler.requests_log if r[0] == "POST" and r[1].endswith("/comment")]
+                self.assertEqual(len(close_comments), 1)
+                adf_body = close_comments[0][2]["body"]
+                self._assert_valid_adf_invariants(adf_body)
+                adf_text = json.dumps(adf_body, ensure_ascii=False)
+                self.assertIn("team-provenance-audit", adf_text)
+                self.assertIn("PASS", adf_text)
+                self.assertIn(head2, adf_text)
+                self.assertNotIn(str(audit_dir), adf_text)
+                self.assertNotIn(str(base), adf_text)
+                self.assertNotIn("tok-alice", adf_text)
+
+                # 6. Advisory mode warns without blocking close-story
+                adv_repo = base / "adv-repo"
+                adv_repo.mkdir()
+                self.assertEqual(run_cli(adv_repo, "init", "--project-key", "ADV", "--provenance-audit-mode", "advisory").returncode, 0)
+                self.assertEqual(run_cli(adv_repo, "sync-story", "--key", "ADV-1", "--title", "Adv", "--ac", "AC-001:Ok", "--status", "approved").returncode, 0)
+                self.assertEqual(run_cli(adv_repo, "complete-task", "--key", "ADV-1", "--task-id", "TASK-001", "--commit", "a1", "--files", "a.py", "--test-result", "ok").returncode, 0)
+                self.assertEqual(run_cli(adv_repo, "handoff", "--key", "ADV-1", "--review-status", "approved", "--commit", "a1").returncode, 0)
+                self.assertEqual(run_cli(adv_repo, "record-qa", "--key", "ADV-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Ok").returncode, 0)
+                self.assertEqual(run_cli(adv_repo, "record-qa", "--key", "ADV-1", "--mode", "verify", "--commit", "a1", "--all-pass").returncode, 0)
+                adv_close = run_cli(adv_repo, "close-story", "--key", "ADV-1", "--commit", "a1")
+                self.assertEqual(adv_close.returncode, 0, adv_close.stderr)
+                adv_out = json.loads(adv_close.stdout)
+                self.assertTrue(adv_out["ok"])
+                self.assertEqual(adv_out["provenance_audit_warning"]["status"], "missing")
+                self.assertEqual(adv_out["provenance_audit_warning"]["mode"], "advisory")
+
+                # 7. Off mode skips gate completely
+                off_repo = base / "off-repo"
+                off_repo.mkdir()
+                self.assertEqual(run_cli(off_repo, "init", "--project-key", "OFF", "--provenance-audit-mode", "off").returncode, 0)
+                self.assertEqual(run_cli(off_repo, "sync-story", "--key", "OFF-1", "--title", "Off", "--ac", "AC-001:Ok", "--status", "approved").returncode, 0)
+                self.assertEqual(run_cli(off_repo, "complete-task", "--key", "OFF-1", "--task-id", "TASK-001", "--commit", "o1", "--files", "o.py", "--test-result", "ok").returncode, 0)
+                self.assertEqual(run_cli(off_repo, "handoff", "--key", "OFF-1", "--review-status", "approved", "--commit", "o1").returncode, 0)
+                self.assertEqual(run_cli(off_repo, "record-qa", "--key", "OFF-1", "--mode", "plan", "--qa-backend", "jira-comment", "--tc", "TC-001:AC-001:automated:Ok").returncode, 0)
+                self.assertEqual(run_cli(off_repo, "record-qa", "--key", "OFF-1", "--mode", "verify", "--commit", "o1", "--all-pass").returncode, 0)
+                off_close = run_cli(off_repo, "close-story", "--key", "OFF-1", "--commit", "o1")
+                self.assertEqual(off_close.returncode, 0, off_close.stderr)
+                off_out = json.loads(off_close.stdout)
+                self.assertTrue(off_out["ok"])
+                self.assertNotIn("provenance_audit", off_out)
+                self.assertNotIn("provenance_audit_warning", off_out)
         finally:
             jira_srv.shutdown()
             jira_srv.server_close()

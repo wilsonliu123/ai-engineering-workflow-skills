@@ -23,6 +23,7 @@ owner_role: Tech Lead
 ## 3. Security & Data Hygiene (安全與資料衛生)
 - 嚴禁在程式碼、設定檔（含 `.ai-workflow/team-config.json`）、日誌或版本控制中寫入 API Token、密碼或私鑰。
 - 所有外部輸入與跨邊界介面必須執行結構驗證、權限檢查（AuthN/AuthZ）與輸出跳脫處理。
+- **軟體來源與供應鏈合規門禁（`team-provenance-audit`）**：預設於 `.ai-workflow/team-config.json` 啟用強制門禁（`compliance_gates.provenance_audit.enabled: true`, `mode: "blocking"`）。專案導入時須先建立基線掃描，Code Review 階段凡涉及依賴/鎖檔/外部套件/二進位變更須增量複核，且 `team-release`（`jira_sync.py close-story`）結案前必須具備與當前 `HEAD` 綁定且 `verdict == "PASS"` 的外部目錄 `decision.json`（報告與狀態庫嚴禁寫入專案 Repo 內）。
 
 ## 4. Git Commit & PR Standards (Git 提交與 PR 規範)
 - 本節為專案 Git Commit 格式、語言、前綴/Emoji 與 Pull Request 慣例的唯一真相來源（Single Source of Truth；若尚未收斂，fallback 參照專案根目錄 `AGENTS.md`）。工作流技能不硬編碼單一格式，請在此維護專案專屬的 Commit 模板與 PR 規則。

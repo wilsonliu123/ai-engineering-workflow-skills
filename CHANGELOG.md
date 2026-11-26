@@ -2,6 +2,22 @@
 
 > **Language**: **English** | [繁體中文](./CHANGELOG.zh-TW.md)
 
+## v1.7.0 — 2026-11-26 — Built-in Mandatory Provenance Audit Gate (team-provenance-audit)
+
+- **Bundled 9th Standard Skill (`skills/team-provenance-audit/`):**
+  - Integrated standalone read-only `team-provenance-audit` (`check_env.py`, checkpointed SQLite `static_scan.py`, allowlisted official-registry `fetch_reference.py`, `fingerprint.py`, commit-bound `gate.py`) without bundling `jira_sync.py`.
+  - Hardened `fetch_reference.py` to 100% pure Python 3 stdlib with **0 Semgrep findings** and **0 `# nosemgrep`**: replaced `urllib.request.urlopen` with `_VerifiedTLSConnection(http.client.HTTPConnection)` + `_http_request` (`CERT_REQUIRED`, `check_hostname=True`, `TLSv1.2+`, rejecting weakened custom `ssl.SSLContext` including `ssl.TLSVersion.MINIMUM_SUPPORTED`, ALPN `http/1.1`, CR/LF method/header guards, IPv6 port fidelity, leak-free socket teardown, and allowlist + HTTPS-downgrade enforcement on both initial URL and every redirect hop).
+  - Enhanced `gate.py` with backward-compatible `--repo <path>` and `--commit <sha>` flags to bind `audited_commit` (strict hex SHA / Git `HEAD`), `audited_branch`, and `repo_name` in `decision.json`, and updated `static_scan.py` self-exclusion to recognize `team-provenance-audit` cleanly.
+- **Mandatory Default-On Pre-Close Provenance Gate (`jira_sync.py` across all 8 workflow skills):**
+  - Added `compliance_gates.provenance_audit` (`{"enabled": true, "mode": "blocking", "policy_path": "", "output_dir": ""}`) to `team-config-template.json`, `DEFAULT_TEAM_CONFIG`, and `_sanitize_compliance_gates()` (strict boolean parsing, control-char/NUL rejection, and mandatory default-on enforcement even for upgraded legacy `team-config.json` files).
+  - Added out-of-repo default audit directory resolver `get_provenance_audit_dir(repo_root, config)` (`config.output_dir` > `AI_WORKFLOW_PROVENANCE_DIR` > `$XDG_CONFIG_HOME/ai-workflow/provenance-audit/<repo-id>` > `~/.config/ai-workflow/provenance-audit/<repo-id>`) using canonical Git common-dir identity and app-owned/leaf symlink refusal.
+  - Added `--provenance-audit-mode {blocking,advisory,off}` and `--provenance-output-dir <path>` on `init`, exposing `compliance_gates` and `provenance_audit_dir` in `init` / `init --inspect`.
+  - Added hard blocking pre-close verification (`_evaluate_provenance_audit_gate`) and `--provenance-decision <path>` on `close-story`: rejects symlinks, missing/malformed JSON, non-`PASS` verdicts, non-empty failures/unresolved reasons, incomplete `required_controls`, and stale `audited_commit != HEAD` (exact 40-char lowercase match) **before** any Jira comment, transition, or active JSON cleanup; warns in `advisory` mode; appends a path-free, secret-free compliance summary line in the Jira closing ADF comment on `PASS`.
+  - Integrated `provenance_audit` status into `status` / `evaluate_story_next_step`: blocks Station 4 release readiness when `blocking` mode is not `PASS`, routing to `$team-provenance-audit` with `can_auto_chain_next_station: false`.
+- **Workflow Skills, Training Manuals & Verification:**
+  - Updated `team-init` (baseline scan & `engineering-standards.md` §3 rule), `team-review` (mandatory incremental check on dependency/lockfile/SDK/binary diffs), `team-release` (6th release gate), `team-next-step` (Priority 9b), all 8 copies of `common-workflow-governance.md`, `tools/check_shared.sh`, bilingual `README`/`CHANGELOG`, `docs/training-manual.{md,html,pdf,docx}`, and the expanded **19-slide** `docs/training-manual.pptx`.
+  - Added `test_42_team_provenance_audit_mandatory_gate` (**42/42** workflow tests in `tools/test_workflow.py`) plus **10/10** unit tests in `skills/team-provenance-audit/scripts/tests/test_skill.py`, with **0 Semgrep findings** across all 8 `jira_sync.py` copies and all 5 `team-provenance-audit` scripts.
+
 ## v1.6.1 — 2026-11-25 — Security Hardening, SAST Zero-Findings & Out-of-Repo Credentials
 
 - **Semgrep SAST Zero-Findings Remediation (Issue #21 / PR #22, Issue #23 / PR #24):**

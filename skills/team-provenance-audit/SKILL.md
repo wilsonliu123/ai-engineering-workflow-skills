@@ -1,0 +1,55 @@
+---
+name: team-provenance-audit
+description: Audit an authorized local software repository for China-mainland enterprise-developed, owned, or controlled software components and supply-chain connections. Use for repository compliance assessments, open-source origin checks, Chinese text and branding clues, direct/transitive dependency reviews, obfuscated JavaScript, JAR/WAR and binary provenance, SBOM generation, official-registry hash corroboration, and evidence-backed Markdown reports. Provides toolchain preflight checks, resumable static scanning, local and official-registry fingerprint comparison, and a conservative commit-bound compliance gate integrated with team-init, team-review, team-next-step, and team-release. Do not infer enterprise origin from personal ethnicity, names, language, or pinyin alone.
+---
+
+# Software Provenance Audit
+
+Perform an **evidence-led, read-only** repository audit. The user-supplied baseline is exclusion of software components developed, owned, or actually controlled by a mainland-China enterprise. Keep these three policy bases distinct, and allow the user/organization to adjust them in `assets/policy.example.json`. Do **not** equate Chinese-language content, pinyin, employee identity, or a China-hosted mirror with prohibited software authorship.
+
+## Read only what is needed
+
+- Read [references/checks.md](references/checks.md) for the 14-check control catalog and source/manifest coverage.
+- Read [references/reverse-engineering.md](references/reverse-engineering.md) before analyzing minified/obfuscated JS, JAR/WAR, WASM, native binaries, or model weights.
+- Read [references/provenance-and-fingerprints.md](references/provenance-and-fingerprints.md) to verify original origin, fork/repackage/shaded components, and interpret local + official-registry fingerprint matches.
+- Read [references/evidence-and-policy.md](references/evidence-and-policy.md) before making any association or policy determination.
+- Use [references/report-template.md](references/report-template.md) for deliverables. Input examples live in [assets/](assets/).
+
+## Inputs, safety, outputs
+
+**Input:** Authorized local repository/folder path (default current working directory), optional Git revision, organizational policy file, optional approved local reference corpus (or authorization to build one from official public registries via `scripts/fetch_reference.py`). The normal workflow does not require connectors. Never upload private source, target binaries, or proprietary paths to external services; official-registry lookup may transmit **public package coordinates only** when authorized.
+
+**Outputs (outside source tree by default):** `CHINA_RELATED_SOFTWARE_AUDIT_REPORT.md`, `env_check.json`, `inventory.json`, `candidates.jsonl`, `sbom.cdx.json` (when `syft`/`trivy` available), `corpus_manifest.json` & `fingerprint_*.json`, `coverage.json`, `findings.json`, `decision.json`, `analysis_state.sqlite`. Report in Traditional Chinese with file/line/column or archive member/byte-offset, confidence and sources. Default results directory: a dedicated out-of-repo directory (within `ai-engineering-workflow-skills`, defaults to `~/.config/ai-workflow/provenance-audit/<repo-id>/` or `compliance_gates.provenance_audit.output_dir` — **never** inside the target repository).
+
+**Hard safety constraints:** Analyze only user-authorized material. Never run target binaries/scripts, silently install tools without user consent, execute project build hooks, evaluate JS `eval`/`Function`, or run untrusted archive post-extraction code. Do not modify originals; skip symlinks escaping the root; do not expose secrets in logs or excerpts. Never upload whole target files externally. Use bounded archive inspection; avoid path traversal and decompression bombs. Offline or missing tooling must be disclosed, never disguised as completion.
+
+## Run this workflow
+
+1. **Preflight & toolchain doctor.** Confirm scope and policy; record canonical path, branch/commit if Git, OS, timestamp, permissions, and network availability. Run `python3 scripts/check_env.py --out /path/to/audit-output/env_check.json`. It verifies real execution of `jar`/`javap` (catching macOS stub binaries), detects Homebrew keg-only paths (`openjdk`, `binutils`/`readelf`), and checks `cfr`, `jadx`, `syft`, `trivy`.
+   - If `missing_or_unusable_deep_tools` is non-empty, present `recommended_install_command` and ask the user whether to authorize installing them (e.g., `python3 scripts/check_env.py --install --out ...` on macOS Homebrew) or proceed with disclosed L2 limitations.
+   - Always prepend `extra_bin_paths` from `env_check.json` to `PATH` when invoking `jar`, `javap`, `cfr-decompiler`, `jadx`, or `readelf`.
+2. **Inventory and checkpointed static scan.** Run `python3 scripts/static_scan.py --repo /path/to/repo --out /path/to/audit-output`. It inventories files, hashes inspected content, auto-excludes the skill's own directory if located inside `--repo` (recording it in `pruned_directories`), records precise candidate locations, and checkpoints state in SQLite. Re-runs skip unchanged files and rescan changed ones. Use `--max-text-bytes` or `--exclude` when needed; larger files appear as explicitly skipped, not silently ignored. Scanner matches are **leads only**, never compliance findings.
+3. **Coverage planning, SBOM & prioritized review.** Walk [references/checks.md](references/checks.md): manifests/lockfiles/CI/containers/config and live runtime dependencies first; then bundled/shaded artifacts and external endpoints; then content, logos, history. When `syft` or `trivy` is available, generate a read-only SBOM outside the repo (`syft dir:/path/to/repo -o cyclonedx-json=/path/to/audit-output/sbom.cdx.json` or `trivy fs --format cyclonedx ...`) without running install/build hooks. Enumerate all material components, including unknown ones and duplicate file locations.
+4. **Targeted static reverse engineering.** Use [references/reverse-engineering.md](references/reverse-engineering.md). For obfuscated JS inspect source maps, bundle module boundaries, string decoding and AST (no evaluation); for JAR/WAR inspect `META-INF`, Maven coordinates, `BOOT-INF/lib`, `WEB-INF/lib`, shaded classes, and run `javap -p -c` / `cfr-decompiler` / `jadx` on high-risk or unknown classes (storing decompiled output outside repo); for native ELF binaries run `readelf -d -s -W` + `strings -t x` + Go `buildinf` inspection. Record original SHA-256 and tool versions; never equate decompiled output with original source.
+5. **Official-registry & local fingerprint corroboration.** To corroborate public open-source releases or detect shaded/repackaged JARs (e.g., vendor-repacked AWS/OSS SDKs):
+   - When authorized and online, build a verified local reference corpus **outside** the target repo using public coordinates only: `python3 scripts/fetch_reference.py --from-jar /path/to/target.jar --mode hash-only|download --corpus-dir /path/to/audit-output/reference-corpus` (or `--spec maven:g:a:v`, `npm:name@v`, `pypi:name==v`). Only allowlisted official registries (`repo1.maven.org`, `registry.npmjs.org`, `pypi.org`) are queried; no target bytes are ever uploaded.
+   - Run `python3 scripts/fingerprint.py --target /path/to/artifact --corpus-manifest /path/to/audit-output/reference-corpus/corpus_manifest.json --out /path/to/audit-output/fingerprint.json` (or `--reference /path/to/local-known-file`). Exact registry-verified hashes and exact archive member hashes are strong identity evidence; fuzzy token overlap is only a lead.
+6. **Verify provenance and record findings.** Follow up on upstream repo, immutable release/hash, publisher, original developer, ownership/control timeline, license, project transfer, fork/shade history, and actual runtime use. Write `findings.json` in the schema described in [references/evidence-and-policy.md](references/evidence-and-policy.md). Keep non-component mirrors/services (`service_or_mirror`) separate from component-policy violations.
+7. **Coverage and commit-bound gate.** Write `coverage.json` covering all **14** checks, exclusions, tool limitations, unverified critical roots, and incomplete provenance. Run `python3 scripts/gate.py --repo /path/to/repo --coverage /path/to/coverage.json --findings /path/to/findings.json --policy assets/policy.example.json --out /path/to/decision.json` (or pass `--commit <sha>` explicitly). Binding `--repo` records `audited_commit` (`HEAD`), `audited_branch`, and `repo_name` in `decision.json` so `team-release` (`jira_sync.py close-story`) can verify the gate matches the exact release `HEAD`. Gate priority: `FAIL` for independently substantiated in-scope prohibited component, otherwise `REVIEW REQUIRED` when any required check or critical provenance is unresolved, otherwise `PASS` with explicit limited scope. **Never invent coverage statuses to obtain PASS.**
+8. **Report and verify.** Write `CHINA_RELATED_SOFTWARE_AUDIT_REPORT.md` using [references/report-template.md](references/report-template.md). Include all 14 checks, full component inventory (or linked machine-readable annex), exact locators, tool versions from `env_check.json`, fingerprint/corpus verification results, blind spots, and remediation plan. Validate paths/lines/offsets against raw output and verify zero credentials leaked.
+
+## Three mandatory reliability features
+
+**A. Checkpoint & resume:** `static_scan.py` writes an SQLite ledger keyed by relative path + SHA-256 + scanner revision. Re-runs skip unchanged files and invalidate changed ones. Report scanned/skipped/error/reused counts; record manual OSINT/decompilation separately.
+
+**B. Source fingerprinting & verified reference corpus:** Combine direct metadata + hashes + bytecode/ELF signatures + verified public-registry references (`fetch_reference.py` → `fingerprint.py`). Fuzzy/text/name matches alone cannot prove corporate attribution. Report confidence, reference origin status, source URL, retrieval date, and unmatched artifacts.
+
+**C. Evidence-based compliance gate:** Classify `A Confirmed`, `B Suspected`, `C Unknown`, `D No identified association`; score policy separately. Verified in-scope component violation → `FAIL`; B/C, incomplete required checks, unknown critical components, or policy ambiguity → `REVIEW REQUIRED`. `PASS` means no identified violation in a sufficiently audited scope, never a guarantee.
+
+## Acceptance checks
+
+- Toolchain status verified via `check_env.py`; missing tools either installed with user consent or explicitly disclosed as gaps.
+- All 14 checks evaluated with justified partial/not-applicable statuses.
+- Direct + transitive + bundled/shaded + build-time + runtime components considered (with SBOM when `syft`/`trivy` available); corporate origin is never inferred from language or personal name.
+- Every material finding has exact locators, SHA-256 for binaries/archives, and independently reviewable evidence.
+- Official-registry reference checks never upload private files; gate status matches evidence and coverage.

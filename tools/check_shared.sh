@@ -22,4 +22,28 @@ for f in scripts/jira_sync.py references/common-workflow-governance.md; do
     echo "OK: $f ($c identical copies)"
   fi
 done
+
+# Verify standalone read-only 9th skill: team-provenance-audit (never bundles jira_sync.py)
+PA_DIR="team-provenance-audit"
+if [ ! -f "$PA_DIR/SKILL.md" ]; then
+  echo "MISSING: $PA_DIR/SKILL.md"
+  rc=1
+fi
+if [ -f "$PA_DIR/scripts/jira_sync.py" ]; then
+  echo "UNEXPECTED: $PA_DIR/scripts/jira_sync.py must not be bundled in standalone audit skill"
+  rc=1
+fi
+for s in check_env.py static_scan.py fetch_reference.py fingerprint.py gate.py; do
+  if [ ! -f "$PA_DIR/scripts/$s" ]; then
+    echo "MISSING: $PA_DIR/scripts/$s"
+    rc=1
+  fi
+done
+if find "$PA_DIR" -name '__pycache__' -o -name '*.pyc' | grep -q .; then
+  echo "DIRTY: $PA_DIR contains __pycache__ or *.pyc"
+  rc=1
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "OK: $PA_DIR (standalone 9th skill, 5 scripts verified, clean)"
+fi
 exit $rc

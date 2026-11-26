@@ -181,6 +181,14 @@ DEFAULT_TEAM_CONFIG = {
         "environments": {},
         "jira_deployment_sync": False,
     },
+    "compliance_gates": {
+        "provenance_audit": {
+            "enabled": True,
+            "mode": "blocking",
+            "policy_path": "",
+            "output_dir": "",
+        }
+    },
     "roles": {
         "pm": {"name": "PM Owner", "email": "", "jira_account_id": ""},
         "tech_lead": {"name": "Tech Lead", "email": "", "jira_account_id": ""},
@@ -237,6 +245,7 @@ owner_role: Tech Lead
 ## 3. Security & Data Hygiene (安全與資料保護)
 - 嚴禁在程式碼、設定檔、日誌或版本控制中寫入 API Token、密碼或私鑰。
 - 所有外部輸入與跨邊界 API 必須執行格式驗證、權限檢查（AuthN/AuthZ）與輸出跳脫處理。
+- **軟體來源與供應鏈合規門禁（`team-provenance-audit`）**：預設啟用強制門禁（`compliance_gates.provenance_audit.enabled: true`, `mode: "blocking"`）。專案導入須建立基線掃描，Code Review 階段遇依賴/鎖檔/外部 SDK 或二進位變更須執行增量複核，且 `team-release`（`jira_sync.py close-story`）結案前必須具備與當前 `HEAD` 綁定且 `verdict == "PASS"` 的外部目錄 `decision.json`（報告與狀態庫嚴禁寫入 Repo 內）。
 
 ## 4. Git Commit & PR Standards (Git 提交與 PR 規範)
 - 本節為專案 Git Commit 格式、語言、前綴/Emoji 與 Pull Request 慣例的唯一真相來源（Single Source of Truth；若尚未收斂，fallback 參照專案根目錄 `AGENTS.md`）。工作流技能不硬編碼單一格式，請在此明確維護貴團隊的 Commit 模板與 PR 規範。
@@ -966,6 +975,344 @@ def _sanitize_delivery_pipeline(raw) -> dict:
         "environments": environments,
         "jira_deployment_sync": jira_deployment_sync,
     }
+
+
+VALID_PROVENANCE_AUDIT_MODES = ("blocking", "advisory", "off")
+_FULL_COMMIT_HEX_RE = re.compile(r"\A[0-9a-f]{40}\Z")
+
+
+def _sanitize_compliance_path(val) -> str:
+    """Reject control characters and NUL bytes in compliance path config fields."""
+    if not isinstance(val, str):
+        return ""
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in val):
+        return ""
+    return val.strip()
+
+
+def _sanitize_compliance_gates(raw) -> dict:
+    """Normalize compliance_gates config block; provenance_audit defaults to enabled=True, mode='blocking'."""
+    default_pa = {
+        "enabled": True,
+        "mode": "blocking",
+        "policy_path": "",
+        "output_dir": "",
+    }
+    if not isinstance(raw, dict):
+        return {"provenance_audit": dict(default_pa)}
+    raw_pa = raw.get("provenance_audit")
+    if not isinstance(raw_pa, dict):
+        return {"provenance_audit": dict(default_pa)}
+
+    raw_mode = raw_pa.get("mode")
+    if isinstance(raw_mode, str):
+        mode = raw_mode.strip().lower()
+        if mode not in VALID_PROVENANCE_AUDIT_MODES:
+            mode = "blocking"
+    else:
+        mode = "blocking"
+
+    if "enabled" in raw_pa and raw_pa.get("enabled") is not None:
+        enabled = _parse_strict_bool(raw_pa.get("enabled"), default=True)
+    else:
+        enabled = True
+
+    if mode == "off":
+        enabled = False
+    elif not enabled:
+        mode = "off"
+
+    policy_path = _sanitize_compliance_path(raw_pa.get("policy_path"))
+    output_dir = _sanitize_compliance_path(raw_pa.get("output_dir"))
+    return {
+        "provenance_audit": {
+            "enabled": enabled,
+            "mode": mode,
+            "policy_path": policy_path,
+            "output_dir": output_dir,
+        }
+    }
+
+
+def _resolve_provenance_audit_dir_spec(repo_root: Path, config: dict = None) -> tuple:
+    """Return (audit_dir, owned_dirs) for out-of-repo provenance audit outputs without following app-owned symlinks."""
+    pa_cfg = _sanitize_compliance_gates((config or {}).get("compliance_gates"))["provenance_audit"]
+    explicit_out = pa_cfg.get("output_dir") or ""
+    if explicit_out:
+        target_dir = Path(explicit_out).expanduser()
+        return target_dir, [target_dir]
+
+    canonical_id, safe_slug = _resolve_repo_identity(repo_root)
+    digest = hashlib.sha256(canonical_id.encode("utf-8")).hexdigest()[:16]
+    repo_id = f"{safe_slug}-{digest}"
+    if "/" in repo_id or "\\" in repo_id or ".." in repo_id:
+        raise ValueError("Invalid derived provenance audit repo directory name.")
+
+    raw_override = os.environ.get("AI_WORKFLOW_PROVENANCE_DIR")
+    if raw_override is not None and raw_override != "":
+        cleaned = _validate_env_dir_value(raw_override, "AI_WORKFLOW_PROVENANCE_DIR")
+        if cleaned:
+            base = Path(cleaned).expanduser()
+            target_dir = base / repo_id
+            return target_dir, [base, target_dir]
+
+    raw_xdg = os.environ.get("XDG_CONFIG_HOME")
+    if raw_xdg is not None and raw_xdg != "":
+        cleaned_xdg = _validate_env_dir_value(raw_xdg, "XDG_CONFIG_HOME")
+        if cleaned_xdg and Path(cleaned_xdg).is_absolute():
+            app_dir = Path(cleaned_xdg) / "ai-workflow"
+            prov_root = app_dir / "provenance-audit"
+            target_dir = prov_root / repo_id
+            return target_dir, [app_dir, prov_root, target_dir]
+
+    app_dir = Path.home() / ".config" / "ai-workflow"
+    prov_root = app_dir / "provenance-audit"
+    target_dir = prov_root / repo_id
+    return target_dir, [app_dir, prov_root, target_dir]
+
+
+def get_provenance_audit_dir(repo_root: Path, config: dict = None) -> Path:
+    """Resolve deterministic out-of-repo provenance audit output directory for repo_root."""
+    target_dir, owned_dirs = _resolve_provenance_audit_dir_spec(repo_root, config=config)
+    if _find_symlink_in_owned_paths(owned_dirs) is not None:
+        return target_dir
+    return target_dir
+
+
+def _detect_git_head_full_commit(repo_root: Path) -> str:
+    """Resolve full 40-char lowercase Git HEAD commit SHA if repo_root is a Git repo with HEAD, else ''."""
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            sha = (res.stdout or "").strip().lower()
+            if _FULL_COMMIT_HEX_RE.match(sha):
+                return sha
+    except Exception:
+        pass
+    return ""
+
+
+def _evaluate_provenance_audit_gate(
+    repo_root: Path,
+    config: dict,
+    decision_path_override: str = None,
+) -> dict:
+    """Evaluate mandatory out-of-repo provenance audit decision.json with strict symlink & HEAD commit binding."""
+    pa_cfg = _sanitize_compliance_gates((config or {}).get("compliance_gates"))["provenance_audit"]
+    enabled = pa_cfg["enabled"]
+    mode = pa_cfg["mode"]
+    head_sha = _detect_git_head_full_commit(repo_root)
+
+    audit_dir, owned_dirs = _resolve_provenance_audit_dir_spec(repo_root, config=config)
+    guidance = (
+        "Run `$team-provenance-audit` (incremental `static_scan.py` + "
+        "`gate.py --repo . --out <out-of-repo>/decision.json`) until `verdict == PASS` "
+        "bound to current HEAD before running `close-story`."
+    )
+
+    result = {
+        "enabled": enabled,
+        "mode": mode,
+        "status": "disabled",
+        "passed": True,
+        "blocking": False,
+        "verdict": None,
+        "audited_commit": None,
+        "head_commit": head_sha or None,
+        "checked_controls_count": 0,
+        "required_controls_count": 0,
+        "generated_utc": None,
+        "reason": "",
+        "guidance": "",
+    }
+
+    if not enabled or mode == "off":
+        result["reason"] = "Provenance audit gate is disabled (mode=off)."
+        return result
+
+    is_blocking = mode == "blocking"
+    if decision_path_override is not None and str(decision_path_override).strip():
+        raw_override = str(decision_path_override)
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw_override):
+            result.update({
+                "status": "invalid_json",
+                "passed": False,
+                "blocking": is_blocking,
+                "reason": "Provenance decision path contains invalid control characters.",
+                "guidance": guidance,
+            })
+            return result
+        decision_path = Path(raw_override.strip()).expanduser()
+        parent_dir = decision_path.parent
+        check_dirs = [parent_dir] if str(parent_dir) not in ("/tmp", "/var", "/etc", "/") else []
+    else:
+        decision_path = audit_dir / "decision.json"
+        check_dirs = owned_dirs
+
+    # 1. Refuse symlinks on app-owned parent directories or leaf decision.json
+    if _find_symlink_in_owned_paths(check_dirs, leaf_file=decision_path) is not None:
+        result.update({
+            "status": "symlink_rejected",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Refusing to read provenance decision.json through a symlink.",
+            "guidance": guidance,
+        })
+        return result
+
+    # 2. Must exist as regular file and parse as JSON dict
+    if not decision_path.is_file():
+        result.update({
+            "status": "missing",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Provenance audit decision.json is missing.",
+            "guidance": guidance,
+        })
+        return result
+
+    try:
+        doc = json.loads(decision_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        result.update({
+            "status": "invalid_json",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Provenance audit decision.json could not be parsed as valid JSON.",
+            "guidance": guidance,
+        })
+        return result
+
+    if not isinstance(doc, dict):
+        result.update({
+            "status": "invalid_json",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Provenance audit decision.json root must be a JSON object.",
+            "guidance": guidance,
+        })
+        return result
+
+    verdict = doc.get("verdict")
+    generated_utc = doc.get("generated_utc") if isinstance(doc.get("generated_utc"), str) else None
+    audited_commit = doc.get("audited_commit") if isinstance(doc.get("audited_commit"), str) else None
+    required_controls = doc.get("required_controls")
+    checked_controls = doc.get("checked_controls")
+    result["verdict"] = verdict if isinstance(verdict, str) else None
+    result["generated_utc"] = generated_utc
+    result["audited_commit"] = audited_commit
+    if isinstance(required_controls, list):
+        result["required_controls_count"] = len(required_controls)
+    if isinstance(checked_controls, list):
+        result["checked_controls_count"] = len({c for c in checked_controls if isinstance(c, str) and c.strip()})
+
+    # 3. Strict verdict validation
+    if verdict == "FAIL":
+        result.update({
+            "status": "failed",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Provenance audit verdict is FAIL (confirmed prohibited component violation).",
+            "guidance": guidance,
+        })
+        return result
+    if verdict == "REVIEW REQUIRED":
+        result.update({
+            "status": "review_required",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Provenance audit verdict is REVIEW REQUIRED (unresolved checks or findings remain).",
+            "guidance": guidance,
+        })
+        return result
+    if verdict != "PASS":
+        result.update({
+            "status": "invalid_json",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": f"Provenance audit decision.json has invalid or missing verdict: {verdict!r}.",
+            "guidance": guidance,
+        })
+        return result
+
+    # 4. confirmed_failures and unresolved_reasons must both be empty lists
+    confirmed_failures = doc.get("confirmed_failures")
+    unresolved_reasons = doc.get("unresolved_reasons")
+    if not isinstance(confirmed_failures, list) or len(confirmed_failures) > 0:
+        result.update({
+            "status": "failed",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Provenance audit decision.json has non-empty or invalid confirmed_failures.",
+            "guidance": guidance,
+        })
+        return result
+    if not isinstance(unresolved_reasons, list) or len(unresolved_reasons) > 0:
+        result.update({
+            "status": "review_required",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Provenance audit decision.json has non-empty or invalid unresolved_reasons.",
+            "guidance": guidance,
+        })
+        return result
+
+    # 5. required_controls must be non-empty and all present in checked_controls
+    if (
+        not isinstance(required_controls, list)
+        or len(required_controls) == 0
+        or not all(isinstance(c, str) and c.strip() for c in required_controls)
+        or not isinstance(checked_controls, list)
+        or not all(isinstance(c, str) and c.strip() for c in checked_controls)
+    ):
+        result.update({
+            "status": "incomplete_controls",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": "Provenance audit decision.json has missing or invalid required_controls/checked_controls.",
+            "guidance": guidance,
+        })
+        return result
+    checked_set = set(checked_controls)
+    missing_controls = [c for c in required_controls if c not in checked_set]
+    if missing_controls:
+        result.update({
+            "status": "incomplete_controls",
+            "passed": False,
+            "blocking": is_blocking,
+            "reason": f"Provenance audit decision.json is missing required controls: {', '.join(missing_controls)}.",
+            "guidance": guidance,
+        })
+        return result
+
+    # 6. Strict full 40-char lowercase Git HEAD commit binding
+    if head_sha:
+        if not audited_commit or not _FULL_COMMIT_HEX_RE.match(audited_commit) or audited_commit != head_sha:
+            result.update({
+                "status": "stale_commit",
+                "passed": False,
+                "blocking": is_blocking,
+                "reason": (
+                    f"Provenance audit decision.json audited_commit ({audited_commit or 'missing'}) "
+                    f"does not match current Git HEAD ({head_sha})."
+                ),
+                "guidance": guidance,
+            })
+            return result
+
+    result.update({
+        "status": "pass",
+        "passed": True,
+        "blocking": False,
+        "reason": "Provenance audit decision.json verified PASS.",
+        "guidance": "",
+    })
+    return result
 
 
 def _extract_regex_tag_prefix(raw_pattern: str) -> str:
@@ -1755,6 +2102,7 @@ def load_team_config(repo_root: Path) -> dict:
         merged["commit_policy"] = get_effective_commit_policy(merged)
         merged["qa_handoff_mode"] = get_effective_qa_handoff_mode(merged)
         merged["delivery_pipeline"] = _sanitize_delivery_pipeline(data.get("delivery_pipeline"))
+        merged["compliance_gates"] = _sanitize_compliance_gates(data.get("compliance_gates"))
         raw_pat = merged.get("commit_message_pattern")
         merged["commit_message_pattern"] = "" if raw_pat is None else raw_pat
         raw_elf = merged.get("epic_link_field")
@@ -5190,6 +5538,8 @@ def _inspect_init_state(repo_root: Path) -> dict:
         "detected_delivery_pipeline": ci_detect["delivery_pipeline"],
         "detected_ci_checks": ci_detect["detected_ci_checks"],
         "suggested_qa_handoff_mode": ci_detect["suggested_qa_handoff_mode"],
+        "compliance_gates": cfg.get("compliance_gates", _sanitize_compliance_gates(None)),
+        "provenance_audit_dir": str(get_provenance_audit_dir(repo_root, cfg)),
         "agent_instruction": (
             "STOP and ask the user to confirm the items in `questions_to_ask` (especially project URL, Project Key, "
             "each role's person/email, and their Jira API token(s)) BEFORE executing `jira_sync.py init`."
@@ -6456,6 +6806,19 @@ def cmd_init(args) -> int:
     if getattr(args, "jira_deployment_sync", None) is not None:
         dp_cfg["jira_deployment_sync"] = _parse_strict_bool(args.jira_deployment_sync, default=False)
     cfg["delivery_pipeline"] = _sanitize_delivery_pipeline(dp_cfg)
+
+    cg_cfg = _sanitize_compliance_gates(cfg.get("compliance_gates"))
+    pa_cfg = cg_cfg["provenance_audit"]
+    if getattr(args, "provenance_audit_mode", None) is not None:
+        pa_mode = str(args.provenance_audit_mode).strip().lower()
+        pa_cfg["mode"] = pa_mode
+        pa_cfg["enabled"] = (pa_mode != "off")
+    if getattr(args, "provenance_output_dir", None) is not None:
+        raw_pod = str(args.provenance_output_dir)
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw_pod):
+            raise ValueError("Invalid control character in --provenance-output-dir.")
+        pa_cfg["output_dir"] = raw_pod.strip()
+    cfg["compliance_gates"] = _sanitize_compliance_gates(cg_cfg)
     if args.roles_json:
         custom_roles = load_json_arg(args.roles_json)
         if isinstance(custom_roles, dict):
@@ -6791,6 +7154,8 @@ def cmd_init(args) -> int:
         "commit_policy": get_effective_commit_policy(cfg),
         "qa_handoff_mode": get_effective_qa_handoff_mode(cfg),
         "delivery_pipeline": cfg["delivery_pipeline"],
+        "compliance_gates": cfg["compliance_gates"],
+        "provenance_audit_dir": str(get_provenance_audit_dir(repo_root, cfg)),
         "detected_delivery_pipeline": ci_detect["delivery_pipeline"],
         "detected_ci_checks": ci_detect["detected_ci_checks"],
         "suggested_qa_handoff_mode": ci_detect["suggested_qa_handoff_mode"],
@@ -6853,7 +7218,7 @@ def find_uncovered_story_acs(story: dict, test_cases: list) -> list:
     return [ac_id for ac_id in story_acs if ac_id.upper() not in covered]
 
 
-def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) -> dict:
+def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool, repo_root: Path = None) -> dict:
     jira_key = story.get("jira_key", "UNKNOWN")
 
     # 0. Standalone Bug explicitly closed via Bug Triage (non-code-fix resolution)
@@ -7167,8 +7532,36 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
             "done_when": done_when,
         }
 
-    # 7. All gates passed -> Station 4: Release & Close
+    # 7. All gates passed -> check mandatory pre-release provenance audit gate, then Station 4: Release & Close
     owner = resolve_story_role_person(config, story, "release_manager")
+    if repo_root is not None:
+        prov_gate = _evaluate_provenance_audit_gate(repo_root, config)
+        if prov_gate["enabled"] and prov_gate["mode"] == "blocking" and not prov_gate["passed"]:
+            return {
+                "jira_key": jira_key,
+                "current_station": "Station 4 (Pre-Release Gate): Provenance Audit Required",
+                "recommended_skill": "team-provenance-audit",
+                "recommended_mode": None,
+                "responsible_role": "release_manager",
+                "responsible_person": owner["name"],
+                "provenance_audit": prov_gate,
+                "release_blocked_by_provenance_audit": True,
+                "can_auto_chain_next_station": False,
+                "requires_user_confirmation_for_next_station": True,
+                "reason": (
+                    f"Spec, Sub-tasks, Code Review, and QA Verification are complete for {jira_key}, "
+                    f"but the mandatory pre-release provenance audit gate is not PASS "
+                    f"(status={prov_gate['status']}: {prov_gate['reason']})."
+                ),
+                "done_when": (
+                    f"Run `$team-provenance-audit` (incremental SQLite `static_scan.py` + `gate.py --repo .`) "
+                    f"to produce a fresh out-of-repo `decision.json` with `verdict == PASS` bound to current HEAD, "
+                    f"then proceed to `$team-release` (`jira_sync.py close-story --key {jira_key}`)."
+                ),
+            }
+    else:
+        prov_gate = None
+
     release_reminders = _build_release_checklist_reminders(config)
     rel_rec = {
         "jira_key": jira_key,
@@ -7181,6 +7574,8 @@ def evaluate_story_next_step(story: dict, config: dict, standards_exists: bool) 
         "done_when": f"Release summary is posted, Jira Story {jira_key} is transitioned to Done, and `.ai-workflow/active/{jira_key}.json` is removed via `jira_sync.py close-story`.",
         "release_checklist_reminders": release_reminders,
     }
+    if prov_gate is not None:
+        rel_rec["provenance_audit"] = prov_gate
     return rel_rec
 
 
@@ -7362,7 +7757,7 @@ def _cmd_status_epic(
             recommended_mode = None
             rec = {}
         else:
-            rec = evaluate_story_next_step(st, config, standards_exists)
+            rec = evaluate_story_next_step(st, config, standards_exists, repo_root=repo_root)
             current_station = rec.get("current_station") or "Unknown"
             recommended_skill = rec.get("recommended_skill")
             recommended_mode = rec.get("recommended_mode")
@@ -7559,13 +7954,14 @@ def cmd_status(args) -> int:
             return 0
 
         story = load_active_story(repo_root, jira_key, client=client)
-        rec = evaluate_story_next_step(story, config, standards_exists)
+        rec = evaluate_story_next_step(story, config, standards_exists, repo_root=repo_root)
         eff_commit_policy = get_effective_commit_policy(config)
         rec["initialized"] = True
         rec["standards_exists"] = standards_exists
         rec["story_found"] = True
         rec["commit_policy"] = eff_commit_policy
         rec["requires_commit_confirmation"] = eff_commit_policy == "confirm_before_commit"
+        rec.setdefault("provenance_audit", _evaluate_provenance_audit_gate(repo_root, config))
         if rec.get("recommended_skill") == "team-qa":
             rec["qa_identity_guardrail"] = _build_qa_identity_guardrail(repo_root, config, story=story)
         if creds_missing:
@@ -7691,13 +8087,14 @@ def cmd_status(args) -> int:
         return 0
 
     story = load_active_story(repo_root, active_files[0].stem, client=client, reconcile=True)
-    rec = evaluate_story_next_step(story, config, standards_exists)
+    rec = evaluate_story_next_step(story, config, standards_exists, repo_root=repo_root)
     eff_commit_policy = get_effective_commit_policy(config)
     rec["initialized"] = True
     rec["standards_exists"] = standards_exists
     rec["story_found"] = True
     rec["commit_policy"] = eff_commit_policy
     rec["requires_commit_confirmation"] = eff_commit_policy == "confirm_before_commit"
+    rec.setdefault("provenance_audit", _evaluate_provenance_audit_gate(repo_root, config))
     if rec.get("recommended_skill") == "team-qa":
         rec["qa_identity_guardrail"] = _build_qa_identity_guardrail(repo_root, config, story=story)
     if creds_missing:
@@ -11593,15 +11990,28 @@ def cmd_close_story(args) -> int:
     if open_bugs:
         unmet_gates.append(f"Open Bugs remain unresolved: {', '.join(open_bugs)}.")
 
+    prov_gate = _evaluate_provenance_audit_gate(
+        repo_root,
+        config,
+        decision_path_override=getattr(args, "provenance_decision", None),
+    )
+    if prov_gate["blocking"]:
+        unmet_gates.append(
+            f"Provenance audit gate ({prov_gate['status']}): {prov_gate['reason']} {prov_gate['guidance']}"
+        )
+
     if unmet_gates:
+        err_payload = {
+            "ok": False,
+            "action": "close-story",
+            "jira_key": jira_key,
+            "blocked": True,
+            "unmet_gates": unmet_gates,
+        }
+        if prov_gate["blocking"]:
+            err_payload["provenance_audit_gate"] = prov_gate
         print(
-            json.dumps({
-                "ok": False,
-                "action": "close-story",
-                "jira_key": jira_key,
-                "blocked": True,
-                "unmet_gates": unmet_gates,
-            }, ensure_ascii=False, indent=2),
+            json.dumps(err_payload, ensure_ascii=False, indent=2),
             file=sys.stderr,
         )
         return 1
@@ -11654,6 +12064,15 @@ def cmd_close_story(args) -> int:
     if rm_person.get("jira_account_id"):
         safe_assign_issue(client, jira_key, rm_person["jira_account_id"])
 
+    prov_summary = None
+    if prov_gate["enabled"] and prov_gate["passed"]:
+        prov_summary = {
+            "verdict": prov_gate["verdict"],
+            "audited_commit": prov_gate["audited_commit"] or "",
+            "checked_controls_count": prov_gate["checked_controls_count"],
+            "generated_utc": prov_gate["generated_utc"] or "",
+        }
+
     if is_zh_tw(config):
         tc_summary_zh = (
             f"{passed_tc_count} 項通過 / {len(waived_tcs)} 項受控豁免或不適用（共 {tc_count} 項）"
@@ -11670,6 +12089,15 @@ def cmd_close_story(args) -> int:
             f"（automated={qa_breakdown['automated']}, external={qa_breakdown['external']}, manual={qa_breakdown['manual']}）、0 個未結案 Bug",
             f"- **發佈說明 (Release Notes)**：{args.notes or '已完整通過四站式研發品質門檻並完成發佈結案。'}",
         ]
+        if prov_summary is not None:
+            prov_parts_zh = [f"已檢核 {prov_summary['checked_controls_count']} 項控制項"]
+            if prov_summary["audited_commit"]:
+                prov_parts_zh.append(f"commit `{prov_summary['audited_commit']}`")
+            if prov_summary["generated_utc"]:
+                prov_parts_zh.append(f"產出時間 `{prov_summary['generated_utc']}`")
+            release_lines.append(
+                f"- **軟體來源合規審查 (`team-provenance-audit`)**：`{prov_summary['verdict']}`（{'、'.join(prov_parts_zh)}）"
+            )
         if triage_disclosure["has_risk_acceptance"]:
             release_lines.append("")
             release_lines.append("### Bug Triage & Risk Acceptance Disclosure (缺陷分診與風險接受揭露)")
@@ -11699,6 +12127,15 @@ def cmd_close_story(args) -> int:
             f"(automated={qa_breakdown['automated']}, external={qa_breakdown['external']}, manual={qa_breakdown['manual']}), 0 Open Bugs",
             f"- Release Notes: {args.notes or 'Released and verified through 4-station workflow.'}",
         ]
+        if prov_summary is not None:
+            prov_parts_en = [f"{prov_summary['checked_controls_count']} controls checked"]
+            if prov_summary["audited_commit"]:
+                prov_parts_en.append(f"commit `{prov_summary['audited_commit']}`")
+            if prov_summary["generated_utc"]:
+                prov_parts_en.append(f"generated `{prov_summary['generated_utc']}`")
+            release_lines.append(
+                f"- **Software Provenance Audit (`team-provenance-audit`)**: `{prov_summary['verdict']}` ({', '.join(prov_parts_en)})"
+            )
         if triage_disclosure["has_risk_acceptance"]:
             release_lines.append("")
             release_lines.append("### Bug Triage & Risk Acceptance Disclosure")
@@ -11768,7 +12205,7 @@ def cmd_close_story(args) -> int:
                 pass
 
     release_checklist_reminders = _build_release_checklist_reminders(config)
-    print(json.dumps({
+    close_out = {
         "ok": True,
         "action": "close-story",
         "jira_key": jira_key,
@@ -11782,7 +12219,12 @@ def cmd_close_story(args) -> int:
         "transition": trans_res,
         "resolved_dependent_stories": resolved_dependents,
         "active_file_removed": True,
-    }, ensure_ascii=False, indent=2))
+    }
+    if prov_summary is not None:
+        close_out["provenance_audit"] = prov_summary
+    elif prov_gate["enabled"] and prov_gate["mode"] == "advisory" and not prov_gate["passed"]:
+        close_out["provenance_audit_warning"] = prov_gate
+    print(json.dumps(close_out, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -11820,6 +12262,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--qa-tag-prefix", default=None, help="Optional delivery_pipeline.environments.qa tag prefix (e.g. 'qa-')")
     p_init.add_argument("--uat-tag-prefix", default=None, help="Optional delivery_pipeline.environments.uat tag prefix (e.g. 'uat-')")
     p_init.add_argument("--jira-deployment-sync", nargs="?", const="true", default=None, help="Optional delivery_pipeline.jira_deployment_sync boolean flag (true/false)")
+    p_init.add_argument("--provenance-audit-mode", choices=list(VALID_PROVENANCE_AUDIT_MODES), default=None, help="Provenance audit pre-close compliance gate mode ('blocking' default, 'advisory', or 'off')")
+    p_init.add_argument("--provenance-output-dir", default=None, help="Optional explicit out-of-repo directory for provenance audit outputs and decision.json")
     p_init.add_argument("--name", help="Display name for the role(s) claimed via --role (auto-resolved from Jira /myself if omitted)")
     p_init.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for Jira URL, project key, account email, API token, and role mappings")
     p_init.add_argument("--project-key", default=None, help="Jira project key (e.g. PROJ)")
@@ -12035,6 +12479,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_close.add_argument("--version", default=None, help="Release version or tag (defaults to v1.0.0 if omitted)")
     p_close.add_argument("--commit", default=None, help="Release candidate git commit SHA (defaults to candidate_commit or git HEAD if omitted)")
     p_close.add_argument("--notes", default="", help="Release summary notes")
+    p_close.add_argument("--provenance-decision", default=None, help="Optional path to out-of-repo provenance audit decision.json (defaults to resolved provenance audit dir)")
     p_close.set_defaults(func=cmd_close_story)
 
     return p

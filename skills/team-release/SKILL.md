@@ -16,19 +16,21 @@ Read `references/common-workflow-governance.md` and `references/release-method.m
 - **No Per-Feature Process Markdown Files in Git:** Never create `docs/release/` files. Per-Story release records belong in the Jira `User Story`.
 - **HTML-Only Living Manual Layout:** Product/API manuals live exclusively under `docs/manuals/<manual-name>/<manual-name>.html` (with portable relative `./screenshots/` and `./diagrams/` inside that same `<manual-name>/` folder). Do not emit `.md`, `.pdf`, or `.docx` manual files unless the user explicitly asks, and never perform unsolicited Git branch/tag/push operations.
 - **Explicit Human Authorization Gate for `close-story`:** Never invoke `jira_sync.py close-story` without explicit user authorization to release/close the Story in the conversation. `same_person: true` from Station 3b NEVER authorizes auto-chaining into `team-release` or closing a Story, and fixing a user-reported bug/tweak must always stop and yield for user verification first.
-- **Strict Gate Enforcement:** Never close a Story or delete `.ai-workflow/active/<JIRA-KEY>.json` if any Sub-task is incomplete, Code Review or QA is unapproved/failed, open Bugs remain, or the candidate commit drifted after Review/QA.
+- **Strict Gate Enforcement (Including Mandatory Provenance Audit Gate):** Never close a Story or delete `.ai-workflow/active/<JIRA-KEY>.json` if any Sub-task is incomplete, Code Review or QA is unapproved/failed, open Bugs remain, the candidate commit drifted after Review/QA, or (when `compliance_gates.provenance_audit.mode == "blocking"`, the default) the out-of-repo provenance audit `decision.json` is missing, symlinked, non-`PASS`, has non-empty failures/unresolved reasons or missing required controls, or has a stale `audited_commit != HEAD`.
+- **Out-of-Repo Provenance Audit Storage:** All `$team-provenance-audit` artifacts (`decision.json`, `analysis_state.sqlite`, `CHINA_RELATED_SOFTWARE_AUDIT_REPORT.md`) MUST remain strictly outside the repository (default `~/.config/ai-workflow/provenance-audit/<repo-id>/`) and never leak local filesystem paths or secrets into Jira comments.
 - **No Unsolicited Production Deployment:** Closing the Jira Story and recording the release summary does not execute external production deployment scripts unless the user explicitly requests deployment.
 
 ## Workflow
 
 ### 1. Reconcile gates and commit alignment
 1. Inspect `.ai-workflow/active/<JIRA-KEY>.json` (or run `jira_sync.py status --key <JIRA-KEY>`).
-2. Confirm all 5 release gates hold for the verified candidate commit (`<candidate-commit-sha>`):
+2. Confirm all 6 release gates hold for the verified candidate commit (`<candidate-commit-sha>`):
    - `spec_status == "approved"`
    - All `tasks` (`TASK-001..N`) have `status == "completed"`
    - `review.status == "approved"` and `review.reviewed_commit == <candidate-commit-sha>`
    - `qa.status == "passed"` and `qa.tested_commit == <candidate-commit-sha>`, where every `TC-*` is either `pass` OR a controlled, auditable `waived` / `not-applicable` disposition (`waived_bug_id`, `triage_resolution`, `waived_by`, `waived_reason` referencing a closed/triaged Bug via `triage-bug`; any `fail`/`blocked`/`not-executed` or un-audited `waived` TC still blocks release!)
    - Zero open `Bug` tickets (`bugs` with `status not in ("completed", "closed")`)
+   - **Mandatory Pre-Close Provenance Audit Gate (`team-provenance-audit`, default `blocking`):** Out-of-repo `decision.json` (default `~/.config/ai-workflow/provenance-audit/<repo-id>/decision.json`, or `--provenance-decision <path>`) must be a regular non-symlink file with `verdict == "PASS"`, empty `confirmed_failures` and `unresolved_reasons`, complete `required_controls` in `checked_controls`, and `audited_commit` matching the exact 40-char lowercase Git `HEAD`. If stale or missing, STOP and instruct the user to run `$team-provenance-audit` (`static_scan.py` + `gate.py --repo .`) first.
 3. Check whether any **System-Wide Living Assets** (`AGENTS.md`, `docs/shared/engineering-standards.md`, `docs/shared/glossary.md`, `docs/shared/adr/`) were updated during this feature.
 4. **Multi-Stage Pipeline Pre-Close Confirmation Reminder (Non-Blocking):** When `.ai-workflow/team-config.json` configures `delivery_pipeline` with a `uat` / `staging` environment (e.g., `uat-*` tag) or a `production_branch` distinct from `integration_branch`, `status` and `close-story` emit a lightweight, **non-blocking** `release_checklist_reminders` list. Surface these reminders to the human before closing (e.g., confirm UAT sign-off and human-approved merge to `production_branch`), while **never** blocking `close-story` on UAT and **never** letting AI auto-tag, auto-merge, or push releases. Single-branch projects without `delivery_pipeline` remain completely untouched (`release_checklist_reminders: []`).
 
@@ -55,12 +57,13 @@ python3 .ai-workflow/bin/jira_sync.py --repo-root . close-story \
   --key "<JIRA-KEY>" \
   [--version "<version-or-tag>"] \
   --commit "<candidate-commit-sha>" \
+  [--provenance-decision "<out-of-repo/decision.json>"] \
   --notes "<Release summary: delivered scope, HTML manual status (docs/manuals/<name>/<name>.html or skipped), migration/rollback notes, residual risks>"
 ```
 
 What `jira_sync.py close-story` does deterministically:
-1. Reconciles live Jira state first (catching any Sub-tasks reopened or Bugs newly linked in Jira Web UI) and validates all 5 release readiness gates (exits non-zero with `unmet_gates` if any check fails).
-2. Assigns the Story to the acting `release_manager` and posts the final Release Summary comment in Traditional Chinese by default (version, verified commit SHA, AC/Sub-task/TC coverage counts with `qa_breakdown` across `automated`/`external`/`manual`, release notes, and an explicit **Bug Triage & Risk Acceptance Disclosure** section whenever any non-fixed triaged Bugs or audited `waived`/`not-applicable` TCs exist) to the Jira `User Story`.
+1. Reconciles live Jira state first (catching any Sub-tasks reopened or Bugs newly linked in Jira Web UI) and validates all 6 release readiness gates — including the mandatory commit-bound `team-provenance-audit` `decision.json == PASS` check (failing closed with structured `provenance_audit_gate` before any Jira mutation or active JSON deletion when `mode == "blocking"`, or warning cleanly in `"advisory"` mode).
+2. Assigns the Story to the acting `release_manager` and posts the final Release Summary comment in Traditional Chinese by default (version, verified commit SHA, AC/Sub-task/TC coverage counts with `qa_breakdown` across `automated`/`external`/`manual`, `team-provenance-audit` compliance summary line with zero local file paths or secrets, release notes, and an explicit **Bug Triage & Risk Acceptance Disclosure** section whenever any non-fixed triaged Bugs or audited `waived`/`not-applicable` TCs exist) to the Jira `User Story`.
 3. Transitions the Jira `User Story` to `Done` (`status_mapping.done`).
 4. **Deletes `.ai-workflow/active/<JIRA-KEY>.json`** (including any main worktree mirror) so no temporary per-feature scaffolding remains on disk.
 
