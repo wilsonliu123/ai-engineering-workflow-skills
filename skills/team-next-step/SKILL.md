@@ -7,13 +7,13 @@ description: Use when the user asks what to do next for a feature or Jira Story,
 
 ## Overview
 
-Read-only router for the Epic/Sprint planning layer and the 4-station, 8-skill Jira-centered engineering workflow. Inspect `.ai-workflow/team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json`, and Jira planning plus Story/Sub-task/Bug state, then return one concrete next action, its owning skill and mode, the responsible role/person, and the completion condition. Respond in the user's language (default: Traditional Chinese / 繁體中文).
+Read-only router for the Epic/Sprint planning layer and the 4-station, 9-skill Jira-centered engineering workflow (including mandatory pre-release `team-provenance-audit`). Inspect `.ai-workflow/team-config.json`, `.ai-workflow/active/<JIRA-KEY>.json`, out-of-repo provenance audit `decision.json`, and Jira planning plus Story/Sub-task/Bug state, then return one concrete next action, its owning skill and mode, the responsible role/person, and the completion condition. Respond in the user's language (default: Traditional Chinese / 繁體中文).
 
 Read `references/common-workflow-governance.md` for the authoritative 4-station governance rules.
 
 ## Scope & Hard Boundaries
 
-- **Single Entry Point (`$team-next-step`):** Team members never need to memorize the 8 skill names or `jira_sync.py` CLI flags. `$team-next-step` is the universal compass for planning and delivery.
+- **Single Entry Point (`$team-next-step`):** Team members never need to memorize the 9 skill names or `jira_sync.py` CLI flags. `$team-next-step` is the universal compass for planning, compliance audit readiness, and delivery.
 - **Zero-CLI Burden & Auto-Hydration:** Execute `jira_sync.py status` automatically in the background. When `.ai-workflow/active/<JIRA-KEY>.json` is missing on a teammate's machine or secondary Git worktree, `jira_sync.py status --key <JIRA-KEY>` automatically hydrates the local state from the main Git worktree or remote Jira issue before routing.
 - **Read-only inspection (except automatic state hydration):** Do not modify repository source code or transition Jira statuses during routing.
 - Only invoke the recommended next skill when the user's prompt explicitly authorizes executing it; `same_person: true` ONLY suppresses Jira `@mention` noise and NEVER authorizes auto-chaining. Otherwise stop after presenting the routing recommendation. If `qa_identity_guardrail.identity_mismatch` is `true` for a `team-qa` recommendation, highlight the identity warning clearly.
@@ -58,7 +58,8 @@ Follow this strict priority order (matching `jira_sync.py status`):
 | **8** | Review approved, but `qa.test_cases` (`TC-001..N`) not planned yet *(still allowed in parallel even when `awaiting_qa_deploy: true`)* | `team-qa` (`plan` mode) | `qa` |
 | **8b** | `qa_handoff_mode == "gated_by_deploy"`, Review approved, `TC-*` planned, and `awaiting_qa_deploy: true` (Jira still in `dev_done` / not yet `in_qa`) | **Wait for QA Deploy** (`CI/CD -> in_qa` + `pull`/`status`, or `jira_sync.py promote-qa --key <KEY> --deploy-ref "<ref>"`; surfaces `qa_deploy_hint` when `delivery_pipeline.environments.qa` is configured, strictly keeping `can_auto_chain_next_station: false` and never auto-tagging/auto-merging) — gates `team-qa (verify)` | `developer` |
 | **9** | Review approved, QA deploy unblocked (if gated), & `TC-*` planned, but `qa.status != "passed"` or `tested_commit != candidate_commit` | `team-qa` (`verify` mode — surfaces `pending_automated_tcs`, `pending_external_tcs`, and `pending_manual_tcs`; use `team-qa` `triage` mode for human-authorized `Not a Bug`/`Won't Fix`/`Duplicate`/`Cannot Reproduce` bugs) | `qa` |
-| **10** | Spec approved + Tasks completed + Review approved + QA passed (all TCs `pass` or audited `waived`/`not-applicable`) + 0 open Bugs + commits aligned | `team-release` *(surfaces non-blocking `release_checklist_reminders` when `delivery_pipeline` configures UAT or a distinct `production_branch`)* | `release_manager` |
+| **9b** | Spec + Tasks + Review + QA all passed with 0 open Bugs, AND `compliance_gates.provenance_audit` is enabled in `blocking` mode (default), BUT out-of-repo `decision.json` is missing, non-`PASS`, incomplete, symlinked, or `audited_commit != HEAD` (`release_blocked_by_provenance_audit: true`) | `team-provenance-audit` *(incremental SQLite `static_scan.py` + `gate.py --repo .` -> `PASS`; strict HITL Clean Stop `can_auto_chain_next_station: false`)* | `release_manager` |
+| **10** | Spec approved + Tasks completed + Review approved + QA passed (all TCs `pass` or audited `waived`/`not-applicable`) + 0 open Bugs + commits aligned + provenance audit gate `PASS` (or `advisory`/`off`) | `team-release` *(surfaces non-blocking `release_checklist_reminders` when `delivery_pipeline` configures UAT or a distinct `production_branch`)* | `release_manager` |
 | **11** | Jira Story is already `Done` (`.ai-workflow/active/<JIRA-KEY>.json` removed) OR standalone Bug closed via Bug Triage (`triage_closed: true`) | No remaining action for this Story / Bug | — |
 
 ### 3. Parallel & fallback rules
@@ -72,7 +73,7 @@ Follow this strict priority order (matching `jira_sync.py status`):
 Return these five items in the user's language (default: 繁體中文):
 
 1. **目前狀態 (Current State):** Jira Story key (`<JIRA-KEY>`), current station, and verified progress or blocker.
-2. **判斷依據 (Evidence):** Key fields from `.ai-workflow/active/<JIRA-KEY>.json` / `jira_sync.py status` (e.g., `spec_status`, completed/pending `TASK-*`, `review.status`, `qa.status`, open `BUG-*`, commit alignment).
-3. **下一步行動 (Next Action):** Exact skill name (`team-init`, `team-plan`, `team-spec`, `team-dev`, `team-review`, `team-qa`, or `team-release`), explicit mode (`epic` / `sprint` / `commit` / `status` / `plan` / `implement` / `verify` when applicable), and responsible role + person from `team-config.json` (noting whether the transition is same-person auto-consolidated or cross-person Jira notification).
+2. **判斷依據 (Evidence):** Key fields from `.ai-workflow/active/<JIRA-KEY>.json` / `jira_sync.py status` (e.g., `spec_status`, completed/pending `TASK-*`, `review.status`, `qa.status`, open `BUG-*`, `provenance_audit.status`, commit alignment).
+3. **下一步行動 (Next Action):** Exact skill name (`team-init`, `team-plan`, `team-spec`, `team-dev`, `team-review`, `team-qa`, `team-provenance-audit`, or `team-release`), explicit mode (`epic` / `sprint` / `commit` / `status` / `plan` / `implement` / `verify` when applicable), and responsible role + person from `team-config.json` (noting whether the transition is same-person auto-consolidated or cross-person Jira notification).
 4. **執行指令 / Prompt (Ready-to-Use Input):** Copyable prompt or CLI command for the next step.
 5. **完成條件 (Done When):** The observable state change in Jira and `.ai-workflow/active/<JIRA-KEY>.json` that completes the recommended step.

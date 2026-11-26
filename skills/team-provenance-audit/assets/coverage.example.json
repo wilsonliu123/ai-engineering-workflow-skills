@@ -1,0 +1,24 @@
+{
+  "repo": "/authorized/repository",
+  "commit": "N/A",
+  "checks": [
+    {"id": "01", "status": "Partially Completed", "method": "static_scan.py", "scope": "scanned text", "reason": "manual review pending"},
+    {"id": "02", "status": "Not Available", "method": "", "scope": "all dependencies", "reason": "upstream corporate attribution not yet verified"},
+    {"id": "03", "status": "Not Available", "method": "", "scope": "logo assets", "reason": "not yet reviewed"},
+    {"id": "04", "status": "Partially Completed", "method": "static_scan.py", "scope": "file text", "reason": "symbol review pending"},
+    {"id": "05", "status": "Not Available", "method": "", "scope": "all components", "reason": "SCA not executed"},
+    {"id": "06", "status": "Not Available", "method": "", "scope": "all third-party origins", "reason": "OSINT not executed"},
+    {"id": "07", "status": "Partially Completed", "method": "static_scan.py", "scope": "hardcoded urls", "reason": "dynamic URL construction not analyzed"},
+    {"id": "08", "status": "Not Available", "method": "", "scope": "cloud, MCP, AI models", "reason": "not yet verified"},
+    {"id": "09", "status": "Not Available", "method": "", "scope": "build chain", "reason": "not yet reviewed"},
+    {"id": "10", "status": "Not Available", "method": "", "scope": "Git history", "reason": "not yet reviewed"},
+    {"id": "11", "status": "Not Available", "method": "", "scope": "binaries", "reason": "static scanner not a decompiler"},
+    {"id": "12", "status": "Not Available", "method": "", "scope": "licenses and SBOM", "reason": "not yet reviewed"},
+    {"id": "13", "status": "Not Available", "method": "", "scope": "JS bundles", "reason": "AST and source map work pending"},
+    {"id": "14", "status": "Not Available", "method": "", "scope": "JAR analysis", "reason": "bytecode review pending"}
+  ],
+  "scan_errors": 0,
+  "scan_skipped": 0,
+  "critical_unverified_components": [],
+  "material_blind_spots": ["example coverage is only a placeholder; not audit evidence"]
+}

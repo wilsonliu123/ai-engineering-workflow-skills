@@ -1,0 +1,4 @@
+interface:
+  display_name: "Team Provenance Audit"
+  short_description: "審查軟體來源、逆向解析與供應鏈合規（支援斷點續掃與 commit 綁定合規門禁）"
+  default_prompt: "請使用 team-provenance-audit 對目前授權的 Repository 執行來源與供應鏈審查，包含混淆 JS、JAR、二進位溯源，將斷點、證據、decision.json 與報告輸出於 Repo 外部目錄。"

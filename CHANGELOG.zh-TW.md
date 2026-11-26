@@ -2,6 +2,22 @@
 
 > **語言**: [English](./CHANGELOG.md) | **繁體中文**
 
+## v1.7.0 — 2026-11-26 — 內建強制來源合規審查關卡（`team-provenance-audit`）
+
+- **內建第 9 個標準 Skill（`skills/team-provenance-audit/`）：**
+  - 整合獨立唯讀的 `team-provenance-audit`（`check_env.py`、支援 SQLite 斷點續掃的 `static_scan.py`、白名單官方 Registry 查詢 `fetch_reference.py`、`fingerprint.py`、綁定 Commit 的 `gate.py`），不重複打包 `jira_sync.py`。
+  - 將 `fetch_reference.py` 全面強化為 100% 純 Python 3 標準函式庫、達成 **0 筆 Semgrep 告警**與 **0 處 `# nosemgrep`**：以 `_VerifiedTLSConnection(http.client.HTTPConnection)` + `_http_request` 取代 `urllib.request.urlopen`（強制 `CERT_REQUIRED`、`check_hostname=True`、`TLSv1.2+`、拒絕包含 `ssl.TLSVersion.MINIMUM_SUPPORTED` 的弱化自訂 `ssl.SSLContext`、ALPN `http/1.1`、CR/LF 方法／標頭防護、IPv6 埠號一致性、無洩漏 socket 關閉，並在初始 URL 與每一跳重導向均強制檢查官方 Registry 白名單與禁止 HTTPS 降級）。
+  - 為 `gate.py` 新增向下相容的 `--repo <path>` 與 `--commit <sha>` 參數，於 `decision.json` 綁定 `audited_commit`（嚴格十六進位 SHA / Git `HEAD`）、`audited_branch` 與 `repo_name`，並更新 `static_scan.py` 自我排除機制以準確識別 `team-provenance-audit`。
+- **預設啟用強制結案前來源合規門禁（全部 8 份工作流 Skill 的 `jira_sync.py`）：**
+  - 於 `team-config-template.json`、`DEFAULT_TEAM_CONFIG` 與 `_sanitize_compliance_gates()` 新增 `compliance_gates.provenance_audit`（`{"enabled": true, "mode": "blocking", "policy_path": "", "output_dir": ""}`），採用嚴格布林解析、拒絕控制字元／NUL 位元組，且對既有舊版未含 `compliance_gates` 的 `team-config.json` 亦預設強制啟用。
+  - 新增程式碼庫外部預設稽核目錄解析器 `get_provenance_audit_dir(repo_root, config)`（優先序：`config.output_dir` > `AI_WORKFLOW_PROVENANCE_DIR` > `$XDG_CONFIG_HOME/ai-workflow/provenance-audit/<repo-id>` > `~/.config/ai-workflow/provenance-audit/<repo-id>`），沿用標準 Git common-dir 識別並拒絕符號連結（symlink）。
+  - 於 `init` 新增 `--provenance-audit-mode {blocking,advisory,off}` 與 `--provenance-output-dir <path>`，並在 `init` / `init --inspect` 輸出 `compliance_gates` 與 `provenance_audit_dir`。
+  - 於 `close-story` 新增強制阻斷式結案前檢查（`_evaluate_provenance_audit_gate`）與 `--provenance-decision <path>`：在任何 Jira 留言、狀態轉換或暫存檔刪除**之前**，嚴格拒絕符號連結、缺檔／損毀 JSON、非 `PASS` 判定、非空失敗／未解決原因、缺漏 `required_controls` 及過期 `audited_commit != HEAD`（精確 40 字元小寫比對）；`advisory` 模式輸出非阻斷警告；`PASS` 時於 Jira 結案 ADF 留言寫入不含本機路徑與密鑰的合規摘要行。
+  - 將 `provenance_audit` 狀態整合至 `status` / `evaluate_story_next_step`：當 `blocking` 模式尚未 `PASS` 時阻斷第四站發布就緒狀態，引導執行 `$team-provenance-audit`（維持 `can_auto_chain_next_station: false`）。
+- **工作流 Skills、教育訓練手冊與驗證：**
+  - 同步更新 `team-init`（導入基線掃描與 `engineering-standards.md` §3 規範）、`team-review`（依賴／鎖檔／外部 SDK／二進位變更強制增量複核）、`team-release`（第 6 項發布關卡）、`team-next-step`（優先序 9b）、全部 8 份 `common-workflow-governance.md`、`tools/check_shared.sh`、中英文 `README`/`CHANGELOG`、`docs/training-manual.{md,html,pdf,docx}` 與擴充至 **19 頁**的 `docs/training-manual.pptx`。
+  - 新增 `test_42_team_provenance_audit_mandatory_gate`（`tools/test_workflow.py` 共 **42/42** 項測試通過）與 `skills/team-provenance-audit/scripts/tests/test_skill.py` **10/10** 項單元測試通過，全部 8 份 `jira_sync.py` 與 5 支 `team-provenance-audit` 腳本達成 **0 筆 Semgrep 告警**。
+
 ## v1.6.1 — 2026-11-25 — 資安強化、SAST 零告警與程式碼庫外部憑證儲存
 
 - **Semgrep SAST 零告警修復（Issue #21 / PR #22、Issue #23 / PR #24）：**

@@ -1,0 +1,14 @@
+{
+  "policy_name": "Mainland China enterprise software component exclusion",
+  "policy_version": "1.0",
+  "prohibited_component_bases": [
+    "component_developed_by_mainland_enterprise",
+    "component_owned_by_mainland_enterprise",
+    "component_actually_controlled_by_mainland_enterprise"
+  ],
+  "service_and_mirror_handling": "review_separately",
+  "required_checks": ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14"],
+  "pass_requires_complete_coverage": true,
+  "pass_requires_no_critical_unverified": true,
+  "confirmed_evidence_status": "verified_primary"
+}

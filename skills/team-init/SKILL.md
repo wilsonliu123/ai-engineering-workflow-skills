@@ -27,7 +27,8 @@ Read `references/common-workflow-governance.md` for the authoritative asset boun
 
 | Output / Target | Purpose | Committed to Git? |
 |---|---|---|
-| `.ai-workflow/team-config.json` | Project key, Jira base URL, optional Scrum `jira_board_id`, status/issue-type mapping, and role-to-person mapping (`name`, `email`, `jira_account_id`) | **Yes** |
+| `.ai-workflow/team-config.json` | Project key, Jira base URL, optional Scrum `jira_board_id`, default-on `compliance_gates.provenance_audit` (`mode: "blocking"`), status/issue-type mapping, and role-to-person mapping (`name`, `email`, `jira_account_id`) | **Yes** |
+| `~/.config/ai-workflow/provenance-audit/<repo-id>/` | Default out-of-repo directory for `$team-provenance-audit` outputs (`analysis_state.sqlite`, `decision.json`, `CHINA_RELATED_SOFTWARE_AUDIT_REPORT.md`) — never committed to Git | **No (Out of Repo)** |
 | `~/.config/ai-workflow/credentials/<repo-id>.json` *(or env vars)* | Default out-of-repo local Jira/Qase credentials (`0700` dir, `0600` atomic write, shared across Git worktrees; eliminates Gitleaks hits inside the repo). Pure env-var auth (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `QASE_API_TOKEN` with `--credential-store env`) writes zero files. Legacy `.ai-workflow/credentials.json` remains backward-compatible. | **No (Out of Repo)** |
 | `.ai-workflow/bin/jira_sync.py` | Project-local unified CLI wrapper (works even when skills are installed globally) | **Yes** |
 | `.gitignore` | Defense-in-depth ignore entries for `.ai-workflow/active/`, legacy `.ai-workflow/credentials.json`, and `.ai-workflow/.env` | **Yes** |
@@ -102,6 +103,7 @@ If any of the following items have not been explicitly provided or confirmed by 
    - 列出預設狀態映射（`To Do`、`In Progress`、`In Review`、`In QA`、`Ready for Release`、`Done`）與單據類型（`Story`、`Sub-task`、`Bug`），詢問是否直接沿用預設值或需自訂。
    - 若團隊採用多環境 CI/CD 流程（Review 通過先進入「開發完成 / Dev Completed」，待打 QA Tag 或部署至 QA 環境後才推進 `In QA` 並通知 QA），可選配 `--qa-handoff-mode gated_by_deploy` 與 `--status-dev-done "<開發完成狀態>"`（若 CI 掃描偵測到獨立 QA 部署觸發規則，`init --inspect` 會自動建議 `suggested_qa_handoff_mode: "gated_by_deploy"`；預設為 `immediate`，維持 100% 向後相容）。可一併確認 `delivery_pipeline` 選配旗標：`--integration-branch`、`--production-branch`、`--qa-tag-prefix`、`--uat-tag-prefix`、`--jira-deployment-sync`（僅於使用者確認後寫入 `team-config.json`）。
    - 選填確認團隊的 QA 測試案例管理方式（`--qa-backend`）：直接放在 **Jira 評論（`jira-comment`）** 或同步至 **Qase TestOps（`qase`，搭配 `--qase-project-code` 與 `--qase-token`）**。若初始化時尚未決定可先留空，首次執行 `$team-qa` 時會自動詢問一次並記憶於 `team-config.json`。
+   - **預設啟用強制來源合規門禁（`compliance_gates.provenance_audit`）**：初始化預設寫入 `{"enabled": true, "mode": "blocking", "policy_path": "", "output_dir": ""}`（並自動同步寫入 `docs/shared/engineering-standards.md` §3），要求專案導入時執行一次 `$team-provenance-audit` 基線掃描（輸出置於 Repo 外部 `~/.config/ai-workflow/provenance-audit/<repo-id>/`），且每次 `team-release`（`close-story`）結案前必須具備與當前 `HEAD` 綁定且 `verdict == "PASS"` 的 `decision.json`。若團隊明確要求僅警告或關閉，可顯式傳入 `--provenance-audit-mode advisory|off`（或 `--provenance-output-dir <out-of-repo-dir>`）。
 
 **WAIT for the user's response before proceeding to Step 3.**
 
@@ -125,7 +127,9 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   [--production-branch "<main|master>"] \
   [--qa-tag-prefix "<qa->"] \
   [--uat-tag-prefix "<uat->"] \
-  [--jira-deployment-sync]
+  [--jira-deployment-sync] \
+  [--provenance-audit-mode "blocking|advisory|off"] \
+  [--provenance-output-dir "<OUT_OF_REPO_DIR>"]
 
 # Option B: Full multi-person mapping upfront
 python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
@@ -143,7 +147,9 @@ python3 <skill-dir>/scripts/jira_sync.py --repo-root . init \
   [--production-branch "<main|master>"] \
   [--qa-tag-prefix "<qa->"] \
   [--uat-tag-prefix "<uat->"] \
-  [--jira-deployment-sync]
+  [--jira-deployment-sync] \
+  [--provenance-audit-mode "blocking|advisory|off"] \
+  [--provenance-output-dir "<OUT_OF_REPO_DIR>"]
 ```
 
 *(Note: Per-role tokens can be passed either via `--role-tokens-json '{"pm": "...", "qa": "..."}'` or inline as `"api_token"` inside each role object in `--roles-json`; `jira_sync.py init` automatically strips any `"api_token"` from `.ai-workflow/team-config.json` and stores them outside the repo under `~/.config/ai-workflow/credentials/` (`--credential-store user`, default; `--credential-store env` writes zero files using runtime env vars; `--credential-store repo` opts in to legacy `.ai-workflow/credentials.json`). Optional `--commit-policy` defaults to `"confirm_before_commit"` — pause after local tests pass to wait for user confirmation before committing — or can opt in to `"auto_on_test_pass"`; optional `--commit-message-pattern` configures a non-blocking regex check in `complete-task`. Optional `--qa-handoff-mode` defaults to `"immediate"` — or set `"gated_by_deploy"` with `--status-dev-done "<Dev Completed>"` to decouple Code Review approval from QA environment deployment.)*
@@ -166,8 +172,8 @@ What `jira_sync.py init` enforces automatically:
 2. Present a concise initialization summary in Traditional Chinese (繁體中文):
    - **專案連線與憑證狀態**：確認 `project_key`、`jira_base_url`、`jira_mode`（`live` 或 `offline`）、連線驗證結果（`jira_verification`）以及憑證來源（`credential_source`：`env` 環境變數或 Repo 外部的 `~/.config/ai-workflow/credentials/` `0600`）。
    - **角色定義與交接整併表 (`role_consolidation`)**：列出各角色負責人、帳號與哪些相鄰站點為同一人（`auto-consolidated` 僅抑制重複 `@mention` 通知，跨站推進仍需使用者明確授權）、哪些跨人交接會觸發 Jira `@mention` + 指派 + 狀態流轉並執行 Clean Stop。
-   - **工程規範收斂結果**：`docs/shared/engineering-standards.md` 與 `AGENTS.md` 去重狀態。
-   - **下一步指引**：提示使用者後續只需輸入 `$team-next-step`（或 `$team-spec`）即可啟動第一個 Jira Story。
+   - **工程規範與合規門禁收斂結果**：`docs/shared/engineering-standards.md`（含 §3 來源合規門禁規則）與 `AGENTS.md` 去重狀態、`compliance_gates.provenance_audit` 設定（預設 `blocking`）與外部稽核目錄 `provenance_audit_dir`。
+   - **導入基線與下一步指引**：建議先執行一次 `$team-provenance-audit` 建立 SQLite 斷點基線（後續增量複核只重掃變更檔案），並提示使用者後續只需輸入 `$team-next-step`（或 `$team-spec`）即可啟動第一個 Jira Story。
 
 ## Red Flags — STOP
 

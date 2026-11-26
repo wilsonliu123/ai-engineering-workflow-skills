@@ -15,6 +15,14 @@
     "environments": {},
     "jira_deployment_sync": false
   },
+  "compliance_gates": {
+    "provenance_audit": {
+      "enabled": true,
+      "mode": "blocking",
+      "policy_path": "",
+      "output_dir": ""
+    }
+  },
   "qa_test_backend": "",
   "qase": {
     "project_code": "",
