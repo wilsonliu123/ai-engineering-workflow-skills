@@ -20,10 +20,9 @@ def resolve_repo_binding(repo=None, commit=None):
     """Resolve optional commit/branch/repo binding metadata for decision.json."""
     binding = {}
     if commit is not None:
-        clean_sha = str(commit).strip()
-        if not COMMIT_SHA_RE.match(clean_sha):
+        if not isinstance(commit, str) or not COMMIT_SHA_RE.match(commit):
             raise ValueError("invalid --commit SHA: expected 7-64 hexadecimal characters")
-        binding["audited_commit"] = clean_sha.lower()
+        binding["audited_commit"] = commit.lower()
 
     if repo is not None:
         repo_path = Path(repo).resolve(strict=True)

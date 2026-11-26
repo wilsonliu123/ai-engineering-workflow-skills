@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+import sys
+
+sys.dont_write_bytecode = True
+
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 import zipfile
@@ -13,7 +17,9 @@ ASSETS = SCRIPTS.parent / "assets"
 
 
 def run(*args):
-    return subprocess.run([sys.executable, *map(str, args)], text=True, capture_output=True, check=True)
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return subprocess.run([sys.executable, "-B", *map(str, args)], text=True, capture_output=True, check=True, env=env)
 
 
 class SkillSmokeTests(unittest.TestCase):
@@ -344,13 +350,28 @@ class SkillSmokeTests(unittest.TestCase):
             doc_commit = json.loads(dec_commit.read_text(encoding="utf-8"))
             self.assertEqual(doc_commit["audited_commit"], explicit_sha.lower())
 
-            # 3. Invalid --commit rejected
-            bad_res = subprocess.run(
-                [sys.executable, str(SCRIPTS / "gate.py"), "--coverage", str(cov_path), "--findings", str(find_path), "--policy", str(ASSETS / "policy.example.json"), "--commit", "not-a-sha!", "--out", str(p / "bad.json")],
-                text=True,
-                capture_output=True,
-            )
-            self.assertNotEqual(bad_res.returncode, 0)
+            # 3. Invalid --commit rejected (including leading/trailing whitespace or newline)
+            spec = importlib.util.spec_from_file_location("gate_commit_check", SCRIPTS / "gate.py")
+            gate_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gate_mod)
+            for bad_sha in ("not-a-sha!", "abcdef1\n", "  abcdef1  ", "\tabcdef1"):
+                with self.assertRaises(ValueError, msg=f"expected ValueError for {bad_sha!r}"):
+                    gate_mod.resolve_repo_binding(commit=bad_sha)
+                bad_res = subprocess.run(
+                    [sys.executable, "-B", str(SCRIPTS / "gate.py"), "--coverage", str(cov_path), "--findings", str(find_path), "--policy", str(ASSETS / "policy.example.json"), "--commit", bad_sha, "--out", str(p / "bad.json")],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(bad_res.returncode, 0, f"expected CLI failure for {bad_sha!r}")
+
+    def test_static_scan_simp_chars_excludes_traditional_shared(self):
+        spec = importlib.util.spec_from_file_location("static_scan_simp", SCRIPTS / "static_scan.py")
+        ss = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ss)
+        self.assertNotIn("私", ss.SIMP_CHARS)
+        self.assertNotIn("算", ss.SIMP_CHARS)
+        leads = ss.scan_lines("隱私計算系統\n", "docs/tw.txt")
+        self.assertFalse(any(r[5] == "simplified_character_candidate" for r in leads))
 
     def test_static_scan_self_excludes_team_provenance_audit(self):
         with tempfile.TemporaryDirectory() as tmp:

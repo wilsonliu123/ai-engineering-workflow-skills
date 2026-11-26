@@ -9184,13 +9184,50 @@ class WorkflowTestSuite(unittest.TestCase):
                 _assert_close_blocked("symlink_rejected")
                 dec_path.unlink()
 
-                # 3e. Block on symlinked parent directory via --provenance-decision
+                # 3e. Block on symlinked parent directory AND intermediate ancestor symlink via --provenance-decision & config.output_dir
                 real_dir = base / "real-dir"
-                real_dir.mkdir()
+                real_sub = real_dir / "sub"
+                real_sub.mkdir(parents=True)
                 (real_dir / "decision.json").write_text(json.dumps(valid_doc), encoding="utf-8")
+                (real_sub / "decision.json").write_text(json.dumps(valid_doc), encoding="utf-8")
                 sym_dir = base / "sym-dir"
                 sym_dir.symlink_to(real_dir)
                 _assert_close_blocked("symlink_rejected", extra_args=("--provenance-decision", str(sym_dir / "decision.json")))
+                # Intermediate ancestor symlink: <base>/sym-dir/sub/decision.json (sym-dir -> real_dir, sub is real dir)
+                _assert_close_blocked("symlink_rejected", extra_args=("--provenance-decision", str(sym_dir / "sub" / "decision.json")))
+                # Intermediate ancestor symlink in config.compliance_gates.provenance_audit.output_dir
+                cfg_sym_out = {
+                    "compliance_gates": {
+                        "provenance_audit": {
+                            "enabled": True,
+                            "mode": "blocking",
+                            "policy_path": "",
+                            "output_dir": str(sym_dir / "sub"),
+                        }
+                    }
+                }
+                ev_sym_out = mod._evaluate_provenance_audit_gate(repo, cfg_sym_out)
+                self.assertFalse(ev_sym_out["passed"])
+                self.assertEqual(ev_sym_out["status"], "symlink_rejected")
+                # Normal paths under /var/folders/... (tempdir) and /tmp/... without intermediate symlinks MUST PASS
+                ev_normal_var = mod._evaluate_provenance_audit_gate(
+                    repo,
+                    {"compliance_gates": {"provenance_audit": {"enabled": True, "mode": "blocking", "policy_path": "", "output_dir": str(real_sub)}}},
+                )
+                self.assertTrue(ev_normal_var["passed"], ev_normal_var)
+                self.assertEqual(ev_normal_var["status"], "pass")
+                with tempfile.TemporaryDirectory(prefix="aiwf-tmp-prov-", dir="/tmp") as tmp_slash:
+                    tmp_sub = Path(tmp_slash) / "sub"
+                    tmp_sub.mkdir()
+                    tmp_dec = tmp_sub / "decision.json"
+                    tmp_dec.write_text(json.dumps(valid_doc), encoding="utf-8")
+                    ev_normal_tmp = mod._evaluate_provenance_audit_gate(
+                        repo,
+                        {"compliance_gates": {"provenance_audit": {"enabled": True, "mode": "blocking", "policy_path": "", "output_dir": ""}}},
+                        decision_path_override=str(tmp_dec),
+                    )
+                    self.assertTrue(ev_normal_tmp["passed"], ev_normal_tmp)
+                    self.assertEqual(ev_normal_tmp["status"], "pass")
 
                 # 3f. Block on verdict == FAIL
                 dec_path.write_text(json.dumps({**valid_doc, "verdict": "FAIL", "confirmed_failures": ["FIND-01: bad"]}), encoding="utf-8")

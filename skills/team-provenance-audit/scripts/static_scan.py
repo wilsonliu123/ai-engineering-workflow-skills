@@ -38,7 +38,7 @@ MANIFEST_NAMES = {
 SIMP_CHARS = "".join(dict.fromkeys(
     "这们为发个开关网说话点现资认权务虑读写办检测软属类买卖产码参观态结图连转应变对动规实总简响间时会处统负许证"
     "国体学机车长门仅从无与专业东风云电数据库录输请问题报错误败设备环组织级号页标签键盘链删创账选择项确调试运启终异历"
-    "进线缓执编译构协议华腾讯节团宁苏广汉庆计算频视语隐私审获归档还让给将经过来么样种称义则条单双两万亿"
+    "进线缓执编译构协议华腾讯节团宁苏广汉庆计频视语隐审获归档还让给将经过来么样种称义则条单双两万亿"
 ))
 BRANDS = ["bytedance", "cloudwego", "volcengine", "alibaba", "aliyun", "alipay", "antgroup", "tencent", "wechat", "weixin", "qcloud", "baidu", "paddlepaddle", "huawei", "huaweicloud", "openharmony", "xiaomi", "meituan", "jingdong", "netease", "bilibili", "deepseek", "zhipu", "pingcap", "npmmirror", "goproxy.cn"]
 CITIES = ["beijing", "shanghai", "shenzhen", "hangzhou", "guangzhou", "chengdu", "wuhan", "nanjing", "suzhou", "zhongguo", "zhineng"]

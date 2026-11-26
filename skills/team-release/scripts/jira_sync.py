@@ -1034,13 +1034,30 @@ def _sanitize_compliance_gates(raw) -> dict:
     }
 
 
+_OS_ROOT_SYMLINK_ALLOWLIST = frozenset({
+    Path("/"),
+    Path("/tmp"),
+    Path("/var"),
+    Path("/etc"),
+})
+
+
+def _collect_ancestor_dirs_for_symlink_check(path: Path, include_self: bool = False) -> list:
+    """Return all ancestor directories (outermost first) to check for symlinks, skipping only OS root aliases."""
+    abs_p = path if path.is_absolute() else (Path.cwd() / path)
+    candidates = list(reversed(abs_p.parents))
+    if include_self:
+        candidates.append(abs_p)
+    return [p for p in candidates if p not in _OS_ROOT_SYMLINK_ALLOWLIST]
+
+
 def _resolve_provenance_audit_dir_spec(repo_root: Path, config: dict = None) -> tuple:
     """Return (audit_dir, owned_dirs) for out-of-repo provenance audit outputs without following app-owned symlinks."""
     pa_cfg = _sanitize_compliance_gates((config or {}).get("compliance_gates"))["provenance_audit"]
     explicit_out = pa_cfg.get("output_dir") or ""
     if explicit_out:
         target_dir = Path(explicit_out).expanduser()
-        return target_dir, [target_dir]
+        return target_dir, _collect_ancestor_dirs_for_symlink_check(target_dir, include_self=True)
 
     canonical_id, safe_slug = _resolve_repo_identity(repo_root)
     digest = hashlib.sha256(canonical_id.encode("utf-8")).hexdigest()[:16]
@@ -1054,7 +1071,7 @@ def _resolve_provenance_audit_dir_spec(repo_root: Path, config: dict = None) -> 
         if cleaned:
             base = Path(cleaned).expanduser()
             target_dir = base / repo_id
-            return target_dir, [base, target_dir]
+            return target_dir, _collect_ancestor_dirs_for_symlink_check(target_dir, include_self=True)
 
     raw_xdg = os.environ.get("XDG_CONFIG_HOME")
     if raw_xdg is not None and raw_xdg != "":
@@ -1148,8 +1165,7 @@ def _evaluate_provenance_audit_gate(
             })
             return result
         decision_path = Path(raw_override.strip()).expanduser()
-        parent_dir = decision_path.parent
-        check_dirs = [parent_dir] if str(parent_dir) not in ("/tmp", "/var", "/etc", "/") else []
+        check_dirs = _collect_ancestor_dirs_for_symlink_check(decision_path, include_self=False)
     else:
         decision_path = audit_dir / "decision.json"
         check_dirs = owned_dirs

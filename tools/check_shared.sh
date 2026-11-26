@@ -2,7 +2,8 @@
 # Shared files are intentionally duplicated per skill so each skill zip is self-contained.
 # This check fails if any copy drifts or if a skill is missing a required shared file.
 set -euo pipefail
-cd "$(dirname "$0")/../skills" || exit 2
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR/skills" || exit 2
 rc=0
 EXPECTED_SKILLS=8
 
@@ -39,7 +40,12 @@ for s in check_env.py static_scan.py fetch_reference.py fingerprint.py gate.py; 
     rc=1
   fi
 done
-if find "$PA_DIR" -name '__pycache__' -o -name '*.pyc' | grep -q .; then
+if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [ -n "$(git -C "$ROOT_DIR" ls-files -- 'skills/team-provenance-audit/*__pycache__*' 'skills/team-provenance-audit/*.pyc')" ]; then
+    echo "DIRTY: $PA_DIR has tracked __pycache__ or *.pyc in git index"
+    rc=1
+  fi
+elif find "$PA_DIR" -name '__pycache__' -o -name '*.pyc' | grep -q .; then
   echo "DIRTY: $PA_DIR contains __pycache__ or *.pyc"
   rc=1
 fi
